@@ -17,7 +17,6 @@ services:
         turn:
           enabled: true
           domain: ${LIVEKIT_TURN_DOMAIN}
-          tls_port: 5349
           udp_port: 3478
         keys:
           ${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}
@@ -31,8 +30,7 @@ services:
     # por isso esses aqui precisam mesmo de porta real publicada no host.
     ports:
       - "7881:7881" # RTC via TCP — fallback quando UDP está bloqueado
-      - "3478:3478/udp" # TURN/STUN (UDP)
-      - "5349:5349" # TURN sobre TLS — precisa do domínio em LIVEKIT_TURN_DOMAIN
+      - "3478:3478/udp" # TURN/STUN (UDP) — TURN sobre TLS (5349) desativado, exige cert que não temos como montar
       - "50000-50100:50000-50100/udp" # faixa de portas RTC (mídia WebRTC em si)
     restart: unless-stopped
 
