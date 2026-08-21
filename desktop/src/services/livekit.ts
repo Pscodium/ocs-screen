@@ -46,11 +46,17 @@ export async function startBroadcast(
 
   const [track] = stream.getVideoTracks();
   const { height } = track.getSettings();
+  const videoCodec = detectBestVideoCodec();
+  // VP9/AV1 são SVC — LiveKit desativa simulcast automaticamente pra eles e usa camadas
+  // temporais/espaciais dentro do próprio stream (CLAUDE.md §Simulcast/SVC). L3T3_KEY = 3
+  // camadas espaciais x 3 temporais, o equilíbrio recomendado pelo LiveKit pra screen share.
+  const isSvcCodec = videoCodec === "vp9" || videoCodec === "av1";
 
   const publication = await room.localParticipant.publishTrack(track, {
     source: Track.Source.ScreenShare,
     simulcast: true,
-    videoCodec: detectBestVideoCodec(),
+    videoCodec,
+    scalabilityMode: isSvcCodec ? "L3T3_KEY" : undefined,
     // Fallback automático: se o espectador não suportar o codec preferencial, LiveKit publica
     // uma track secundária no codec de backup (CLAUDE.md §Codecs).
     backupCodec: true,
