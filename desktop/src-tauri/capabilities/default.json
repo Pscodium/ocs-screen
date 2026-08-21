@@ -9,6 +9,11 @@
     "core:window:allow-set-position",
     "core:window:allow-center",
     "core:window:allow-set-always-on-top",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
     "core:tray:default",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text"

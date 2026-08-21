@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { ConnectionState } from "livekit-client";
 import type { BroadcastInfo } from "../hooks/useBroadcast";
 
@@ -22,11 +21,11 @@ export function LiveCard({ info, onStop }: LiveCardProps) {
 
   const copyLink = async () => {
     try {
-      await writeText(info.viewerUrl);
+      await navigator.clipboard.writeText(info.viewerUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Clipboard pode falhar sem foco na janela — usuário ainda vê o link no texto.
+      // Sem permissão de clipboard — link continua visível no texto pra copiar manualmente.
     }
   };
 
@@ -55,7 +54,7 @@ export function LiveCard({ info, onStop }: LiveCardProps) {
         {info.hasAudio && <span>🔊 áudio</span>}
       </div>
 
-      <button className="btn-danger btn-danger-compact" onClick={onStop}>
+      <button className="btn-danger" onClick={onStop}>
         Encerrar transmissão
       </button>
     </div>

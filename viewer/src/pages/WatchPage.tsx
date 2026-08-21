@@ -12,7 +12,7 @@ export function WatchPage() {
 }
 
 function WatchRoom({ roomId }: { roomId: string }) {
-  const { videoRef, phase, connectionState, error, stats } = useRoomStream(roomId);
+  const { videoRef, phase, connectionState, error, stats, hasAudio } = useRoomStream(roomId);
 
   if (phase === "error") return <StatusMessage text={error ?? "Erro ao conectar."} />;
   if (phase === "ended") return <StatusMessage text="A transmissão foi encerrada." />;
@@ -24,7 +24,7 @@ function WatchRoom({ roomId }: { roomId: string }) {
     <div className="watch-page">
       {phase === "connecting" && <StatusMessage text="Conectando à transmissão..." overlay />}
       {phase === "connected" && isReconnecting && <StatusMessage text="Reconectando..." overlay />}
-      <VideoPlayer videoRef={videoRef} stats={stats} />
+      <VideoPlayer videoRef={videoRef} stats={stats} hasAudio={hasAudio} />
     </div>
   );
 }

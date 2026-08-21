@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { SettingsForm } from "../components/SettingsForm";
 import { LiveCard } from "../components/LiveCard";
+import { Logo } from "../components/Logo";
 import type { useBroadcast } from "../hooks/useBroadcast";
 import { defaultStreamSettings } from "../types/stream";
 
@@ -18,6 +19,7 @@ export function HomePage({ broadcast }: HomePageProps) {
 
   return (
     <div className="home-page">
+      <Logo />
       <h1>ScreenShare</h1>
       <p className="subtitle">Compartilhe sua tela em tempo real</p>
 

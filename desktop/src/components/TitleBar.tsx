@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Logo } from "./Logo";
 
 const appWindow = getCurrentWindow();
 
@@ -23,6 +24,7 @@ export function TitleBar({ compact }: TitleBarProps) {
   return (
     <div className={`titlebar ${compact ? "titlebar-compact" : ""}`} data-tauri-drag-region>
       <span className="titlebar-title" data-tauri-drag-region>
+        <Logo size={16} />
         ScreenShare
       </span>
       <div className="titlebar-controls">

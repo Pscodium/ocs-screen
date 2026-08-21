@@ -58,6 +58,7 @@ export function useRoomStream(roomId: string) {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.Connecting);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<StreamStats | null>(null);
+  const [hasAudio, setHasAudio] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,8 +73,17 @@ export function useRoomStream(roomId: string) {
     room.on(RoomEvent.ConnectionStateChanged, setConnectionState);
 
     room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
-      if (track.kind !== Track.Kind.Video || !videoRef.current) return;
+      if (!videoRef.current) return;
+
+      // Anexar áudio e vídeo no mesmo elemento combina as duas tracks num único MediaStream
+      // (attachToElement do livekit-client) — o <video> toca o som junto, sem <audio> separado.
       track.attach(videoRef.current);
+
+      if (track.kind === Track.Kind.Audio) {
+        setHasAudio(true);
+        return;
+      }
+      if (track.kind !== Track.Kind.Video) return;
 
       const settings = track.mediaStreamTrack.getSettings();
       setStats({
@@ -88,6 +98,10 @@ export function useRoomStream(roomId: string) {
         const partial = await readSubscribeStats(track);
         if (partial) setStats((prev) => (prev ? { ...prev, ...partial } : prev));
       }, STATS_POLL_MS);
+    });
+
+    room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
+      if (track.kind === Track.Kind.Audio) setHasAudio(false);
     });
 
     room.on(RoomEvent.Disconnected, () => {
@@ -115,5 +129,5 @@ export function useRoomStream(roomId: string) {
     };
   }, [roomId]);
 
-  return { videoRef, phase, connectionState, error, stats };
+  return { videoRef, phase, connectionState, error, stats, hasAudio };
 }

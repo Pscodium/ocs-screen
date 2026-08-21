@@ -1,3 +1,4 @@
+import "./env.js"; // precisa ser o primeiro import — ver comentário em env.ts
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { config } from "./config.js";
