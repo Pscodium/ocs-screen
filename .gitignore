@@ -141,3 +141,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Rust / Tauri
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+
+# LiveKit config de produção (contém chaves reais)
+infra/livekit/livekit.prod.yaml

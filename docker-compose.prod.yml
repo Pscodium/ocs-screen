@@ -1,0 +1,41 @@
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "3478:3478/udp"
+      - "5349:5349"
+      - "50000-50100:50000-50100/udp"
+    volumes:
+      - ./infra/livekit/livekit.prod.yaml:/etc/livekit.yaml:ro
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      PORT: 4000
+      HOST: 0.0.0.0
+      CORS_ORIGIN: ${VIEWER_URL}
+      VIEWER_URL: ${VIEWER_URL}
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    ports:
+      - "4000:4000"
+    depends_on:
+      - livekit
+    restart: unless-stopped
+
+  viewer:
+    build:
+      context: ./viewer
+      args:
+        VITE_BACKEND_URL: ${BACKEND_URL}
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

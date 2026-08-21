@@ -1,0 +1,21 @@
+# Copie para infra/livekit/livekit.prod.yaml e preencha antes do deploy.
+# Nunca commitar o arquivo preenchido (chaves reais) — está no .gitignore.
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50100
+  use_external_ip: true
+
+# TURN embutido do LiveKit — necessário pra funcionar atrás de NAT restritivo (4G, redes corporativas).
+# Exige domínio próprio com TLS (ex.: turn.seudominio.com apontando pro IP da VPS).
+turn:
+  enabled: true
+  domain: turn.seudominio.com
+  tls_port: 5349
+  udp_port: 3478
+
+keys:
+  # Gere um par forte: `openssl rand -hex 16` (key) e `openssl rand -hex 32` (secret).
+  # Nunca reutilizar devkey/devsecret de desenvolvimento em produção.
+  SUBSTITUA_A_KEY: SUBSTITUA_O_SECRET

@@ -1,0 +1,105 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0d10;
+  --surface: #15181d;
+  --text: #e8eaed;
+  --muted: #8a8f98;
+  --accent: #5865f2;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+.status-page,
+.status-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 0.5rem;
+  text-align: center;
+  padding: 1rem;
+}
+
+.status-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(11, 13, 16, 0.7);
+  z-index: 2;
+}
+
+.watch-page {
+  position: relative;
+  height: 100vh;
+}
+
+.video-container {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  background: black;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-element {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.video-controls {
+  position: absolute;
+  bottom: 1rem;
+  left: 1rem;
+  right: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.video-stats {
+  background: rgba(0, 0, 0, 0.5);
+  padding: 0.4rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.video-stats:hover {
+  color: var(--text);
+}
+
+.btn-fullscreen {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid #2a2e35;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.btn-fullscreen:hover {
+  background: #1c2027;
+}
