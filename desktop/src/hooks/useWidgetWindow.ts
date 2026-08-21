@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { getCurrentWindow, LogicalSize, PhysicalPosition, currentMonitor } from "@tauri-apps/api/window";
 
 const NORMAL_SIZE = { width: 440, height: 720 };
-const WIDGET_SIZE = { width: 360, height: 132 };
+const WIDGET_SIZE = { width: 360, height: 220 };
 const WIDGET_MARGIN = 24;
 
 // Quando a transmissão está ao vivo, encolhe a janela para uma barra compacta

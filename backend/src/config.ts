@@ -7,7 +7,15 @@ function required(name: string, fallback?: string): string {
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   host: process.env.HOST ?? "0.0.0.0",
-  corsOrigin: process.env.CORS_ORIGIN ?? "*",
+  // Lista separada por vírgula. O app desktop Tauri não roda no domínio do viewer — roda em
+  // tauri://localhost (ou http://tauri.localhost no Windows) — por isso essas origens sempre
+  // são liberadas além do que vier em CORS_ORIGIN.
+  corsOrigins: [
+    ...(process.env.CORS_ORIGIN?.split(",").map((origin) => origin.trim()) ?? []),
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+  ] as string[],
   // Origem pública do viewer web — usada para montar o link completo da sala. Nunca deduzir do CORS_ORIGIN.
   viewerUrl: required("VIEWER_URL", "http://localhost:5173"),
   livekit: {

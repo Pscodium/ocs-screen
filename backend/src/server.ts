@@ -5,7 +5,7 @@ import { roomRoutes } from "./routes/rooms.js";
 
 const app = Fastify({ logger: true });
 
-await app.register(cors, { origin: config.corsOrigin === "*" ? true : config.corsOrigin });
+await app.register(cors, { origin: config.corsOrigins.includes("*") ? true : config.corsOrigins });
 
 app.get("/health", async () => ({ status: "ok" }));
 
