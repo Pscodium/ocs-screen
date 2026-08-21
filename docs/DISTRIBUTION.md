@@ -4,17 +4,22 @@
 
 Três serviços via Docker, definidos em [`docker-compose.prod.yml`](../docker-compose.prod.yml):
 
-- `livekit` — imagem oficial `livekit/livekit-server`, configurada por `infra/livekit/livekit.prod.yaml` (não versionado).
+- `livekit` — imagem oficial `livekit/livekit-server`. Sem mount de arquivo (nem todo plano do EasyPanel expõe uma aba Files/Mounts) — o `command` do serviço escreve `/tmp/livekit.yaml` dentro do container a partir de env vars, na hora que ele sobe.
 - `backend` — build de `backend/Dockerfile` (Fastify).
 - `viewer` — build de `viewer/Dockerfile` (Vite build servido por nginx, `viewer/nginx.conf` cuida do fallback de SPA pra `/s/:roomId`).
 
 Passos:
 
-1. Copiar `infra/livekit/livekit.prod.yaml.example` → `infra/livekit/livekit.prod.yaml`, preencher domínio TURN e gerar chave/segredo reais (nunca reaproveitar `devkey`/`devsecret` do dev).
-2. Copiar `.env.production.example` → `.env.production` (ou configurar as mesmas variáveis direto na UI do EasyPanel), preenchendo `VIEWER_URL`, `BACKEND_URL`, `LIVEKIT_URL` (sempre `wss://`, nunca `ws://`, em produção) e as chaves do LiveKit.
-3. No EasyPanel: criar o app apontando pro repo com `docker-compose.prod.yml`, ou criar 3 apps separados (um por serviço) se preferir isolar domínio/escala de cada um — o compose já separa build context por pasta.
-4. Configurar domínios com TLS em cada serviço exposto (`backend`, `viewer`, `livekit` — incluindo a porta TURN TLS 5349). O EasyPanel geralmente já resolve certificado via Let's Encrypt no proxy reverso dele.
-5. Abrir/mapear as portas UDP do LiveKit (`50000-50100`, `3478`) no firewall da VPS — sem isso, WebRTC não conecta atrás de NAT (mesmo erro "could not establish pc connection" visto em dev, mas agora por causa de firewall em vez de config de IP local).
+1. Gerar chave/segredo reais do LiveKit (nunca reaproveitar `devkey`/`devsecret` do dev): `openssl rand -hex 16` (key) e `openssl rand -hex 32` (secret).
+2. No EasyPanel, cadastrar como **variáveis de ambiente do app Compose** (não em arquivo — o compose lê do ambiente que o EasyPanel injeta): `VIEWER_URL`, `BACKEND_URL`, `LIVEKIT_URL` (sempre `wss://`), `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `LIVEKIT_TURN_DOMAIN` (ver `.env.production.example` pro formato).
+3. Registrar DNS (A/AAAA) de `LIVEKIT_TURN_DOMAIN` apontando pro IP da VPS — o TURN embutido do LiveKit depende disso pra TLS.
+4. Subir o app apontando pro repo com `docker-compose.prod.yml` (ou 3 apps separados por serviço, se preferir isolar domínio/escala — o compose já separa build context por pasta).
+5. Configurar domínios com TLS na UI do EasyPanel, mapeando cada um pra porta **interna** do container (o compose usa `expose`, não `ports`, pra tráfego HTTP — o EasyPanel roteia por dentro da rede dele):
+   - `backend` → porta `4000`
+   - `viewer` → porta `80`
+   - `livekit` → porta `7880` (o domínio vira `wss://livekit.seudominio.com`, o EasyPanel cuida do upgrade WS)
+6. As portas de mídia do `livekit` (`7881` TCP, `3478` UDP, `5349` TCP, `50000-50100` UDP) são protocolo cru — não passam pelo proxy do EasyPanel, então ficam publicadas direto no host (`ports:` no compose) e precisam estar liberadas no firewall da VPS. Sem isso, WebRTC não conecta atrás de NAT (mesmo erro "could not establish pc connection" visto em dev, mas agora por firewall em vez de config de IP local).
+7. Depois de qualquer mudança nas env vars, fazer **rebuild/recriar** o app — o `viewer` embute `VITE_BACKEND_URL` no build (Vite não lê env em runtime), e o `command` do `livekit` só regenera o yaml quando o container reinicia.
 
 ### Por que TURN é obrigatório aqui (diferente do dev local)
 

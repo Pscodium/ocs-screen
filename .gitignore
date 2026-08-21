@@ -145,6 +145,3 @@ vite.config.ts.timestamp-*
 # Rust / Tauri
 desktop/src-tauri/target/
 desktop/src-tauri/gen/
-
-# LiveKit config de produção (contém chaves reais)
-infra/livekit/livekit.prod.yaml
