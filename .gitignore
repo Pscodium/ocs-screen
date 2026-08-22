@@ -145,3 +145,6 @@ vite.config.ts.timestamp-*
 # Electron
 desktop/out/
 desktop/dist/
+
+# Docs
+docs
