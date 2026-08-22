@@ -7,6 +7,14 @@ interface LiveCardProps {
   onStop: () => void;
 }
 
+// Nomes de encoder por software que os browsers reportam em `encoderImplementation` — o resto
+// (ex.: "ExternalEncoder", nomes de vendor) é hardware. Usado só pra avisar o usuário que a
+// transmissão pode estar pesando mais CPU do que deveria (ver docs/INSIGHTS-ENCODER.md #2).
+function isSoftwareEncoder(name: string | null): boolean {
+  if (!name) return false;
+  return /libvpx|libaom|openh264|libx264/i.test(name);
+}
+
 const connectionLabel: Record<ConnectionState, string> = {
   [ConnectionState.Connected]: "Ao vivo",
   [ConnectionState.Connecting]: "Conectando...",
@@ -57,6 +65,15 @@ export function LiveCard({ info, onStop }: LiveCardProps) {
             {info.encoderImplementation && ` (${info.encoderImplementation})`}
           </span>
         )}
+        {isSoftwareEncoder(info.encoderImplementation) && (
+          <span
+            className="live-stats-warning"
+            title={`Codificando por software (${info.encoderImplementation}) — pode pesar a CPU. Sem encoder de hardware disponível pra esse codec nesse PC.`}
+          >
+            ⚠️ CPU
+          </span>
+        )}
+        {info.avgQp !== null && <span title="QP médio — quanto maior, mais comprimido/blocado">QP {info.avgQp}</span>}
         {info.hasAudio && <span>🔊 áudio</span>}
       </div>
 

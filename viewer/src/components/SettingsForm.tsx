@@ -71,6 +71,23 @@ export function SettingsForm({ settings, onChange }: SettingsFormProps) {
         </select>
       </label>
 
+      <label className="toggle-row">
+        <span className="toggle-row-label">
+          Melhorar texto
+          <span className="toggle-row-hint">
+            {settings.sharpText ? "Nítido, mas desliga pra jogos" : "Código/documentos parados"}
+          </span>
+        </span>
+        <span className="toggle-switch">
+          <input
+            type="checkbox"
+            checked={settings.sharpText}
+            onChange={(e) => onChange({ ...settings, sharpText: e.target.checked })}
+          />
+          <span className="toggle-slider" />
+        </span>
+      </label>
+
       <p className="settings-hint">
         No diálogo que abrir a seguir, ligue o botão "Compartilhar também áudio do sistema" se quiser transmitir som
         — o navegador exige essa confirmação separada, não dá pra pular.

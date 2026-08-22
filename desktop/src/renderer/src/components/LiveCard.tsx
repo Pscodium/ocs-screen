@@ -11,6 +11,29 @@ interface LiveCardProps {
   onSwapSource: (source: CaptureSource) => void;
 }
 
+// Nomes de encoder por software que os browsers reportam em `encoderImplementation` — o resto
+// (ex.: "ExternalEncoder", nomes de vendor) é hardware. Usado só pra avisar o usuário que a
+// transmissão pode estar pesando mais CPU do que deveria (ver docs/INSIGHTS-ENCODER.md #2).
+function isSoftwareEncoder(name: string | null): boolean {
+  if (!name) return false;
+  return /libvpx|libaom|openh264|libx264/i.test(name);
+}
+
+// Widget "ao vivo" é uma janela pequena de tamanho fixo (340×140, não redimensionável) — não tem
+// espaço pra uma linha de estatísticas cheia de spans soltos (resolução, fps, bitrate, perda,
+// codec, QP, aviso de CPU, áudio já eram 8 itens). Resolução+fps viram um rótulo só, e o que é
+// só diagnóstico (perda de pacote/codec/encoder/QP) vira tooltip de um ícone único.
+function compactResolution(resolution: string): string {
+  const match = resolution.match(/(\d+)\s*×\s*(\d+)/);
+  if (!match) return resolution;
+  const height = Number(match[2]);
+  if (height >= 2160) return "4K";
+  if (height >= 1440) return "1440p";
+  if (height >= 1080) return "1080p";
+  if (height >= 720) return "720p";
+  return resolution;
+}
+
 const connectionLabel: Record<ConnectionState, string> = {
   [ConnectionState.Connected]: "Ao vivo",
   [ConnectionState.Connecting]: "Conectando...",
@@ -75,16 +98,35 @@ export function LiveCard({ info, swapping, onStop, onSwapSource }: LiveCardProps
       </button>
 
       <div className="live-stats">
-        <span>{info.actualResolution}</span>
-        <span>{info.actualFps} FPS</span>
-        <span>{info.bitrateKbps > 0 ? `${(info.bitrateKbps / 1000).toFixed(1)} Mbps` : "—"}</span>
-        <span>{info.packetLossPercent}% perda</span>
-        {info.codec !== "?" && (
-          <span title={info.encoderImplementation ? `Encoder: ${info.encoderImplementation}` : undefined}>
-            {info.codec.toUpperCase()}
-          </span>
-        )}
-        {info.hasAudio && <span>🔊</span>}
+        <span className="live-stats-primary">
+          {compactResolution(info.actualResolution)} · {info.actualFps}fps ·{" "}
+          {info.bitrateKbps > 0 ? `${(info.bitrateKbps / 1000).toFixed(1)} Mbps` : "—"}
+        </span>
+        <span className="live-stats-icons">
+          {isSoftwareEncoder(info.encoderImplementation) && (
+            <span
+              className="live-stats-badge live-stats-badge-warning"
+              title={`Codificando por software (${info.encoderImplementation}) — pode pesar a CPU. Sem encoder de hardware disponível pra esse codec nesse PC.`}
+            >
+              ⚠️
+            </span>
+          )}
+          {info.codec !== "?" && (
+            <span
+              className="live-stats-badge"
+              title={[
+                `Codec: ${info.codec.toUpperCase()}${info.encoderImplementation ? ` (${info.encoderImplementation})` : ""}`,
+                `Perda de pacote: ${info.packetLossPercent}%`,
+                info.avgQp !== null ? `QP médio: ${info.avgQp}` : null,
+              ]
+                .filter(Boolean)
+                .join("\n")}
+            >
+              ⓘ
+            </span>
+          )}
+          {info.hasAudio && <span className="live-stats-badge">🔊</span>}
+        </span>
       </div>
 
       {pickerOpen && (

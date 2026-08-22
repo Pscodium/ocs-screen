@@ -197,20 +197,79 @@ body {
   text-align: left;
 }
 
-.settings-field-checkbox {
-  flex-direction: row;
+/* Linha de toggle estilo Discord — label+descrição curta à esquerda, switch à direita. */
+.toggle-row {
+  display: flex;
   align-items: center;
-  gap: 0.55rem;
-  font-size: 0.85rem;
-  font-weight: 400;
+  justify-content: space-between;
+  gap: 0.75rem;
+  cursor: pointer;
+}
+
+.toggle-row-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-align: left;
+  font-size: 0.8rem;
+  font-weight: 500;
   color: var(--text);
 }
 
-.settings-field-checkbox input {
-  accent-color: var(--accent);
+.toggle-row-hint {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.toggle-switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+.toggle-switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 999px;
+  transition: background 0.15s ease;
+}
+
+.toggle-slider::before {
+  content: "";
+  position: absolute;
   width: 16px;
   height: 16px;
-  cursor: pointer;
+  left: 3px;
+  top: 3px;
+  background: #cfd2d9;
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.toggle-switch input:checked + .toggle-slider {
+  background: var(--accent);
+}
+
+.toggle-switch input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+  background: white;
+}
+
+.toggle-switch input:focus-visible + .toggle-slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* Buttons */
@@ -439,25 +498,47 @@ body {
   flex-shrink: 0;
 }
 
+/* Widget de largura fixa (340px, não redimensionável) — cabe pouca coisa numa linha só. Texto
+   principal (resolução/fps/bitrate) fica à esquerda; ícones de diagnóstico (aviso/detalhe/áudio)
+   agrupados à direita como badges circulares, não soltos misturados com o texto. */
 .live-stats {
   display: flex;
   align-items: center;
-  gap: 0.55rem;
+  justify-content: space-between;
+  gap: 0.5rem;
   color: var(--muted);
-  font-size: 0.68rem;
-  overflow-x: auto;
-  overflow-y: hidden;
+  font-size: 0.72rem;
+  flex-shrink: 0;
+}
+
+.live-stats-primary {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  flex-shrink: 0;
-  scrollbar-width: none;
 }
 
-.live-stats::-webkit-scrollbar {
-  display: none;
+.live-stats-icons {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
 }
 
-.live-stats span {
-  flex-shrink: 0;
+.live-stats-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  font-size: 0.65rem;
+  line-height: 1;
+  cursor: default;
+}
+
+.live-stats-badge-warning {
+  background: rgba(240, 177, 50, 0.18);
 }
 
 /* Seletor de fonte — estilo "Ir ao vivo" do Discord (a janela expande enquanto isso fica

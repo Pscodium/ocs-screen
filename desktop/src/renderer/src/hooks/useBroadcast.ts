@@ -26,6 +26,7 @@ export interface BroadcastInfo {
   hasAudio: boolean;
   codec: string;
   encoderImplementation: string | null;
+  avgQp: number | null;
 }
 
 const STATS_POLL_MS = 2000;
@@ -82,6 +83,7 @@ export function useBroadcast() {
         hasAudio,
         codec: "?",
         encoderImplementation: null,
+        avgQp: null,
       });
       setState("live");
 
@@ -96,6 +98,11 @@ export function useBroadcast() {
                   packetLossPercent: stats.packetLossPercent,
                   codec: stats.codec,
                   encoderImplementation: stats.encoderImplementation,
+                  avgQp: stats.avgQp,
+                  // Só sobrescreve quando o outbound-rtp já tem um frame real codificado — evita
+                  // piscar pro "—"/0 caso uma leitura pontual venha sem esses campos.
+                  actualResolution: stats.actualResolution !== "—" ? stats.actualResolution : prev.actualResolution,
+                  actualFps: stats.actualFps > 0 ? stats.actualFps : prev.actualFps,
                 }
               : prev,
           );

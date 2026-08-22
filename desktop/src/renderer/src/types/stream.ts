@@ -6,6 +6,12 @@ export interface StreamSettings {
   resolution: Resolution;
   fps: Fps;
   quality: Quality;
+  // Equivalente ao "melhorar texto"/nitidez do Discord — liga `contentHint: "text"` na track de
+  // vídeo (ver capture.ts), que faz o encoder priorizar nitidez de borda sobre fluidez de
+  // movimento. Ótimo pra código/documento parado, ativamente ruim pra jogo (movimento constante
+  // sofre estouro de QP/frame drop com bitrate fixo — testado em produção, ver
+  // docs/INSIGHTS-ENCODER.md #1). Por isso não é padrão — o usuário escolhe por sessão.
+  sharpText: boolean;
 }
 
 export interface ResolutionConstraint {
@@ -29,6 +35,7 @@ export const defaultStreamSettings: StreamSettings = {
   resolution: "1080p",
   fps: 60,
   quality: "high",
+  sharpText: false,
 };
 
 // Multiplicador aplicado ao bitrate base conforme o nível de qualidade escolhido.
@@ -43,7 +50,11 @@ const QUALITY_MULTIPLIER: Record<Quality, number> = {
 // Bits por pixel por frame — alvo pra conteúdo de tela (texto/UI tem bordas duras, precisa de
 // mais bits por pixel que vídeo de câmera pra não borrar). CLAUDE.md §Bitrate: nunca espalhar
 // valores rígidos pelo código — tudo passa por getMaxBitrate() abaixo.
-const BITS_PER_PIXEL = 0.1;
+// 0.1 → 0.15: testado em produção com encoder de hardware confirmado (NVENC/etc, sem aviso de
+// software) rodando 1080p60 "alta" — QP médio ficava 30-40 (moderado/alto) em jogo de movimento
+// rápido mesmo com hardware de sobra, sinal de que o teto de bitrate era baixo demais pro
+// conteúdo, não que o encoder tava no limite. 1080p60 "alta" sobe de ~12.4 Mbps pra ~18.7 Mbps.
+const BITS_PER_PIXEL = 0.15;
 const MIN_BITRATE_BPS = 1_000_000;
 const MAX_BITRATE_BPS = 50_000_000;
 const FALLBACK_FPS: Exclude<Fps, "auto"> = 30;

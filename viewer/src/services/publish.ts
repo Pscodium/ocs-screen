@@ -1,4 +1,5 @@
 import {
+  AudioPresets,
   ConnectionState,
   Room,
   RoomEvent,
@@ -53,8 +54,11 @@ export async function startBroadcast(
     backupCodec: true,
     // "maintain-resolution" (default do LiveKit p/ screen share) prioriza nitidez de texto e
     // derruba frames sob pressão de banda — ótimo pra apresentação/código, péssimo pra jogos
-    // (movimento precisa de FPS estável). "balanced" deixa o encoder decidir dinamicamente.
-    degradationPreference: "balanced",
+    // (movimento precisa de FPS estável). "balanced" foi tentado antes e ainda deixava o encoder
+    // cair frame quando quisesse — testado em produção com jogo de movimento rápido (Rocket
+    // League) e mostrou stutter real. "maintain-framerate" nunca cai de FPS, reduz resolução
+    // primeiro — CLAUDE.md prioriza baixa latência/fluidez pra jogos igual ou mais que nitidez.
+    degradationPreference: "maintain-framerate",
     screenShareEncoding: {
       maxBitrate: getMaxBitrate(width ?? 1920, height ?? 1080, settings),
       maxFramerate: settings.fps === "auto" ? undefined : settings.fps,
@@ -64,7 +68,17 @@ export async function startBroadcast(
 
   const [audioTrack] = stream.getAudioTracks();
   if (audioTrack) {
-    await room.localParticipant.publishTrack(audioTrack, { source: Track.Source.ScreenShareAudio });
+    await room.localParticipant.publishTrack(audioTrack, {
+      source: Track.Source.ScreenShareAudio,
+      // Áudio de tela é normalmente sistema/jogo/música, não voz — subir pro preset de maior
+      // qualidade e desligar dtx (que corta trechos "silenciosos" pensando em pausa de fala)
+      // evita perder nuance de trilha/efeitos. red (redundância) segura perda de pacote sem
+      // depender de retransmissão.
+      audioPreset: AudioPresets.musicHighQualityStereo,
+      dtx: false,
+      red: true,
+      forceStereo: true,
+    });
   }
 
   return {
@@ -81,45 +95,89 @@ export interface PublishStats {
   packetLossPercent: number;
   codec: string;
   encoderImplementation: string | null;
+  // QP médio (quantization parameter) desde a última leitura — QP alto = mesmo bitrate saindo
+  // com blocking visível. `null` quando o browser não expõe `qpSum`.
+  avgQp: number | null;
+  // Resolução/FPS REAIS sendo codificados agora (camada base do simulcast), atualizado a cada
+  // poll — não confundir com o preset escolhido nas configurações, que é só teto/alvo.
+  actualResolution: string;
+  actualFps: number;
 }
 
-let lastBytesSent = 0;
+// Simulcast publica 3 camadas simultâneas — cada uma vira seu próprio outbound-rtp no mesmo
+// getStats(), sem ordem garantida entre elas.
+const lastBytesSentByLayer = new Map<string, number>();
 let lastTimestamp = 0;
+let lastQpSum = 0;
+let lastFramesEncoded = 0;
 
 export async function readPublishStats(publication: LocalTrackPublication): Promise<PublishStats | null> {
   const sender = publication.track?.sender;
   if (!sender) return null;
 
   const report = await sender.getStats();
-  for (const stat of report.values()) {
-    if (stat.type !== "outbound-rtp" || stat.kind !== "video") continue;
 
-    const bytesSent: number = stat.bytesSent ?? 0;
-    const timestamp: number = stat.timestamp ?? 0;
-    const packetsSent: number = stat.packetsSent ?? 0;
-    const retransmitted: number = stat.retransmittedPacketsSent ?? 0;
-    const encoderImplementation: string | null = stat.encoderImplementation ?? null;
+  // Com simulcast há um outbound-rtp por camada (rid q/h/f) — sem isso, pegar "o primeiro que
+  // aparecer no Map" arriscava mostrar QP/bitrate/resolução da camada de qualidade MAIS BAIXA
+  // (360p) em vez da camada base real que a maioria dos espectadores enxerga.
+  const videoStats = Array.from(report.values()).filter(
+    (stat) => stat.type === "outbound-rtp" && stat.kind === "video",
+  );
+  if (videoStats.length === 0) return null;
 
-    let bitrateKbps = 0;
-    if (lastTimestamp > 0 && timestamp > lastTimestamp) {
-      const bytesDelta = bytesSent - lastBytesSent;
-      const secondsDelta = (timestamp - lastTimestamp) / 1000;
-      bitrateKbps = Math.max(0, Math.round((bytesDelta * 8) / secondsDelta / 1000));
+  const primary = videoStats.reduce((best, stat) => {
+    const area = (stat.frameWidth ?? 0) * (stat.frameHeight ?? 0);
+    const bestArea = (best.frameWidth ?? 0) * (best.frameHeight ?? 0);
+    return area > bestArea ? stat : best;
+  }, videoStats[0]);
+
+  const timestamp: number = primary.timestamp ?? 0;
+
+  let bitrateKbps = 0;
+  if (lastTimestamp > 0 && timestamp > lastTimestamp) {
+    const secondsDelta = (timestamp - lastTimestamp) / 1000;
+    let totalBytesDelta = 0;
+    for (const stat of videoStats) {
+      const ssrc = String(stat.ssrc ?? stat.id);
+      const bytesSent: number = stat.bytesSent ?? 0;
+      const previous = lastBytesSentByLayer.get(ssrc) ?? bytesSent;
+      totalBytesDelta += Math.max(0, bytesSent - previous);
+      lastBytesSentByLayer.set(ssrc, bytesSent);
     }
-    lastBytesSent = bytesSent;
-    lastTimestamp = timestamp;
-
-    const packetLossPercent = packetsSent > 0 ? Math.round((retransmitted / packetsSent) * 1000) / 10 : 0;
-
-    let codec = "?";
-    const codecId: string | undefined = stat.codecId;
-    if (codecId && report.has(codecId)) {
-      const mimeType: string | undefined = report.get(codecId)?.mimeType;
-      if (mimeType) codec = mimeType.replace("video/", "");
+    bitrateKbps = Math.max(0, Math.round((totalBytesDelta * 8) / secondsDelta / 1000));
+  } else {
+    for (const stat of videoStats) {
+      lastBytesSentByLayer.set(String(stat.ssrc ?? stat.id), stat.bytesSent ?? 0);
     }
+  }
+  lastTimestamp = timestamp;
 
-    return { bitrateKbps, packetLossPercent, codec, encoderImplementation };
+  const packetsSent: number = primary.packetsSent ?? 0;
+  const retransmitted: number = primary.retransmittedPacketsSent ?? 0;
+  const packetLossPercent = packetsSent > 0 ? Math.round((retransmitted / packetsSent) * 1000) / 10 : 0;
+
+  const encoderImplementation: string | null = primary.encoderImplementation ?? null;
+  const qpSum: number | undefined = primary.qpSum;
+  const framesEncoded: number | undefined = primary.framesEncoded;
+
+  let avgQp: number | null = null;
+  if (typeof qpSum === "number" && typeof framesEncoded === "number") {
+    const framesDelta = framesEncoded - lastFramesEncoded;
+    if (framesDelta > 0) avgQp = Math.round(((qpSum - lastQpSum) / framesDelta) * 10) / 10;
+    lastQpSum = qpSum;
+    lastFramesEncoded = framesEncoded;
   }
 
-  return null;
+  let codec = "?";
+  const codecId: string | undefined = primary.codecId;
+  if (codecId && report.has(codecId)) {
+    const mimeType: string | undefined = report.get(codecId)?.mimeType;
+    if (mimeType) codec = mimeType.replace("video/", "");
+  }
+
+  const actualResolution =
+    primary.frameWidth && primary.frameHeight ? `${primary.frameWidth} × ${primary.frameHeight}` : "—";
+  const actualFps = primary.framesPerSecond ? Math.round(primary.framesPerSecond) : 0;
+
+  return { bitrateKbps, packetLossPercent, codec, encoderImplementation, avgQp, actualResolution, actualFps };
 }

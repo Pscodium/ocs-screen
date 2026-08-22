@@ -34,6 +34,9 @@ async function readSubscribeStats(track: RemoteTrack): Promise<Partial<ViewerSta
     const packetsLost: number = stat.packetsLost ?? 0;
     const jitterBufferDelay: number = stat.jitterBufferDelay ?? 0;
     const jitterBufferEmittedCount: number = stat.jitterBufferEmittedCount ?? 0;
+    const frameWidth: number | undefined = stat.frameWidth;
+    const frameHeight: number | undefined = stat.frameHeight;
+    const framesPerSecond: number | undefined = stat.framesPerSecond;
 
     let bitrateKbps = 0;
     if (lastTimestamp > 0 && timestamp > lastTimestamp) {
@@ -49,7 +52,16 @@ async function readSubscribeStats(track: RemoteTrack): Promise<Partial<ViewerSta
     const latencyMs =
       jitterBufferEmittedCount > 0 ? Math.round((jitterBufferDelay / jitterBufferEmittedCount) * 1000) : 0;
 
-    return { bitrateKbps, packetLossPercent, latencyMs };
+    // Resolução/FPS REAIS decodificados agora — vem do inbound-rtp, atualizado a cada poll (não
+    // fica congelado no valor único de `getSettings()` lido na hora do subscribe, que às vezes
+    // reporta placeholder tipo "2x2"/"Infinity FPS" antes do primeiro frame real chegar).
+    return {
+      bitrateKbps,
+      packetLossPercent,
+      latencyMs,
+      resolution: frameWidth && frameHeight ? `${frameWidth} × ${frameHeight}` : undefined,
+      fps: framesPerSecond ? Math.round(framesPerSecond) : undefined,
+    };
   }
 
   return null;
@@ -118,7 +130,12 @@ export function useRoomViewer(roomId: string | null) {
 
       statsInterval = setInterval(async () => {
         const partial = await readSubscribeStats(track);
-        if (partial) setStats((prev) => (prev ? { ...prev, ...partial } : prev));
+        // Filtra `undefined` explícito (resolution/fps quando o browser ainda não tem esse
+        // dado) — sem isso, o spread sobrescreveria o valor bom já exibido com undefined.
+        if (partial) {
+          const defined = Object.fromEntries(Object.entries(partial).filter(([, v]) => v !== undefined));
+          setStats((prev) => (prev ? { ...prev, ...defined } : prev));
+        }
       }, STATS_POLL_MS);
     });
 

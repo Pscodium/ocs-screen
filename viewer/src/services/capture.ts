@@ -22,6 +22,13 @@ export async function captureScreen(settings: StreamSettings): Promise<CaptureRe
   });
 
   const [track] = stream.getVideoTracks();
+
+  // Não fixo por padrão (testado em produção: piora stutter/frame drop em jogos — ver
+  // docs/INSIGHTS-ENCODER.md #1) — vira opt-in via toggle "Melhorar texto" nas configurações.
+  if (settings.sharpText) {
+    track.contentHint = "text";
+  }
+
   const actualSettings = track.getSettings();
 
   return { stream, settings: actualSettings, hasAudio: stream.getAudioTracks().length > 0 };

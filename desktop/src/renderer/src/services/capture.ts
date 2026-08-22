@@ -93,6 +93,14 @@ export async function captureScreen(
     }
   }
 
+  // Não fixo por padrão (testado em produção: piora stutter/frame drop em jogos — ver
+  // docs/INSIGHTS-ENCODER.md #1) — vira opt-in via toggle "Melhorar texto" nas configurações.
+  // "text" é o hint mais forte disponível, o mesmo espírito do "melhorar leitura de texto" do
+  // Discord: só liga quando o usuário sabe que vai compartilhar código/documento parado.
+  if (settings.sharpText) {
+    videoTrack.contentHint = "text";
+  }
+
   // Parâmetros solicitados não são garantia — sempre checar capacidades reais (CLAUDE.md §Captura de tela).
   const actualSettings = videoTrack.getSettings();
   const hasAudio = stream.getAudioTracks().length > 0;
