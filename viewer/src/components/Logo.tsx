@@ -3,9 +3,5 @@ interface LogoProps {
 }
 
 export function Logo({ size = 56 }: LogoProps) {
-  return (
-    <div className="logo-mark" style={{ width: size, height: size, fontSize: size * 0.5 }}>
-      S
-    </div>
-  );
+  return <img src="/icon.png" alt="" className="logo-mark" style={{ width: size, height: size }} />;
 }

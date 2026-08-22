@@ -239,13 +239,9 @@ body {
 
 /* Landing / criação de transmissão */
 .logo-mark {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   border-radius: 22%;
-  background: var(--accent);
-  color: white;
-  font-weight: 700;
+  object-fit: cover;
   flex-shrink: 0;
   margin: 0 auto;
 }
