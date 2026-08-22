@@ -11,6 +11,7 @@ import {
   nativeImage,
 } from "electron";
 import { join } from "path";
+import { autoUpdater } from "electron-updater";
 
 const ICON_PATH = join(__dirname, "../../build/icon.png");
 
@@ -94,9 +95,56 @@ function createTray(): void {
   );
 }
 
+// Baixa só quando o usuário aprovar no modal (não é auto-download nem auto-instala no quit) —
+// pede pra "avisar e deixar o usuário escolher", não empurrar a atualização sem avisar.
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = false;
+
+function setupAutoUpdater(): void {
+  autoUpdater.on("update-available", (info) => {
+    mainWindow?.webContents.send("update:available", {
+      version: info.version,
+      // GitHub provider preenche isso com o corpo (markdown) do release — é o changelog.
+      releaseNotes: typeof info.releaseNotes === "string" ? info.releaseNotes : null,
+    });
+  });
+
+  autoUpdater.on("download-progress", (progress) => {
+    mainWindow?.webContents.send("update:download-progress", { percent: Math.round(progress.percent) });
+  });
+
+  autoUpdater.on("update-downloaded", () => {
+    mainWindow?.webContents.send("update:downloaded");
+  });
+
+  autoUpdater.on("error", (err) => {
+    mainWindow?.webContents.send("update:error", err.message);
+  });
+
+  // app.isPackaged: em dev não existe app-update.yml (só gerado no build), checkForUpdates()
+  // sempre falha nesse caso — nem tenta.
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdates().catch(() => {
+      // Falha silenciosa de propósito (sem internet, GitHub fora do ar, etc.) — não é motivo
+      // pra incomodar o usuário toda vez que abre o app.
+    });
+  }
+}
+
+ipcMain.on("update:download", () => {
+  autoUpdater.downloadUpdate().catch((err) => {
+    mainWindow?.webContents.send("update:error", err instanceof Error ? err.message : String(err));
+  });
+});
+
+ipcMain.on("update:install", () => {
+  autoUpdater.quitAndInstall();
+});
+
 app.whenReady().then(() => {
   createWindow();
   createTray();
+  setupAutoUpdater();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

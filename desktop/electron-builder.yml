@@ -14,3 +14,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
   createStartMenuShortcut: true
+publish:
+  provider: github
+  owner: Pscodium
+  repo: ocs-screen

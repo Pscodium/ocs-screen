@@ -42,6 +42,12 @@
 - [x] sala fantasma na lista "Assistir" (transmissão já morta, host caiu sem chamar DELETE) — o mapa em memória de `rooms.ts` só é limpo por `DELETE /rooms/:id` explícito ou pelo `scheduleRoomCleanup`, que nunca é chamado (não existe webhook do LiveKit implementado); `GET /rooms` agora cruza com `RoomServiceClient.listRooms()` (a fonte de verdade real de quem tá ao vivo no LiveKit) e descarta sozinho qualquer sala órfã com mais de 20s (folga pra não apagar uma sala que acabou de ser criada e ainda não conectou) — resolve sozinho sem precisar reiniciar o backend.
 - [x] widget "ao vivo" se escondia atrás de outras janelas — `setAlwaysOnTop(true)` sem nível explícito usa "floating", que ainda perde pra outros always-on-top (overlays, jogos fullscreen exclusivo); trocado pro nível "screen-saver" (o mais alto que o Electron expõe) + `setVisibleOnAllWorkspaces(true, {visibleOnFullScreen:true})` pra não sumir ao trocar de desktop virtual ou um jogo ir fullscreen.
 
+## Sprint 9 - Auto update
+- [x] sistema de auto-update via Releases do GitHub — `electron-updater` (`autoDownload:false`) checa `checkForUpdates()` no boot (só se `app.isPackaged`, dev não tem `app-update.yml`); publish configurado em `electron-builder.yml` (`provider: github`, owner/repo do remote); changelog é o `releaseNotes` que o provider do GitHub já preenche com a descrição do release.
+- [x] instruções no README de como publicar — seção nova "Publicando uma nova versão": subir version no package.json, gerar `GH_TOKEN` (escopo `repo`), `npm run dist:publish` (script novo), explica que sobe como **rascunho** de propósito (dá pra revisar/editar o changelog antes de publicar de verdade).
+- [x] modal de nova versão — `UpdateModal.tsx`, changelog renderizado linha-a-linha (sem lib de markdown, cobre o formato normal de bullet list), estados `available`/`downloading` (barra de progresso)/`downloaded`/`error`; escondido enquanto o widget "ao vivo" tá ativo (janela pequena demais, ia atrapalhar a transmissão).
+- [x] negar ou atualizar, com progresso e reinício — botão "Agora não" fecha o aviso; "Atualizar" dispara `autoUpdater.downloadUpdate()`, mostra `%` ao vivo via `download-progress`, e quando termina (`update-downloaded`) troca pro botão "Reiniciar e instalar" que chama `quitAndInstall()`.
+
 ## Correções recentes
 
 - `desktop/src-tauri/capabilities/default.json`: adicionadas permissões de fechar/minimizar/maximizar (bug real, botões clicavam mas o invoke era negado silenciosamente).

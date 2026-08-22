@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
 export interface CaptureSource {
   id: string;
@@ -6,6 +6,15 @@ export interface CaptureSource {
   type: "screen" | "window";
   thumbnailDataUrl: string;
   appIconDataUrl: string | null;
+}
+
+export interface UpdateAvailableInfo {
+  version: string;
+  releaseNotes: string | null;
+}
+
+export interface UpdateDownloadProgress {
+  percent: number;
 }
 
 const api = {
@@ -26,6 +35,30 @@ const api = {
   },
   capture: {
     listSources: (): Promise<CaptureSource[]> => ipcRenderer.invoke("capture:list-sources"),
+  },
+  updater: {
+    onAvailable: (callback: (info: UpdateAvailableInfo) => void) => {
+      const listener = (_event: IpcRendererEvent, info: UpdateAvailableInfo) => callback(info);
+      ipcRenderer.on("update:available", listener);
+      return () => ipcRenderer.removeListener("update:available", listener);
+    },
+    onDownloadProgress: (callback: (progress: UpdateDownloadProgress) => void) => {
+      const listener = (_event: IpcRendererEvent, progress: UpdateDownloadProgress) => callback(progress);
+      ipcRenderer.on("update:download-progress", listener);
+      return () => ipcRenderer.removeListener("update:download-progress", listener);
+    },
+    onDownloaded: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on("update:downloaded", listener);
+      return () => ipcRenderer.removeListener("update:downloaded", listener);
+    },
+    onError: (callback: (message: string) => void) => {
+      const listener = (_event: IpcRendererEvent, message: string) => callback(message);
+      ipcRenderer.on("update:error", listener);
+      return () => ipcRenderer.removeListener("update:error", listener);
+    },
+    download: () => ipcRenderer.send("update:download"),
+    install: () => ipcRenderer.send("update:install"),
   },
 };
 
