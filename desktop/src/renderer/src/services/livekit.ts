@@ -16,7 +16,8 @@ export interface BroadcastSession {
   disconnect: () => Promise<void>;
 }
 
-// Espelha desktop/src/services/livekit.ts — mesma lógica de publish, cliente web em vez de Tauri.
+// Camadas simulcast por resolução alvo — permite que espectadores com banda menor recebam
+// qualidade menor sem exigir um encode independente do host (CLAUDE.md §Simulcast/SVC).
 function pickSimulcastLayers(actualHeight: number): VideoPreset[] {
   if (actualHeight >= 2160) return [VideoPresets.h360, VideoPresets.h720, VideoPresets.h1440];
   if (actualHeight >= 1440) return [VideoPresets.h360, VideoPresets.h720];
@@ -32,7 +33,10 @@ export async function startBroadcast(
   onParticipantCountChange: (count: number) => void,
   onConnectionStateChange: (state: ConnectionState) => void,
 ): Promise<BroadcastSession> {
-  const room = new Room({ dynacast: true });
+  const room = new Room({
+    // dynacast pausa camadas simulcast que nenhum espectador está consumindo — reduz CPU/banda do host.
+    dynacast: true,
+  });
 
   room.on(RoomEvent.ParticipantConnected, () => onParticipantCountChange(room.remoteParticipants.size));
   room.on(RoomEvent.ParticipantDisconnected, () => onParticipantCountChange(room.remoteParticipants.size));
@@ -43,6 +47,9 @@ export async function startBroadcast(
   const [track] = stream.getVideoTracks();
   const { width, height } = track.getSettings();
   const videoCodec = detectBestVideoCodec();
+  // VP9/AV1 são SVC — LiveKit desativa simulcast automaticamente pra eles e usa camadas
+  // temporais/espaciais dentro do próprio stream (CLAUDE.md §Simulcast/SVC). L3T3_KEY = 3
+  // camadas espaciais x 3 temporais, o equilíbrio recomendado pelo LiveKit pra screen share.
   const isSvcCodec = videoCodec === "vp9" || videoCodec === "av1";
 
   const publication = await room.localParticipant.publishTrack(track, {
@@ -50,6 +57,8 @@ export async function startBroadcast(
     simulcast: true,
     videoCodec,
     scalabilityMode: isSvcCodec ? "L3T3_KEY" : undefined,
+    // Fallback automático: se o espectador não suportar o codec preferencial, LiveKit publica
+    // uma track secundária no codec de backup (CLAUDE.md §Codecs).
     backupCodec: true,
     // "maintain-resolution" (default do LiveKit p/ screen share) prioriza nitidez de texto e
     // derruba frames sob pressão de banda — ótimo pra apresentação/código, péssimo pra jogos
@@ -64,7 +73,9 @@ export async function startBroadcast(
 
   const [audioTrack] = stream.getAudioTracks();
   if (audioTrack) {
-    await room.localParticipant.publishTrack(audioTrack, { source: Track.Source.ScreenShareAudio });
+    await room.localParticipant.publishTrack(audioTrack, {
+      source: Track.Source.ScreenShareAudio,
+    });
   }
 
   return {
@@ -80,6 +91,9 @@ export interface PublishStats {
   bitrateKbps: number;
   packetLossPercent: number;
   codec: string;
+  // Chrome expõe isso em outbound-rtp (nem todo browser/versão manda) — "ExternalEncoder" é
+  // hardware; nomes tipo "libvpx"/"libaom"/"openh264" são software. É a única forma de
+  // confirmar se o codec escolhido tá realmente usando GPU sem sair do JS.
   encoderImplementation: string | null;
 }
 
@@ -114,7 +128,8 @@ export async function readPublishStats(publication: LocalTrackPublication): Prom
     let codec = "?";
     const codecId: string | undefined = stat.codecId;
     if (codecId && report.has(codecId)) {
-      const mimeType: string | undefined = report.get(codecId)?.mimeType;
+      const codecStat = report.get(codecId);
+      const mimeType: string | undefined = codecStat?.mimeType;
       if (mimeType) codec = mimeType.replace("video/", "");
     }
 

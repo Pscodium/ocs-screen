@@ -142,6 +142,6 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
 
-# Rust / Tauri
-desktop/src-tauri/target/
-desktop/src-tauri/gen/
+# Electron
+desktop/out/
+desktop/dist/

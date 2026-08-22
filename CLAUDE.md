@@ -31,14 +31,15 @@ A arquitetura deve ser preparada para futuramente suportar:
 
 A tecnologia escolhida para o aplicativo desktop é:
 
-* Tauri
-* Rust
+* Electron
 * React
 * TypeScript
 
 O frontend será responsável pela interface e pela maior parte da lógica de aplicação.
 
-O Rust/Tauri será utilizado quando for necessário acesso a recursos nativos do sistema operacional, especialmente captura de tela, janelas, monitores, integração com GPU e outras funcionalidades que não sejam adequadamente atendidas pelo navegador.
+> **Nota de arquitetura (revisão):** o projeto começou com Tauri/Rust. Migrado para Electron porque `desktopCapturer` (API nativa do Electron) resolve o stream de captura sem passar pelo fluxo de permissão do navegador — evitando a barra "X está compartilhando sua tela" do Chromium/WebView2, algo que uma tentativa de captura nativa via Rust (`Windows.Graphics.Capture`) não conseguiu entregar de forma estável (travava a UI por decode síncrono de frame grande — ver `docs/POC-NATIVE-CAPTURE.md`, arquivado). O transporte de vídeo continua sendo WebRTC padrão via LiveKit — só a captura mudou de API.
+
+Processo principal do Electron (`desktop/src/main`) é usado quando for necessário acesso a recursos nativos do sistema operacional — janela, bandeja, `desktopCapturer` (captura de tela/janela), clipboard.
 
 ## Experiência esperada
 
@@ -162,7 +163,7 @@ Arquitetura:
                          │
                  ScreenShare.exe
                          │
-                    Tauri + Rust
+                     Electron
                          │
                     React + TS
                          │
@@ -184,11 +185,10 @@ Arquitetura:
 
 ### Desktop
 
-* Tauri
-* Rust
+* Electron
 * React
 * TypeScript
-* Vite
+* Vite (via `electron-vite`)
 
 O resultado do build deve ser um aplicativo Windows distribuível como `.exe`.
 
@@ -325,12 +325,14 @@ Os perfis de transmissão devem ser centralizados e configuráveis.
 
 A aplicação deve ser preparada para codecs modernos.
 
-Prioridade:
+Prioridade (revisada em produção):
 
-1. AV1
+1. H.264
 2. VP9
-3. H.264
+3. AV1
 4. VP8
+
+> **Nota:** a ordem original desta spec era AV1 > VP9 > H.264 > VP8 (melhor compressão primeiro). Invertida pra H.264 primeiro porque `RTCRtpSender.getCapabilities()` só diz que o navegador consegue *negociar* um codec, não se existe encoder de hardware por trás — Chromium anuncia AV1/VP9 mesmo quando só tem encoder por software (libaom/libvpx), que é pesado e aumenta latência real, medido em teste (alta latência mesmo com banda de sobra). H.264 tem o encoder de hardware mais garantido em qualquer GPU (NVENC/QuickSync/AMF), o que serve melhor o objetivo de baixa latência (jogos/suporte remoto) do que a compressão melhor do AV1.
 
 O sistema deve detectar suporte do hardware e software.
 
@@ -506,18 +508,12 @@ screen-share/
 │
 ├── desktop/
 │   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── hooks/
-│   │   ├── services/
-│   │   ├── types/
-│   │   └── main.tsx
+│   │   ├── main/          # processo principal do Electron (janela, bandeja, captura, clipboard)
+│   │   ├── preload/        # ponte contextBridge entre main e renderer
+│   │   └── renderer/src/   # app React (components/pages/hooks/services/types)
 │   │
-│   ├── src-tauri/
-│   │   ├── src/
-│   │   ├── Cargo.toml
-│   │   └── tauri.conf.json
-│   │
+│   ├── electron.vite.config.ts
+│   ├── electron-builder.yml
 │   └── package.json
 │
 ├── viewer/
@@ -595,10 +591,9 @@ O espectador não precisa instalar o aplicativo desktop.
 
 Implementar:
 
-* Tauri
+* Electron
 * React
 * TypeScript
-* Rust
 * backend Node
 * LiveKit
 * criação de sala
@@ -681,9 +676,9 @@ Manter separação clara entre:
 * configurações
 * estatísticas
 
-O Rust deve ser utilizado para funcionalidades realmente nativas.
+O processo principal do Electron deve ser utilizado para funcionalidades realmente nativas (janela, bandeja, captura de tela, clipboard).
 
-Não mover lógica desnecessariamente para Rust apenas por utilizar Tauri.
+Não mover lógica desnecessariamente para o processo principal — o que puder viver no processo de renderização (React) fica lá.
 
 O projeto deve evitar complexidade prematura.
 

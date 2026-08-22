@@ -31,40 +31,35 @@ Em dev, host e viewer estão na mesma máquina/rede — STUN/local resolve. Em p
 
 ```bash
 cd desktop
-npm run tauri build
+npm run dist
 ```
 
-Gera `.exe` standalone + instalador NSIS em `desktop/src-tauri/target/release/bundle/nsis/`.
+Gera o instalador NSIS em `desktop/dist/`. Config em [`desktop/electron-builder.yml`](../desktop/electron-builder.yml):
 
-Config em [`desktop/src-tauri/tauri.conf.json`](../desktop/src-tauri/tauri.conf.json):
+- `nsis.perMachine: false` — instala sem exigir admin.
+- `nsis.createDesktopShortcut` / `createStartMenuShortcut` — atalhos automáticos.
 
-- `bundle.windows.nsis.installMode: currentUser` — instala sem exigir admin.
-- `languages: ["PortugueseBR"]` — instalador em pt-BR, sem seletor de idioma (atalho de start menu já é criado por padrão pelo NSIS bundler do Tauri).
+`desktop/.env.production` precisa ter `VITE_BACKEND_URL` apontando pro backend real antes do build — Vite embute isso no bundle, não lê em runtime.
 
 ## Ícones
 
-Já gerados em `desktop/src-tauri/icons/` a partir de um placeholder. Para trocar pelo ícone final:
-
-```bash
-cd desktop && npx tauri icon caminho/para/logo.png
-```
+Em `desktop/build/` (`icon.ico`, `icon.icns`, `icon.png`). Pra trocar, gera um novo `.ico`/`.icns`/`.png` a partir do logo final e substitui os arquivos.
 
 ## Assinatura de código (pendente)
 
 Sem assinatura, Windows SmartScreen alerta o usuário no primeiro uso. Passos quando houver certificado:
 
 1. Obter certificado de assinatura de código (EV recomendado para reputação imediata no SmartScreen).
-2. Configurar `bundle.windows.certificateThumbprint` (ou variáveis `TAURI_SIGNING_PRIVATE_KEY*` para o updater) no `tauri.conf.json` / CI.
-3. Assinar via `signtool` — o Tauri bundler faz isso automaticamente se o certificado estiver instalado no keystore do Windows durante o build.
+2. Configurar `win.certificateFile`/`win.certificatePassword` (ou variáveis `CSC_LINK`/`CSC_KEY_PASSWORD`) no `electron-builder.yml` / CI.
+3. `electron-builder` assina automaticamente via `signtool` durante o build se o certificado estiver configurado.
 
 ## Auto-update (pendente)
 
 Não implementado ainda — requer:
 
-1. Adicionar `@tauri-apps/plugin-updater` (frontend) e `tauri-plugin-updater` (Rust) às dependências.
-2. Gerar par de chaves de assinatura: `npx tauri signer generate`.
-3. Configurar `plugins.updater` no `tauri.conf.json` com a chave pública e a URL do manifest de releases.
-4. Hospedar o manifest (`latest.json`) e os artefatos assinados em algum storage (ex.: GitHub Releases).
+1. Adicionar `electron-updater` às dependências.
+2. Configurar `publish` no `electron-builder.yml` apontando pro provedor de releases (ex.: GitHub Releases).
+3. Chamar `autoUpdater.checkForUpdatesAndNotify()` no processo principal.
 
 Fica de fora do MVP para não acoplar a um provedor de hospedagem antes de decidir onde o app será distribuído.
 

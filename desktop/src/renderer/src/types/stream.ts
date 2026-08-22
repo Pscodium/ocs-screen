@@ -14,7 +14,6 @@ export interface ResolutionConstraint {
 }
 
 // Perfis centralizados — nunca espalhar valores rígidos pelo código (CLAUDE.md §Bitrate).
-// Espelha desktop/src/types/stream.ts — os dois clientes publicam, então compartilham os mesmos perfis.
 export const RESOLUTION_CONSTRAINTS: Record<Exclude<Resolution, "auto">, ResolutionConstraint> = {
   "720p": { width: 1280, height: 720 },
   "1080p": { width: 1920, height: 1080 },
@@ -32,6 +31,7 @@ export const defaultStreamSettings: StreamSettings = {
   quality: "auto",
 };
 
+// Multiplicador aplicado ao bitrate base conforme o nível de qualidade escolhido.
 const QUALITY_MULTIPLIER: Record<Quality, number> = {
   auto: 1,
   low: 0.5,
@@ -49,7 +49,9 @@ const MAX_BITRATE_BPS = 50_000_000;
 const FALLBACK_FPS: Exclude<Fps, "auto"> = 30;
 
 // Calcula pelo tamanho REAL capturado (width/height de `track.getSettings()`), não pelo enum de
-// resolução escolhido — o navegador pode entregar resolução diferente da pedida.
+// resolução escolhido — a captura roda na resolução nativa do monitor (não temos mais controle
+// de constraint na captura, ver capture.ts), então o bitrate precisa acompanhar isso ou a imagem
+// sai borrada/blocada em texto quando o monitor é maior que o perfil selecionado.
 export function getMaxBitrate(width: number, height: number, settings: Pick<StreamSettings, "fps" | "quality">): number {
   const fps = settings.fps === "auto" ? FALLBACK_FPS : settings.fps;
   const qualityMultiplier = QUALITY_MULTIPLIER[settings.quality];

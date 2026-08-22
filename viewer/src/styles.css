@@ -75,60 +75,56 @@ body {
   object-fit: contain;
 }
 
-.video-controls {
+/* Badge de qualidade flutuante — canto superior esquerdo, estilo indicador de transmissão do Discord. */
+.live-quality-badge {
   position: absolute;
-  bottom: 1rem;
+  top: 1rem;
   left: 1rem;
-  right: 1rem;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.video-stats {
-  background: rgba(0, 0, 0, 0.5);
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   padding: 0.4rem 0.75rem;
-  border-radius: 6px;
-  font-size: 0.85rem;
-  color: var(--muted);
-  border: none;
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.video-stats:hover {
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
   color: var(--text);
 }
 
-.btn-fullscreen {
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid #2a2e35;
-  border-radius: 6px;
-  padding: 0.5rem 1rem;
-  cursor: pointer;
-  font-size: 0.85rem;
-}
-
-.btn-fullscreen:hover {
-  background: #1c2027;
-}
-
-/* Popover estilo Discord: só o ícone aparece, o slider desliza pra fora no hover/focus. */
-.volume-control {
+/* Barra de controles — pill única flutuante embaixo, estilo player do Discord/YouTube, em vez
+   de botões soltos espalhados. */
+.video-controls-bar {
+  position: absolute;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
-  position: relative;
+  gap: 0.3rem;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 0.4rem;
 }
 
-.volume-icon-btn {
+.pill-divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+}
+
+.pill-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  background: rgba(0, 0, 0, 0.5);
+  width: 36px;
+  height: 36px;
+  background: transparent;
   border: none;
   border-radius: 50%;
   color: var(--text);
@@ -136,35 +132,19 @@ body {
   line-height: 1;
   cursor: pointer;
   transition: background 0.15s ease;
-  position: relative;
-  z-index: 2;
 }
 
-.volume-icon-btn:hover {
-  background: rgba(0, 0, 0, 0.7);
+.pill-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
 }
 
-.volume-flyout {
-  display: flex;
-  align-items: center;
-  overflow: hidden;
-  max-width: 0;
-  opacity: 0;
-  margin-left: 0;
-  background: rgba(0, 0, 0, 0.5);
-  border-radius: 999px;
-  transition:
-    max-width 0.2s ease,
-    opacity 0.15s ease,
-    margin-left 0.2s ease;
+.pill-btn-static {
+  cursor: default;
+  color: var(--muted);
 }
 
-.volume-control:hover .volume-flyout,
-.volume-control:focus-within .volume-flyout {
-  max-width: 110px;
-  opacity: 1;
-  margin-left: 0.4rem;
-  padding: 0 0.9rem 0 0.7rem;
+.pill-btn-static:hover {
+  background: transparent;
 }
 
 .btn-unmute-hint {
@@ -177,16 +157,72 @@ body {
     transform: scale(1);
   }
   50% {
-    transform: scale(1.2);
+    transform: scale(1.15);
   }
 }
 
-.volume-slider {
+/* Popover estilo Discord: só o ícone aparece na pill, o slider desliza pra fora no hover/focus. */
+.pill-popover-group {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.pill-flyout {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  max-width: 0;
+  opacity: 0;
+  transition:
+    max-width 0.2s ease,
+    opacity 0.15s ease;
+}
+
+.pill-popover-group:hover .pill-flyout,
+.pill-popover-group:focus-within .pill-flyout {
+  max-width: 100px;
+  opacity: 1;
+  padding-right: 0.6rem;
+}
+
+.pill-popover-group:hover .pill-flyout-wide,
+.pill-popover-group:focus-within .pill-flyout-wide {
+  max-width: 150px;
+  gap: 0.5rem;
+}
+
+.pill-flyout-value {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pill-slider {
   width: 80px;
   height: 4px;
   accent-color: var(--accent);
   cursor: pointer;
   flex-shrink: 0;
+}
+
+/* Detalhes de estatísticas — flyout acima da pill, some sozinho ao clicar de novo. */
+.stats-flyout {
+  position: absolute;
+  bottom: calc(100% + 0.6rem);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 0.75rem;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 8px;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 /* Landing / criação de transmissão */

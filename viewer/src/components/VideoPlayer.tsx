@@ -1,13 +1,16 @@
 import { useEffect, useState, type RefObject } from "react";
 import type { StreamStats } from "../hooks/useRoomStream";
+import { PLAYOUT_DELAY_MAX_MS } from "../hooks/useRoomStream";
 
 interface VideoPlayerProps {
   videoRef: RefObject<HTMLVideoElement | null>;
   stats: StreamStats | null;
   hasAudio: boolean;
+  playoutDelayMs: number;
+  onPlayoutDelayChange: (ms: number) => void;
 }
 
-export function VideoPlayer({ videoRef, stats, hasAudio }: VideoPlayerProps) {
+export function VideoPlayer({ videoRef, stats, hasAudio, playoutDelayMs, onPlayoutDelayChange }: VideoPlayerProps) {
   const [containerRef, setContainerRef] = useState<HTMLDivElement | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [volume, setVolume] = useState(1);
@@ -42,30 +45,62 @@ export function VideoPlayer({ videoRef, stats, hasAudio }: VideoPlayerProps) {
         muted
         className="video-element"
       />
-      <div className="video-controls">
+
+      {stats && (
+        <div className="live-quality-badge">
+          <span className="live-dot" />
+          {stats.resolution} · {stats.fps} FPS
+        </div>
+      )}
+
+      <div className="video-controls-bar">
         {stats && (
-          <button className="video-stats" onClick={() => setShowDetails((v) => !v)}>
-            {stats.resolution} • {stats.fps} FPS
-            {showDetails && (
-              <>
-                {" "}
-                • {stats.bitrateKbps > 0 ? `${(stats.bitrateKbps / 1000).toFixed(1)} Mbps` : "—"} • {stats.latencyMs}
-                ms • {stats.packetLossPercent}% perda
-              </>
-            )}
+          <button className="pill-btn" onClick={() => setShowDetails((v) => !v)} title="Estatísticas da conexão">
+            📊
           </button>
         )}
+
+        {showDetails && stats && (
+          <div className="stats-flyout">
+            <span>{stats.bitrateKbps > 0 ? `${(stats.bitrateKbps / 1000).toFixed(1)} Mbps` : "—"}</span>
+            <span>{stats.latencyMs}ms buffer</span>
+            <span>{stats.packetLossPercent}% perda</span>
+          </div>
+        )}
+
+        <div className="pill-divider" />
+
+        <div className="pill-popover-group" title={`Suavização: ${playoutDelayMs}ms de buffer extra`}>
+          <button className="pill-btn" aria-label="Ajustar suavização">
+            🎚️
+          </button>
+          <div className="pill-flyout pill-flyout-wide">
+            <span className="pill-flyout-value">{playoutDelayMs}ms</span>
+            <input
+              type="range"
+              min={0}
+              max={PLAYOUT_DELAY_MAX_MS}
+              step={25}
+              value={playoutDelayMs}
+              onChange={(e) => onPlayoutDelayChange(Number(e.target.value))}
+              className="pill-slider"
+            />
+          </div>
+        </div>
+
+        <div className="pill-divider" />
+
         {hasAudio ? (
-          <div className="volume-control">
+          <div className="pill-popover-group">
             <button
-              className={`volume-icon-btn ${muted ? "btn-unmute-hint" : ""}`}
+              className={`pill-btn ${muted ? "btn-unmute-hint" : ""}`}
               onClick={() => setMuted((m) => !m)}
               aria-label={muted ? "Ativar som" : "Mudo"}
               title={muted ? "Clique para ativar o som" : "Mudo"}
             >
               {muted || volume === 0 ? "🔇" : volume < 0.5 ? "🔉" : "🔊"}
             </button>
-            <div className="volume-flyout">
+            <div className="pill-flyout">
               <input
                 type="range"
                 min={0}
@@ -77,17 +112,20 @@ export function VideoPlayer({ videoRef, stats, hasAudio }: VideoPlayerProps) {
                   setVolume(next);
                   setMuted(next === 0);
                 }}
-                className="volume-slider"
+                className="pill-slider"
               />
             </div>
           </div>
         ) : (
-          <span className="video-stats" title="O host não está compartilhando áudio">
-            🔇 sem áudio
+          <span className="pill-btn pill-btn-static" title="O host não está compartilhando áudio">
+            🔇
           </span>
         )}
-        <button onClick={toggleFullscreen} className="btn-fullscreen">
-          Tela cheia
+
+        <div className="pill-divider" />
+
+        <button onClick={toggleFullscreen} className="pill-btn" title="Tela cheia" aria-label="Tela cheia">
+          ⛶
         </button>
       </div>
     </div>

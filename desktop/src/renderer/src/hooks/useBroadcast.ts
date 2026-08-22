@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState } from "livekit-client";
-import { captureScreen, stopCapture } from "../services/capture";
+import { captureScreen } from "../services/capture";
 import { createRoom, endRoom } from "../services/backend";
-import { startBroadcast, readPublishStats, type BroadcastSession } from "../services/publish";
+import { startBroadcast, readPublishStats, type BroadcastSession } from "../services/livekit";
 import type { StreamSettings } from "../types/stream";
+import type { CaptureSource } from "../../../preload/index";
 
 export type BroadcastState = "idle" | "starting" | "live" | "error";
 
@@ -28,17 +29,22 @@ export function useBroadcast() {
   const [info, setInfo] = useState<BroadcastInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const streamRef = useRef<MediaStream | null>(null);
+  const stopCaptureRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<BroadcastSession | null>(null);
   const roomIdRef = useRef<string | null>(null);
   const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const start = useCallback(async (settings: StreamSettings) => {
+  const start = useCallback(async (settings: StreamSettings, source: CaptureSource) => {
     setState("starting");
     setError(null);
     try {
-      const { stream, settings: actualSettings, hasAudio } = await captureScreen(settings);
-      streamRef.current = stream;
+      const { stream, settings: actualSettings, hasAudio, stopAll } = await captureScreen(
+        settings,
+        source,
+        // Track pode parar sozinha (ex.: usuário fecha a janela compartilhada).
+        () => stop(),
+      );
+      stopCaptureRef.current = stopAll;
 
       const room = await createRoom(settings);
       roomIdRef.current = room.roomId;
@@ -52,9 +58,6 @@ export function useBroadcast() {
         (connectionState) => setInfo((prev) => (prev ? { ...prev, connectionState } : prev)),
       );
       sessionRef.current = session;
-
-      // Usuário pode parar o compartilhamento pelo diálogo nativo do navegador/SO.
-      stream.getVideoTracks()[0].onended = () => stop();
 
       setInfo({
         roomId: room.roomId,
@@ -99,11 +102,11 @@ export function useBroadcast() {
     if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
     statsIntervalRef.current = null;
 
-    if (streamRef.current) stopCapture(streamRef.current);
+    if (stopCaptureRef.current) stopCaptureRef.current();
     if (sessionRef.current) await sessionRef.current.disconnect();
     if (roomIdRef.current) await endRoom(roomIdRef.current).catch(() => {});
 
-    streamRef.current = null;
+    stopCaptureRef.current = null;
     sessionRef.current = null;
     roomIdRef.current = null;
     setInfo(null);

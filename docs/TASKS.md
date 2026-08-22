@@ -10,7 +10,7 @@
 - [x] criar uma tela legal no app web para criação de screen shares também — `home-card` com sombra/borda, glow radial de fundo, layout tipo landing em vez de formulário solto
 - [x] deixar com mais cara de profissional ambas as aplicações visuais — tokens `--accent-2` pra gradiente/links, cards com elevação (`box-shadow`) em vez de fundo plano, `live-card` também virou card com borda/sombra no viewer
 
-## Sprint 3 — Mudanças de reprodução/performance
+## Sprint 3 — Mudanças de reprodução
 
 
 ## Sprint 4 — Pequenas melhorias

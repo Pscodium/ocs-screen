@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState, Room, RoomEvent, Track, type RemoteTrack } from "livekit-client";
 import { fetchViewerToken } from "../services/api";
 
@@ -13,6 +13,12 @@ export interface StreamStats {
 }
 
 const STATS_POLL_MS = 2000;
+
+// Teto baixo de propósito: 2s de atraso destruiria a experiência de baixa latência que é o
+// objetivo do produto (CLAUDE.md §Latência) — isso aqui é só um "colchão" pra jitter, não buffer
+// de streaming tradicional.
+export const PLAYOUT_DELAY_MAX_MS = 1000;
+export const PLAYOUT_DELAY_DEFAULT_MS = 0;
 
 let lastBytesReceived = 0;
 let lastTimestamp = 0;
@@ -59,6 +65,20 @@ export function useRoomStream(roomId: string) {
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<StreamStats | null>(null);
   const [hasAudio, setHasAudio] = useState(false);
+  const [playoutDelayMs, setPlayoutDelayMsState] = useState(PLAYOUT_DELAY_DEFAULT_MS);
+
+  // Recebedores das tracks já inscritas — pra poder reaplicar o hint ao vivo quando o usuário
+  // mexe no slider, sem precisar reconectar. Áudio e vídeo ficam com o mesmo valor pra não
+  // dessincronizar lip-sync.
+  const receiversRef = useRef<Set<RTCRtpReceiver>>(new Set());
+
+  const applyPlayoutDelay = useCallback((ms: number) => {
+    const clamped = Math.max(0, Math.min(PLAYOUT_DELAY_MAX_MS, ms));
+    setPlayoutDelayMsState(clamped);
+    for (const receiver of receiversRef.current) {
+      receiver.playoutDelayHint = clamped / 1000;
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,6 +98,11 @@ export function useRoomStream(roomId: string) {
       // Anexar áudio e vídeo no mesmo elemento combina as duas tracks num único MediaStream
       // (attachToElement do livekit-client) — o <video> toca o som junto, sem <audio> separado.
       track.attach(videoRef.current);
+
+      if (track.receiver) {
+        receiversRef.current.add(track.receiver);
+        track.receiver.playoutDelayHint = playoutDelayMs / 1000;
+      }
 
       if (track.kind === Track.Kind.Audio) {
         setHasAudio(true);
@@ -101,6 +126,7 @@ export function useRoomStream(roomId: string) {
     });
 
     room.on(RoomEvent.TrackUnsubscribed, (track: RemoteTrack) => {
+      if (track.receiver) receiversRef.current.delete(track.receiver);
       if (track.kind === Track.Kind.Audio) setHasAudio(false);
     });
 
@@ -125,9 +151,11 @@ export function useRoomStream(roomId: string) {
     return () => {
       cancelled = true;
       if (statsInterval) clearInterval(statsInterval);
+      receiversRef.current.clear();
       room.disconnect();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
-  return { videoRef, phase, connectionState, error, stats, hasAudio };
+  return { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs: applyPlayoutDelay };
 }

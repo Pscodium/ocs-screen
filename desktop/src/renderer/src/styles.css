@@ -1,0 +1,648 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e0f13;
+  --surface: #17191f;
+  --surface-2: #1e2129;
+  --border: #2a2d36;
+  --text: #e8eaed;
+  --muted: #8a8f98;
+  --accent: #5865f2;
+  --accent-hover: #4752c4;
+  --danger: #ed4245;
+  --danger-hover: #c53437;
+  --live: #23a55a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    "Segoe UI Variable",
+    "Segoe UI",
+    system-ui,
+    -apple-system,
+    sans-serif;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.app-shell-widget {
+  border-radius: 12px;
+}
+
+/* Titlebar */
+.titlebar {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 12px;
+  background: var(--surface);
+  flex-shrink: 0;
+  -webkit-app-region: drag;
+}
+
+.titlebar-compact {
+  height: 28px;
+}
+
+.titlebar-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.titlebar-controls {
+  display: flex;
+  height: 100%;
+}
+
+.titlebar-btn {
+  -webkit-app-region: no-drag;
+  width: 46px;
+  height: 100%;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.titlebar-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.titlebar-btn-close:hover {
+  background: var(--danger);
+  color: white;
+}
+
+/* Content */
+.app-content {
+  flex: 1;
+  overflow-y: auto;
+  user-select: text;
+}
+
+.logo-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 22%;
+  background: var(--accent);
+  color: white;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.home-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 2.25rem 1.5rem 1.75rem;
+  gap: 0.4rem;
+  text-align: center;
+}
+
+.home-page h1 {
+  margin: 0.9rem 0 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.subtitle {
+  color: var(--muted);
+  margin: 0.15rem 0 1.75rem;
+  font-size: 0.88rem;
+}
+
+/* Settings form */
+.settings-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.settings-field select {
+  appearance: none;
+  background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%238a8f98' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    no-repeat right 0.85rem center;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem 2.2rem 0.6rem 0.75rem;
+  font-size: 0.9rem;
+  font-weight: 400;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.settings-field select:hover {
+  border-color: #3a3e4a;
+}
+
+.settings-field select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.settings-hint {
+  margin: -0.4rem 0 0;
+  padding: 0.6rem 0.7rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  text-align: left;
+}
+
+.settings-field-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.85rem;
+  font-weight: 400;
+  color: var(--text);
+}
+
+.settings-field-checkbox input {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+/* Buttons */
+.btn-primary,
+.btn-secondary,
+.btn-danger {
+  border: none;
+  border-radius: 8px;
+  padding: 0.75rem 1.2rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+  transition: background 0.1s ease;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  width: auto;
+  white-space: nowrap;
+}
+
+.btn-secondary:hover {
+  background: var(--border);
+}
+
+.btn-danger {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  margin-top: 1.5rem;
+}
+
+.btn-danger:hover {
+  background: var(--danger);
+  color: white;
+}
+
+.error-text {
+  color: var(--danger);
+  font-size: 0.85rem;
+  margin: 0 0 0.75rem;
+}
+
+/* Live card — barra compacta estilo overlay de screen share do Discord, tamanho fixo (ver
+   WIDGET_SIZE no main process — a janela não redimensiona nesse modo, então tudo aqui precisa
+   caber sem depender de espaço extra). */
+.live-card {
+  height: 100%;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.4rem;
+}
+
+.live-top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.live-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--live);
+  min-width: 0;
+}
+
+.live-viewer-count {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--live);
+  flex-shrink: 0;
+  animation: pulse 1.6s infinite;
+}
+
+.live-badge-warning {
+  color: #f0b132;
+}
+
+.live-dot-warning {
+  background: #f0b132;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.live-stop-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--danger);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  transition: background 0.12s ease, transform 0.1s ease;
+}
+
+.live-stop-btn svg {
+  display: block;
+}
+
+.live-stop-btn:hover {
+  background: var(--danger-hover);
+}
+
+.live-stop-btn:active {
+  transform: scale(0.94);
+}
+
+.live-link-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  flex-shrink: 0;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.live-link-btn:hover {
+  background: var(--surface-2);
+  border-color: #3a3e4a;
+}
+
+.live-link-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-link-copy {
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.live-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  flex-shrink: 0;
+  scrollbar-width: none;
+}
+
+.live-stats::-webkit-scrollbar {
+  display: none;
+}
+
+.live-stats span {
+  flex-shrink: 0;
+}
+
+/* Seletor de fonte — estilo "Ir ao vivo" do Discord (a janela expande enquanto isso fica
+   aberto, ver window:set-picker-mode no main process). */
+.picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.picker-modal {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  flex-shrink: 0;
+}
+
+.picker-header h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.picker-close {
+  background: var(--surface-2);
+  border: none;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.picker-close:hover {
+  background: var(--danger);
+  color: white;
+}
+
+.picker-tabs {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0 1.25rem 0.75rem;
+  flex-shrink: 0;
+}
+
+.picker-tab {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.45rem 0.9rem;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.picker-tab:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.picker-tab-active,
+.picker-tab-active:hover {
+  background: var(--accent);
+  color: white;
+}
+
+.picker-tab-count {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+}
+
+.picker-tab:not(.picker-tab-active) .picker-tab-count {
+  background: var(--surface-2);
+}
+
+.picker-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 1.25rem 1.25rem;
+  text-align: left;
+}
+
+.picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.75rem;
+}
+
+/* Um clique já compartilha (sem passo de confirmação extra) — feedback tem que ser instantâneo:
+   hover reage rápido, o clique escala pra baixo na hora, sem esperar nada de rede. */
+.picker-tile {
+  background: var(--surface);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  padding: 0.5rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  text-align: left;
+  transition: border-color 0.08s ease, background 0.08s ease, transform 0.08s ease;
+}
+
+.picker-tile:hover {
+  background: var(--surface-2);
+  border-color: #3a3e4a;
+}
+
+.picker-tile:active {
+  transform: scale(0.97);
+}
+
+.picker-tile:disabled {
+  cursor: default;
+}
+
+.picker-tile-pending {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.picker-thumbnail-wrap {
+  position: relative;
+}
+
+.picker-thumbnail {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  border-radius: 5px;
+  background: var(--surface-2);
+  display: block;
+}
+
+.picker-app-icon {
+  position: absolute;
+  bottom: 0.35rem;
+  left: 0.35rem;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 2px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.picker-tile-spinner {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.picker-tile-label {
+  font-size: 0.75rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-tile-skeleton {
+  aspect-ratio: 16 / 10;
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}

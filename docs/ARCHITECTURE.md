@@ -6,7 +6,7 @@ Referência normativa: [`CLAUDE.md`](../CLAUDE.md). Este doc traduz aquilo em de
 
 ```
 screen-share/
-├── desktop/     Tauri (Rust) + React + TS — app Windows .exe, host transmite
+├── desktop/     Electron + React + TS — app Windows .exe, host transmite
 ├── viewer/      React + TS (Vite) — web, espectador assiste via browser
 ├── backend/     Node + Fastify + TS — signaling: salas, tokens LiveKit
 └── infra/       docker-compose (LiveKit + Redis dev)
@@ -14,8 +14,8 @@ screen-share/
 
 ## Fluxo Fase 1
 
-1. Host abre `ScreenShare.exe` (Tauri).
-2. Clica "Compartilhar tela" → Tauri lista monitores/janelas (via `getDisplayMedia` no MVP; API nativa Rust fica p/ Fase 4).
+1. Host abre `ScreenShare.exe` (Electron).
+2. Clica "Compartilhar tela" → seletor próprio do app lista telas/janelas (via `desktopCapturer`, processo principal do Electron — não passa pelo diálogo/permissão do navegador).
 3. Desktop app chama `POST /rooms` no backend → recebe `roomId` + `hostToken` (LiveKit JWT).
 4. Desktop conecta ao LiveKit (`livekit-client`) publica track de tela.
 5. Backend devolve link `https://<viewer>/s/{roomId}`.
@@ -29,26 +29,19 @@ SFU, signaling, NAT traversal (STUN/TURN), reconexão, simulcast — delegados a
 
 ## Separação de responsabilidades (código)
 
-- `desktop/src/services/livekit.ts` — conexão/publish, isolado da UI.
-- `desktop/src/services/capture.ts` — `getDisplayMedia`, leitura de `getSettings()`.
-- `desktop/src-tauri/` — só o que exige nativo (janela custom: fullscreen/minimize/drag; futuramente captura nativa).
+- `desktop/src/renderer/src/services/livekit.ts` — conexão/publish, isolado da UI.
+- `desktop/src/renderer/src/services/capture.ts` — `desktopCapturer` via IPC + `getUserMedia` com `chromeMediaSourceId`, leitura de `getSettings()`.
+- `desktop/src/main/` — só o que exige nativo (janela frameless, bandeja, `desktopCapturer.getSources()`, clipboard).
+- `desktop/src/preload/` — ponte `contextBridge` entre main e renderer (`window.screenshare.*`).
 - `viewer/src/services/livekit.ts` — conexão/subscribe, isolado da UI.
 - `backend/src/routes/rooms.ts` — criação de sala, geração de token.
 - `backend/src/services/livekit.ts` — wrapper do LiveKit Server SDK.
 
-## Fase 4 — captura nativa e hardware encoding (plano)
+## Captura nativa — decisão tomada (Electron + desktopCapturer)
 
-Ainda não implementado — depende de testes em hardware real, então fica documentado antes de codar às cegas.
+Uma tentativa anterior de captura nativa via Rust (`windows-rs` + `Windows.Graphics.Capture`, mantendo o app em Tauri) conseguiu tirar a barra de compartilhamento do Chromium, mas travava o app inteiro — decodificar o frame (megabytes) de forma síncrona na thread da UI saturava o processo. Registro completo em `docs/POC-NATIVE-CAPTURE.md` (arquivado).
 
-Hoje a captura usa `getDisplayMedia()` no Chromium embutido do WebView2, que no Windows já usa Desktop Duplication API (DXGI) internamente e permite ao Chromium escolher hardware encoder (H.264 via Media Foundation) quando o SO/GPU suportam — ou seja, uma parte do ganho de "hardware encoding" do CLAUDE.md já vem de graça pelo browser engine.
-
-Onde captura nativa Rust justificaria a complexidade:
-
-1. **Captura de janela específica sem o picker do SO** — hoje `getDisplayMedia` sempre abre o diálogo nativo do Windows; para pular direto para uma janela pré-selecionada seria necessário `windows-rs` + `Windows.Graphics.Capture` (WGC) e alimentar os frames manualmente via `MediaStreamTrackGenerator`/inserção de frames no pipeline WebRTC.
-2. **Captura de jogos em exclusive fullscreen** — WGC lida melhor que Desktop Duplication com jogos DX12/Vulkan em alguns cenários; validar caso a caso.
-3. **Controle explícito de encoder (NVENC/QuickSync/AMF)** — exigiria sair do pipeline `getUserMedia`/`RTCPeerConnection` padrão do browser e usar WebCodecs (`VideoEncoder`) com `codedWidth`/hardwareAcceleration: "prefer-hardware", inserindo os `EncodedVideoChunk` manualmente via `RTCRtpScriptTransform`/insertable streams no LiveKit client.
-
-Antes de investir nisso: medir se o encoder de software do browser já satura CPU nos perfis 1440p60/4K30 em hardware de teste real. Só migrar para pipeline custom se os números mostrarem necessidade — CLAUDE.md pede para não reinventar o que o browser/LiveKit já resolve bem.
+A solução que ficou foi trocar o shell inteiro pra Electron e usar `desktopCapturer` (API estável do Electron, é o que Discord/Slack/Teams usam) — o `MediaStream` resultante ainda entra no `publishTrack()` do LiveKit normalmente, **sem mudar nada do transporte/encoding**. Só a captura mudou de API; o resto da pilha (WebRTC via LiveKit, hardware encoding decidido pelo browser embutido) continua igual.
 
 ## Não fazer no MVP
 

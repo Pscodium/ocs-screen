@@ -6,14 +6,14 @@ Especificação completa em [`CLAUDE.md`](./CLAUDE.md). Contexto de arquitetura 
 
 ## Estrutura
 
-- `desktop/` — app Windows (Tauri + React), usado por quem transmite
+- `desktop/` — app Windows (Electron + React), usado por quem transmite
 - `viewer/` — web app (React), usado por quem assiste (sem instalação)
 - `backend/` — API Fastify: salas + tokens LiveKit
 - `infra/` — LiveKit dev via docker-compose
 
 ## Rodando localmente
 
-Pré-requisitos: Node 20+, Rust stable + toolchain do [Tauri v2](https://v2.tauri.app/start/prerequisites/), Docker.
+Pré-requisitos: Node 20+, Docker.
 
 ```bash
 cp .env.example .env
@@ -28,21 +28,15 @@ cd backend && npm install && npm run dev
 cd viewer && npm install && npm run dev
 
 # 4. Desktop (outro terminal)
-cd desktop && npm install && npm run tauri dev
+cd desktop && npm install && npm run dev
 ```
 
-Fluxo: abrir o app desktop → "Compartilhar tela" → copiar link → abrir link no navegador (viewer).
-
-## Ícones do app desktop
-
-`desktop/src-tauri/tauri.conf.json` referencia ícones em `desktop/src-tauri/icons/` que ainda não existem neste repo. Antes do primeiro build, gere-os a partir de um PNG fonte:
-
-```bash
-cd desktop && npx tauri icon caminho/para/logo.png
-```
+Fluxo: abrir o app desktop → "Compartilhar tela" → escolher tela/janela no seletor do próprio app → copiar link → abrir link no navegador (viewer).
 
 ## Build de produção (.exe)
 
 ```bash
-cd desktop && npm run tauri build
+cd desktop && npm run dist
 ```
+
+Gera o instalador NSIS em `desktop/dist/`.

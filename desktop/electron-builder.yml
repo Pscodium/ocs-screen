@@ -1,0 +1,16 @@
+appId: com.ocsscreen.app
+productName: ScreenShare
+directories:
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+win:
+  target: nsis
+  icon: build/icon.ico
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
