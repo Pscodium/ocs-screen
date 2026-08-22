@@ -57,9 +57,11 @@ export async function captureScreen(
         chromeMediaSourceId: source.id,
       },
     },
-    // Áudio do sistema via loopback só funciona compartilhando uma tela inteira (Windows) —
-    // capturar áudio de uma janela específica não é suportado pelo desktopCapturer.
-    audio: source.type === "screen" ? { mandatory: { chromeMediaSource: "desktop" } } : false,
+    // `chromeMediaSource: "desktop"` no áudio pede o loopback do SISTEMA INTEIRO — não é isolado
+    // por janela (a Windows não expõe captura de áudio de um app específico por essa API), mas
+    // nada impede de pedir independente do tipo de fonte de vídeo escolhida. Antes isso ficava
+    // bloqueado pra janela achando que não funcionava — nunca foi testado de verdade.
+    audio: { mandatory: { chromeMediaSource: "desktop" } },
   };
 
   const stream = await withTimeout(

@@ -13,10 +13,10 @@ interface HomePageProps {
 export function HomePage({ broadcast }: HomePageProps) {
   const [settings, setSettings] = useState(defaultStreamSettings);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const { state, info, error, start, stop } = broadcast;
+  const { state, info, error, start, stop, swapSource, swapping } = broadcast;
 
   if (state === "live" && info) {
-    return <LiveCard info={info} onStop={stop} />;
+    return <LiveCard info={info} swapping={swapping} onStop={stop} onSwapSource={swapSource} />;
   }
 
   return (

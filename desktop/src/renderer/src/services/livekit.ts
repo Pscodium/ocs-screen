@@ -13,6 +13,7 @@ import { detectBestVideoCodec } from "./codecs";
 export interface BroadcastSession {
   room: Room;
   publication: LocalTrackPublication;
+  audioPublication: LocalTrackPublication | null;
   disconnect: () => Promise<void>;
 }
 
@@ -72,8 +73,9 @@ export async function startBroadcast(
   });
 
   const [audioTrack] = stream.getAudioTracks();
+  let audioPublication: LocalTrackPublication | null = null;
   if (audioTrack) {
-    await room.localParticipant.publishTrack(audioTrack, {
+    audioPublication = await room.localParticipant.publishTrack(audioTrack, {
       source: Track.Source.ScreenShareAudio,
     });
   }
@@ -81,10 +83,43 @@ export async function startBroadcast(
   return {
     room,
     publication,
+    audioPublication,
     disconnect: async () => {
       await room.disconnect();
     },
   };
+}
+
+// Troca a fonte da transmissão sem derrubar a conexão dos espectadores — `replaceTrack` troca só
+// o MediaStreamTrack por trás do RTCRtpSender já existente, sem renegociar SDP/ICE. Espectadores
+// não veem reconexão nenhuma, só o vídeo mudando.
+export async function swapVideoTrack(session: BroadcastSession, newTrack: MediaStreamTrack): Promise<void> {
+  await session.publication.track?.replaceTrack(newTrack);
+}
+
+// Áudio é mais delicado: se a fonte antiga tinha áudio e a nova não (ou vice-versa), não dá só
+// pra trocar a track — precisa publicar/despublicar. Só troca "no lugar" quando os dois lados têm.
+export async function swapAudioTrack(
+  session: BroadcastSession,
+  newAudioTrack: MediaStreamTrack | undefined,
+): Promise<LocalTrackPublication | null> {
+  if (session.audioPublication?.track && newAudioTrack) {
+    await session.audioPublication.track.replaceTrack(newAudioTrack);
+    return session.audioPublication;
+  }
+
+  if (session.audioPublication && !newAudioTrack) {
+    await session.room.localParticipant.unpublishTrack(session.audioPublication.track!);
+    return null;
+  }
+
+  if (!session.audioPublication && newAudioTrack) {
+    return session.room.localParticipant.publishTrack(newAudioTrack, {
+      source: Track.Source.ScreenShareAudio,
+    });
+  }
+
+  return session.audioPublication;
 }
 
 export interface PublishStats {

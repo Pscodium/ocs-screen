@@ -117,6 +117,23 @@ ipcMain.on("window:toggle-maximize", () => {
 ipcMain.handle("window:is-maximized", () => mainWindow?.isMaximized() ?? false);
 ipcMain.on("window:close", () => mainWindow?.close());
 
+// Aplica o tamanho/posição/travas do widget — usado tanto ao entrar ao vivo quanto ao voltar de
+// um seletor de fonte aberto durante uma troca de fonte ao vivo (mesma forma dos dois casos).
+function applyWidgetBounds(): void {
+  if (!mainWindow) return;
+  // ORDEM IMPORTA no Windows: setSize() enquanto resizable já é false é ignorado silenciosamente
+  // em várias versões do Electron/Chromium (setResizable(false) muda o estilo nativo da janela —
+  // WS_THICKFRAME — de um jeito que o SetWindowPos do resize seguinte não aplica). Redimensiona
+  // PRIMEIRO, só trava resizable DEPOIS — bug real, já apanhado uma vez (não inverter de novo).
+  mainWindow.setSize(WIDGET_SIZE.width, WIDGET_SIZE.height);
+  mainWindow.setResizable(false);
+  mainWindow.setAlwaysOnTop(true);
+  const display = screen.getPrimaryDisplay();
+  const x = display.workArea.x + display.workArea.width - WIDGET_SIZE.width - WIDGET_MARGIN;
+  const y = display.workArea.y + display.workArea.height - WIDGET_SIZE.height - WIDGET_MARGIN;
+  mainWindow.setPosition(Math.round(x), Math.round(y));
+}
+
 // Encolhe/restaura a janela quando a transmissão fica ao vivo (widget compacto sempre-no-topo).
 // Sem redimensionar à mão nesse modo — tamanho fixo, igual ao overlay de screen share do Discord.
 ipcMain.on("window:set-widget-mode", (_event, isLive: boolean) => {
@@ -127,17 +144,7 @@ ipcMain.on("window:set-widget-mode", (_event, isLive: boolean) => {
     // setSize() é clampado pelo minWidth/minHeight definidos na criação da janela (340x200) —
     // sem abaixar o mínimo primeiro, o widget nunca encolhia de verdade pra 340x140.
     mainWindow.setMinimumSize(WIDGET_SIZE.width, WIDGET_SIZE.height);
-    // ORDEM IMPORTA no Windows: setSize() enquanto resizable já é false é ignorado silenciosamente
-    // em várias versões do Electron/Chromium (setResizable(false) muda o estilo nativo da janela
-    // — WS_THICKFRAME — de um jeito que o SetWindowPos do resize seguinte não aplica). Redimensiona
-    // PRIMEIRO, só trava resizable DEPOIS — bug real, já apanhado uma vez (não inverter de novo).
-    mainWindow.setSize(WIDGET_SIZE.width, WIDGET_SIZE.height);
-    mainWindow.setResizable(false);
-    mainWindow.setAlwaysOnTop(true);
-    const display = screen.getPrimaryDisplay();
-    const x = display.workArea.x + display.workArea.width - WIDGET_SIZE.width - WIDGET_MARGIN;
-    const y = display.workArea.y + display.workArea.height - WIDGET_SIZE.height - WIDGET_MARGIN;
-    mainWindow.setPosition(Math.round(x), Math.round(y));
+    applyWidgetBounds();
     isWidgetMode = true;
   } else {
     isWidgetMode = false;
@@ -151,15 +158,20 @@ ipcMain.on("window:set-widget-mode", (_event, isLive: boolean) => {
 
 // Expande a janela temporariamente enquanto o seletor de fonte tá aberto — a grade de
 // telas/janelas precisa de mais espaço que a janela normal do app pra não ficar espremida.
+// Também é usado pra trocar de fonte com a transmissão já ao vivo (a partir do widget).
 ipcMain.on("window:set-picker-mode", (_event, open: boolean) => {
   if (!mainWindow) return;
   if (open) {
+    // Se vier do modo widget (troca de fonte ao vivo), a janela tá resizable:false — precisa
+    // destravar ANTES de redimensionar (mesmo bug de ordem citado em applyWidgetBounds).
+    mainWindow.setResizable(true);
+    mainWindow.setAlwaysOnTop(false);
     mainWindow.setSize(PICKER_SIZE.width, PICKER_SIZE.height);
     mainWindow.center();
-  } else if (!isWidgetMode) {
-    // Se a transmissão já ficou ao vivo enquanto o seletor tava fechando (a captura/publish
-    // leva um tempinho depois de escolher a fonte), quem manda no tamanho da janela agora é o
-    // widget — não desfaz isso voltando pro tamanho normal por baixo dele.
+  } else if (isWidgetMode) {
+    // Voltando de uma troca de fonte ao vivo — reaplica o widget em vez do tamanho normal.
+    applyWidgetBounds();
+  } else {
     mainWindow.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
     mainWindow.center();
   }

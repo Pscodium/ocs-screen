@@ -340,6 +340,42 @@ body {
   }
 }
 
+.live-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.live-swap-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  transition: background 0.12s ease, transform 0.1s ease;
+}
+
+.live-swap-btn:hover:not(:disabled) {
+  background: var(--border);
+}
+
+.live-swap-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.live-swap-btn-spinning svg {
+  animation: spin 0.9s linear infinite;
+}
+
 .live-stop-btn {
   flex-shrink: 0;
   width: 22px;
