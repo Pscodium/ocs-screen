@@ -1,14 +1,65 @@
 import type { FastifyInstance } from "fastify";
 import { config } from "../config.js";
-import { createHostToken, createViewerToken } from "../services/livekit.js";
-import { cancelRoomCleanup, createRoom, deleteRoom, getRoom } from "../services/rooms.js";
-import { generateIdentity } from "../utils/ids.js";
-import type { CreateRoomRequest, CreateRoomResponse, ViewerTokenResponse } from "../types/room.js";
+import { createHostToken, createViewerToken, getLiveRoomIds } from "../services/livekit.js";
+import { cancelRoomCleanup, createRoom, deleteRoom, getRoom, listRooms, SlugTakenError } from "../services/rooms.js";
+import { generateIdentity, isValidSlug, normalizeSlug } from "../utils/ids.js";
+import type {
+  CreateRoomRequest,
+  CreateRoomResponse,
+  ListRoomsResponse,
+  ViewerTokenResponse,
+} from "../types/room.js";
 
 export async function roomRoutes(app: FastifyInstance): Promise<void> {
+  app.get("/rooms", async (_request, reply) => {
+    // O mapa local só sabe de salas criadas (POST /rooms) e destruídas por chamada explícita
+    // (DELETE) — se o host caiu sem avisar, a sala fica presa lá pra sempre. O LiveKit é a fonte
+    // de verdade de quem tá realmente ao vivo; cruza os dois e já aproveita pra descartar o que
+    // sobrou órfão, sem precisar de ação manual nenhuma.
+    let liveIds: Set<string> | null = null;
+    try {
+      liveIds = await getLiveRoomIds();
+    } catch {
+      // LiveKit inacessível não pode derrubar a listagem inteira — cai pra mostrar tudo que o
+      // backend tem registrado, sem filtrar.
+    }
+
+    // Dá uma folga pras salas recém-criadas — entre o POST /rooms e o host efetivamente conectar
+    // no LiveKit (captura + rede) passa um tempo curto em que a sala ainda não aparece lá; sem
+    // essa folga, cairia bem nessa janela e purgaria uma sala que só está começando.
+    const GRACE_MS = 20_000;
+    const localRooms = listRooms();
+    const isOrphan = (room: (typeof localRooms)[number]) =>
+      liveIds !== null && !liveIds.has(room.id) && Date.now() - room.createdAt > GRACE_MS;
+
+    const rooms = localRooms.filter((room) => !isOrphan(room));
+    for (const room of localRooms) {
+      if (isOrphan(room)) deleteRoom(room.id);
+    }
+
+    const response: ListRoomsResponse = {
+      rooms: rooms.map((room) => ({ roomId: room.id, createdAt: room.createdAt, settings: room.settings })),
+    };
+    return reply.send(response);
+  });
+
   app.post<{ Body: CreateRoomRequest }>("/rooms", async (request, reply) => {
+    let slug: string | undefined;
+    if (request.body?.slug) {
+      slug = normalizeSlug(request.body.slug);
+      if (!isValidSlug(slug)) {
+        return reply.code(400).send({ error: "invalid_slug" });
+      }
+    }
+
     const hostIdentity = generateIdentity();
-    const room = createRoom(hostIdentity, request.body?.settings);
+    let room;
+    try {
+      room = createRoom(hostIdentity, request.body?.settings, slug);
+    } catch (err) {
+      if (err instanceof SlugTakenError) return reply.code(409).send({ error: "slug_taken" });
+      throw err;
+    }
     const hostToken = await createHostToken(room.id, hostIdentity);
 
     const response: CreateRoomResponse = {

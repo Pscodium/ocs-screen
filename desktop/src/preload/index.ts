@@ -16,6 +16,7 @@ const api = {
     close: () => ipcRenderer.send("window:close"),
     setWidgetMode: (isLive: boolean) => ipcRenderer.send("window:set-widget-mode", isLive),
     setPickerMode: (open: boolean) => ipcRenderer.send("window:set-picker-mode", open),
+    setWatchMode: (watching: boolean) => ipcRenderer.send("window:set-watch-mode", watching),
   },
   tray: {
     setStatus: (isLive: boolean, viewerCount: number) => ipcRenderer.send("tray:set-status", isLive, viewerCount),

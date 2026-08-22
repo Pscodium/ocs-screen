@@ -33,14 +33,14 @@ export function useBroadcast() {
   const roomIdRef = useRef<string | null>(null);
   const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const start = useCallback(async (settings: StreamSettings) => {
+  const start = useCallback(async (settings: StreamSettings, slug?: string) => {
     setState("starting");
     setError(null);
     try {
       const { stream, settings: actualSettings, hasAudio } = await captureScreen(settings);
       streamRef.current = stream;
 
-      const room = await createRoom(settings);
+      const room = await createRoom(settings, slug);
       roomIdRef.current = room.roomId;
 
       const session = await startBroadcast(
@@ -89,6 +89,10 @@ export function useBroadcast() {
         }
       }, STATS_POLL_MS);
     } catch (err) {
+      // Se a captura já tinha começado (ex.: sala falhou por slug duplicado), não deixa a
+      // fonte presa aberta sem transmissão nenhuma usando ela.
+      if (streamRef.current) stopCapture(streamRef.current);
+      streamRef.current = null;
       setError(err instanceof Error ? err.message : "Erro ao iniciar transmissão.");
       setState("error");
     }

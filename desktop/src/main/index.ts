@@ -125,10 +125,18 @@ function applyWidgetBounds(): void {
   // em várias versões do Electron/Chromium (setResizable(false) muda o estilo nativo da janela —
   // WS_THICKFRAME — de um jeito que o SetWindowPos do resize seguinte não aplica). Redimensiona
   // PRIMEIRO, só trava resizable DEPOIS — bug real, já apanhado uma vez (não inverter de novo).
+  // Pega o monitor onde a janela JÁ está (não sempre o primário) — se o usuário deixou o app no
+  // monitor 2, o widget deve aparecer lá também, não "puxar" de volta pro monitor 1.
+  const display = screen.getDisplayMatching(mainWindow.getBounds());
   mainWindow.setSize(WIDGET_SIZE.width, WIDGET_SIZE.height);
   mainWindow.setResizable(false);
-  mainWindow.setAlwaysOnTop(true);
-  const display = screen.getPrimaryDisplay();
+  // Nível "floating" (padrão de setAlwaysOnTop(true)) ainda fica atrás de outros always-on-top
+  // (jogos fullscreen, outros overlays) — "screen-saver" é o nível mais alto que o Electron expõe,
+  // fica acima de quase tudo. Também precisa aparecer em todos os workspaces/desktops virtuais e
+  // por cima de apps fullscreen (senão some assim que o usuário troca de desktop virtual ou o jogo
+  // vai fullscreen exclusivo).
+  mainWindow.setAlwaysOnTop(true, "screen-saver");
+  mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   const x = display.workArea.x + display.workArea.width - WIDGET_SIZE.width - WIDGET_MARGIN;
   const y = display.workArea.y + display.workArea.height - WIDGET_SIZE.height - WIDGET_MARGIN;
   mainWindow.setPosition(Math.round(x), Math.round(y));
@@ -149,6 +157,7 @@ ipcMain.on("window:set-widget-mode", (_event, isLive: boolean) => {
   } else {
     isWidgetMode = false;
     mainWindow.setAlwaysOnTop(false);
+    mainWindow.setVisibleOnAllWorkspaces(false);
     mainWindow.setResizable(true);
     mainWindow.setMinimumSize(340, 200);
     mainWindow.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
@@ -166,12 +175,31 @@ ipcMain.on("window:set-picker-mode", (_event, open: boolean) => {
     // destravar ANTES de redimensionar (mesmo bug de ordem citado em applyWidgetBounds).
     mainWindow.setResizable(true);
     mainWindow.setAlwaysOnTop(false);
+    mainWindow.setVisibleOnAllWorkspaces(false);
     mainWindow.setSize(PICKER_SIZE.width, PICKER_SIZE.height);
     mainWindow.center();
   } else if (isWidgetMode) {
     // Voltando de uma troca de fonte ao vivo — reaplica o widget em vez do tamanho normal.
     applyWidgetBounds();
   } else {
+    mainWindow.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
+    mainWindow.center();
+  }
+});
+
+// Maximiza a janela ao entrar numa sala pra assistir (mais espaço pra ver o stream) e trava
+// resize — ao sair, volta pro tamanho normal centralizado, igual ao picker-mode.
+ipcMain.on("window:set-watch-mode", (_event, watching: boolean) => {
+  if (!mainWindow) return;
+  if (watching) {
+    // Mesma ordem cuidadosa do widget: ação de tamanho primeiro, trava resizable depois (ver
+    // applyWidgetBounds — setSize()/maximize() pode ser ignorado silenciosamente no Windows se
+    // já vier depois de setResizable(false)).
+    mainWindow.maximize();
+    mainWindow.setResizable(false);
+  } else {
+    mainWindow.unmaximize();
+    mainWindow.setResizable(true);
     mainWindow.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
     mainWindow.center();
   }

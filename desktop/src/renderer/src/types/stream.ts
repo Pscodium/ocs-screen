@@ -26,9 +26,9 @@ export const RESOLUTION_OPTIONS: Resolution[] = ["auto", "720p", "1080p", "1440p
 export const QUALITY_OPTIONS: Quality[] = ["auto", "low", "medium", "high", "max"];
 
 export const defaultStreamSettings: StreamSettings = {
-  resolution: "auto",
+  resolution: "1080p",
   fps: 60,
-  quality: "auto",
+  quality: "high",
 };
 
 // Multiplicador aplicado ao bitrate base conforme o nível de qualidade escolhido.

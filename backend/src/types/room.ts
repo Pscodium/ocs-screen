@@ -17,6 +17,7 @@ export interface Room {
 
 export interface CreateRoomRequest {
   settings?: Partial<RoomSettings>;
+  slug?: string;
 }
 
 export interface CreateRoomResponse {
@@ -30,4 +31,14 @@ export interface ViewerTokenResponse {
   token: string;
   livekitUrl: string;
   roomId: string;
+}
+
+export interface RoomSummary {
+  roomId: string;
+  createdAt: number;
+  settings: RoomSettings;
+}
+
+export interface ListRoomsResponse {
+  rooms: RoomSummary[];
 }

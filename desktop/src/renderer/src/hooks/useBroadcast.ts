@@ -43,7 +43,7 @@ export function useBroadcast() {
   // Guardado pra poder recapturar com as mesmas preferências ao trocar de fonte ao vivo.
   const settingsRef = useRef<StreamSettings | null>(null);
 
-  const start = useCallback(async (settings: StreamSettings, source: CaptureSource) => {
+  const start = useCallback(async (settings: StreamSettings, source: CaptureSource, slug?: string) => {
     setState("starting");
     setError(null);
     settingsRef.current = settings;
@@ -56,7 +56,7 @@ export function useBroadcast() {
       );
       stopCaptureRef.current = stopAll;
 
-      const room = await createRoom(settings);
+      const room = await createRoom(settings, slug);
       roomIdRef.current = room.roomId;
 
       const session = await startBroadcast(
@@ -102,6 +102,10 @@ export function useBroadcast() {
         }
       }, STATS_POLL_MS);
     } catch (err) {
+      // Se a captura já tinha começado (ex.: sala falhou por slug duplicado), não deixa a
+      // fonte presa aberta sem transmissão nenhuma usando ela.
+      stopCaptureRef.current?.();
+      stopCaptureRef.current = null;
       setError(err instanceof Error ? err.message : "Erro ao iniciar transmissão.");
       setState("error");
     }

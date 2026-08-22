@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState, Room, RoomEvent, Track, type RemoteTrack } from "livekit-client";
-import { fetchViewerToken } from "../services/api";
+import { fetchViewerToken } from "../services/backend";
 
-export type ConnectionPhase = "connecting" | "connected" | "ended" | "error";
+export type ViewerPhase = "connecting" | "connected" | "ended" | "error";
 
-export interface StreamStats {
+export interface ViewerStats {
   resolution: string;
   fps: number;
   bitrateKbps: number;
@@ -14,16 +14,13 @@ export interface StreamStats {
 
 const STATS_POLL_MS = 2000;
 
-// Teto baixo de propósito: 2s de atraso destruiria a experiência de baixa latência que é o
-// objetivo do produto (CLAUDE.md §Latência) — isso aqui é só um "colchão" pra jitter, não buffer
-// de streaming tradicional.
 export const PLAYOUT_DELAY_MAX_MS = 1000;
 export const PLAYOUT_DELAY_DEFAULT_MS = 150;
 
 let lastBytesReceived = 0;
 let lastTimestamp = 0;
 
-async function readSubscribeStats(track: RemoteTrack): Promise<Partial<StreamStats> | null> {
+async function readSubscribeStats(track: RemoteTrack): Promise<Partial<ViewerStats> | null> {
   const receiver = track.receiver;
   if (!receiver) return null;
 
@@ -58,18 +55,14 @@ async function readSubscribeStats(track: RemoteTrack): Promise<Partial<StreamSta
   return null;
 }
 
-export function useRoomStream(roomId: string) {
+export function useRoomViewer(roomId: string | null) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const [phase, setPhase] = useState<ConnectionPhase>("connecting");
-  const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.Connecting);
+  const [phase, setPhase] = useState<ViewerPhase>("connecting");
   const [error, setError] = useState<string | null>(null);
-  const [stats, setStats] = useState<StreamStats | null>(null);
+  const [stats, setStats] = useState<ViewerStats | null>(null);
   const [hasAudio, setHasAudio] = useState(false);
   const [playoutDelayMs, setPlayoutDelayMsState] = useState(PLAYOUT_DELAY_DEFAULT_MS);
 
-  // Recebedores das tracks já inscritas — pra poder reaplicar o hint ao vivo quando o usuário
-  // mexe no slider, sem precisar reconectar. Áudio e vídeo ficam com o mesmo valor pra não
-  // dessincronizar lip-sync.
   const receiversRef = useRef<Set<RTCRtpReceiver>>(new Set());
 
   const applyPlayoutDelay = useCallback((ms: number) => {
@@ -81,22 +74,19 @@ export function useRoomStream(roomId: string) {
   }, []);
 
   useEffect(() => {
+    if (!roomId) return;
+
     let cancelled = false;
     let statsInterval: ReturnType<typeof setInterval> | null = null;
-    const room = new Room({
-      // adaptiveStream: pede ao host a camada simulcast adequada ao tamanho real do player
-      // (CLAUDE.md §Simulcast/SVC — adaptação sem exigir stream independente por espectador).
-      adaptiveStream: true,
-      dynacast: true,
-    });
+    setPhase("connecting");
+    setError(null);
+    setStats(null);
+    setHasAudio(false);
 
-    room.on(RoomEvent.ConnectionStateChanged, setConnectionState);
+    const room = new Room({ adaptiveStream: true, dynacast: true });
 
     room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack) => {
       if (!videoRef.current) return;
-
-      // Anexar áudio e vídeo no mesmo elemento combina as duas tracks num único MediaStream
-      // (attachToElement do livekit-client) — o <video> toca o som junto, sem <audio> separado.
       track.attach(videoRef.current);
 
       // attachToElement() do livekit-client SEMPRE reseta `el.muted` com base em ter ou não
@@ -141,6 +131,10 @@ export function useRoomStream(roomId: string) {
       if (!cancelled) setPhase("ended");
     });
 
+    room.on(RoomEvent.ConnectionStateChanged, (state: ConnectionState) => {
+      if (state === ConnectionState.Connected && !cancelled) setPhase("connected");
+    });
+
     (async () => {
       try {
         const { token, livekitUrl } = await fetchViewerToken(roomId);
@@ -164,5 +158,5 @@ export function useRoomStream(roomId: string) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);
 
-  return { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs: applyPlayoutDelay };
+  return { videoRef, phase, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs: applyPlayoutDelay };
 }

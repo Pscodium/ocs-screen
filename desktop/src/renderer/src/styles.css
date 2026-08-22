@@ -682,3 +682,355 @@ body {
     background-position: -200% 0;
   }
 }
+
+/* Abas Transmitir/Assistir — segmented control, mais robusto visualmente que picker-tab isolado. */
+.mode-tabs {
+  display: flex;
+  gap: 0.25rem;
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 0.25rem;
+  margin-bottom: 1rem;
+  width: 100%;
+}
+
+.mode-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.mode-tab:hover {
+  color: var(--text);
+}
+
+.mode-tab-active,
+.mode-tab-active:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.room-slug-field {
+  margin: 0 0 1.1rem;
+}
+
+.slug-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.slug-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Lista de salas ativas — linhas simples, sem os cards de thumbnail do picker de fontes. */
+.room-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.room-list-empty {
+  text-align: center;
+  padding: 1.5rem 0;
+}
+
+.room-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  background: var(--surface);
+  border: none;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s ease;
+}
+
+.room-row:hover {
+  background: var(--surface-2);
+}
+
+.room-row-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2ecc71;
+  flex-shrink: 0;
+}
+
+.room-row-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.room-row-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-row-meta {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.room-row-cta {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.room-row-skeleton {
+  height: 52px;
+  background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+.room-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.room-viewer-topbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.75rem;
+}
+
+.room-viewer-back {
+  background: var(--surface);
+  border: none;
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.room-viewer-back:hover {
+  background: var(--surface-2);
+}
+
+.room-viewer-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-viewer-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.room-viewer-stage > p {
+  margin: auto;
+}
+
+/* Player estilo Discord, portado do viewer web — badge de qualidade flutuante + pill de controles. */
+.video-container {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  background: black;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.video-element {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.live-quality-badge {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.video-controls-bar {
+  position: absolute;
+  bottom: 1.25rem;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  padding: 0.4rem;
+}
+
+.pill-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.pill-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.pill-btn-static {
+  cursor: default;
+  color: var(--muted);
+}
+
+.pill-btn-static:hover {
+  background: transparent;
+}
+
+.btn-unmute-hint {
+  animation: unmute-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes unmute-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.15);
+  }
+}
+
+.pill-divider {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.12);
+  flex-shrink: 0;
+}
+
+/* Popover estilo Discord: só o ícone aparece na pill, o slider desliza pra fora no hover/focus. */
+.pill-popover-group {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+.pill-flyout {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+  max-width: 0;
+  opacity: 0;
+  transition:
+    max-width 0.2s ease,
+    opacity 0.15s ease;
+}
+
+.pill-popover-group:hover .pill-flyout,
+.pill-popover-group:focus-within .pill-flyout {
+  max-width: 100px;
+  opacity: 1;
+  padding-right: 0.6rem;
+}
+
+.pill-popover-group:hover .pill-flyout-wide,
+.pill-popover-group:focus-within .pill-flyout-wide {
+  max-width: 150px;
+  gap: 0.5rem;
+}
+
+.pill-flyout-value {
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.pill-slider {
+  width: 80px;
+  height: 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* Detalhes de estatísticas — flyout acima da pill, some sozinho ao clicar de novo. */
+.stats-flyout {
+  position: absolute;
+  bottom: calc(100% + 0.6rem);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 0.75rem;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 8px;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* Some por inatividade (controlado via JS em VideoPlayer.tsx) — não dá pra usar só CSS :hover no
+   container, o vídeo ocupa a área toda e o mouse quase nunca "sai" dele. */
+.video-controls-bar {
+  transition: opacity 0.3s ease;
+}
+
+.video-controls-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.video-cursor-hidden {
+  cursor: none;
+}

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import type { StreamStats } from "../hooks/useRoomStream";
-import { PLAYOUT_DELAY_MAX_MS } from "../hooks/useRoomStream";
+import type { ViewerStats } from "../hooks/useRoomViewer";
+import { PLAYOUT_DELAY_MAX_MS } from "../hooks/useRoomViewer";
 
 interface VideoPlayerProps {
   videoRef: RefObject<HTMLVideoElement | null>;
-  stats: StreamStats | null;
+  stats: ViewerStats | null;
   hasAudio: boolean;
   playoutDelayMs: number;
   onPlayoutDelayChange: (ms: number) => void;
@@ -15,11 +15,9 @@ const HIDE_DELAY_MS = 2200;
 export function VideoPlayer({ videoRef, stats, hasAudio, playoutDelayMs, onPlayoutDelayChange }: VideoPlayerProps) {
   const [containerRef, setContainerRef] = useState<HTMLDivElement | null>(null);
   const [showDetails, setShowDetails] = useState(false);
-  const [volume, setVolume] = useState(0);
-  // Começa mudo de propósito: o navegador bloqueia autoplay com som sem gesto do usuário —
-  // começar já "desmutado" mostra 🔊 mas não toca nada até alguma interação, o que confunde
-  // (parece bug). Começando mudo, o ícone reflete o estado real e o clique no botão desmuta
-  // com um gesto direto e confiável.
+  const [volume, setVolume] = useState(1);
+  // Começa mudo de propósito: definir só via prop/atributo JSX não é confiável (o elemento pode
+  // já ter recebido a track antes do primeiro render aplicar o atributo) — força via DOM direto.
   const [muted, setMuted] = useState(true);
 
   // Some sozinho depois de parado — não dá pra usar só ":hover" no container inteiro, porque o

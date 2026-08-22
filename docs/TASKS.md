@@ -17,7 +17,30 @@
 
 
 ## Sprint 4 — Pequenas melhorias
+- [x] validar se tem como "evitar" captura de áudio de um determinado aplicativo — **não dá via código**. `chromeMediaSource: "desktop"` só expõe o loopback do dispositivo de saída **padrão** do Windows pra JS/Electron, sem seletor de app nem de dispositivo — excluir um app específico exigiria WASAPI nativo (mesma complexidade da POC de captura nativa que já deu errado, não vale a pena reabrir essa porta). **Solução sem código, 100% no Windows**: Configurações → Sistema → Som → "Preferências de volume por app" — roteia a saída do Discord (ou qualquer app) pra um dispositivo diferente do padrão (ex.: fones), mantendo jogo/música no padrão. Como a captura sempre pega o dispositivo padrão, o app roteado pra outro lugar fica automaticamente fora do loopback.
+- [x] criar visualizador dentro do app desktop (onde tu pode clicar nas transmissões ativas e ver direto no app) — nova rota `GET /rooms` no backend lista salas ativas (em memória, sem endpoint de ID antes); `HomePage` ganhou abas "Compartilhar"/"Assistir" — a segunda mostra `RoomsBrowser` (poll a cada 4s) e ao clicar abre `RoomViewer`, que conecta direto via `livekit-client` (mesma lógica de `useRoomStream` do viewer web, portada pra `useRoomViewer`) sem passar por navegador nenhum.
 
+## Sprint 5 — Aba assistir + slug de sala
+- [x] visual da aba assistir mais parecido com o viewer web — `RoomViewer` do desktop agora usa os mesmos `live-quality-badge`/`video-controls-bar`/`pill-btn` do viewer (portados pro `styles.css` do desktop), som muted por padrão como no viewer web.
+- [x] deixar as abas Transmitir/Assistir e a lista de salas mais bonitas — `mode-tabs` (segmented control) substitui o `picker-tab` reaproveitado; `RoomsBrowser` virou lista de linhas (`room-row`, ponto verde "ao vivo", tempo relativo) em vez dos tiles de thumbnail do picker de fontes (que não fazem sentido pra sala sem preview).
+- [x] slug de sala escolhido pelo usuário — `POST /rooms` aceita `slug` opcional (normalizado, valida `^[a-z0-9-]{3,32}$`, 409 se já em uso); campo "Nome da sala" no desktop e no viewer web, sala usa o slug como ID quando informado, senão gera aleatório como antes.
+
+## Sprint 6 — Paridade do player desktop + salas no web
+- [x] áudio da aba assistir do desktop vinha ligado por padrão — a tag `<video muted>` sozinha não é confiável (a track pode chegar antes do primeiro render aplicar o atributo); trocado pro mesmo padrão do viewer web: `muted` fixo no JSX + `useEffect` que força `videoRef.current.muted` via DOM direto.
+- [x] player do desktop ganhou os mesmos controles do viewer web — portado o `VideoPlayer.tsx` (pill de controles: estatísticas, suavização/playout delay, volume, tela cheia) e o `useRoomStream` completo (renomeado `useRoomViewer`, mesmos stats de bitrate/latência/perda) pro desktop; `RoomViewer.tsx` agora só monta o player, sem reimplementar UI própria.
+- [x] aba de salas ativas no viewer web — mesmo `GET /rooms` do desktop, componente `RoomsBrowser` (lista com ponto "ao vivo" + tempo relativo) numa aba "Assistir" ao lado de "Transmitir" na home; clicar navega pra `/s/:roomId` (mesma rota que o link direto já usava).
+
+## Sprint 7 — Correções finas
+- [x] pill de controles do player desktop vinha toda "aberta" e sem hover — CSS de `.pill-flyout`/`.pill-popover-group`/`.pill-divider`/`.stats-flyout` nunca tinha sido portada de fato pro `styles.css` do desktop (só `.pill-btn` foi parar lá), então os flyouts não colapsavam por falta de `max-width:0`. Adicionada a portada completa.
+- [x] widget "ao vivo" sempre nascia no monitor 1 mesmo com o app deixado no monitor 2 — `applyWidgetBounds()` usava `screen.getPrimaryDisplay()` fixo em vez do monitor onde a janela já estava; trocado pra `screen.getDisplayMatching(mainWindow.getBounds())`.
+- [x] barra de controles do player (desktop + web) some sozinha quando o mouse se afasta do player, volta ao aproximar — `.video-controls-bar` com opacidade condicionada a `.video-container:hover`.
+
+## Sprint 8 — Ajustes finos
+- [x] tela de assistir do desktop maximiza a janela ao entrar numa sala (mais espaço pro player) e trava resize; ao sair, volta pro tamanho normal centralizado — novo `window:set-watch-mode` no main process, mesma ordem cuidadosa maximize-antes-de-travar do widget (`RoomViewer.tsx` chama no mount/unmount).
+- [x] padrão de qualidade trocado pra 1080p / alta (era automática/automática) nos dois apps — só muda `defaultStreamSettings`, usuário ainda pode trocar antes de compartilhar.
+
+- [x] sala fantasma na lista "Assistir" (transmissão já morta, host caiu sem chamar DELETE) — o mapa em memória de `rooms.ts` só é limpo por `DELETE /rooms/:id` explícito ou pelo `scheduleRoomCleanup`, que nunca é chamado (não existe webhook do LiveKit implementado); `GET /rooms` agora cruza com `RoomServiceClient.listRooms()` (a fonte de verdade real de quem tá ao vivo no LiveKit) e descarta sozinho qualquer sala órfã com mais de 20s (folga pra não apagar uma sala que acabou de ser criada e ainda não conectou) — resolve sozinho sem precisar reiniciar o backend.
+- [x] widget "ao vivo" se escondia atrás de outras janelas — `setAlwaysOnTop(true)` sem nível explícito usa "floating", que ainda perde pra outros always-on-top (overlays, jogos fullscreen exclusivo); trocado pro nível "screen-saver" (o mais alto que o Electron expõe) + `setVisibleOnAllWorkspaces(true, {visibleOnFullScreen:true})` pra não sumir ao trocar de desktop virtual ou um jogo ir fullscreen.
 
 ## Correções recentes
 

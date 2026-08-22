@@ -70,11 +70,6 @@ export function SettingsForm({ settings, onChange }: SettingsFormProps) {
           ))}
         </select>
       </label>
-
-      <p className="settings-hint">
-        Áudio do sistema é capturado automaticamente ao compartilhar "Tela inteira" — não é suportado ao compartilhar
-        uma janela específica.
-      </p>
     </div>
   );
 }
