@@ -718,25 +718,39 @@ body {
 }
 
 .room-slug-field {
+  /* home-page centraliza os filhos por conteúdo (align-items:center) — sem width:100% aqui, o
+     label encolhe pro tamanho do próprio conteúdo e o input fica mais estreito que os selects
+     de cima (esses vivem dentro de .settings-form, que já é width:100% explícito). */
+  width: 100%;
   margin: 0 0 1.1rem;
 }
 
 .slug-input {
+  width: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0.55rem 0.7rem;
+  padding: 0.6rem 0.75rem;
   color: var(--text);
-  font-size: 0.85rem;
+  font-size: 0.9rem;
+  transition: border-color 0.15s ease;
 }
 
-.slug-input:focus {
+.slug-input:hover {
+  border-color: #3a3e4a;
+}
+
+.slug-input:focus-visible {
   outline: none;
   border-color: var(--accent);
 }
 
 /* Lista de salas ativas — linhas simples, sem os cards de thumbnail do picker de fontes. */
 .room-list {
+  /* Mesmo problema do slug-input: home-page centraliza por conteúdo, e um skeleton vazio (sem
+     texto) não tem largura própria nenhuma pra herdar — sem isso aqui a lista inteira colapsa
+     pra quase 0px de largura durante o loading (skeleton "fininho" reportado). */
+  width: 100%;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;

@@ -1,5 +1,5 @@
 appId: com.ocsscreen.app
-productName: ScreenShare
+productName: Screen Share
 directories:
   buildResources: build
 files:

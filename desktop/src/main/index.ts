@@ -206,7 +206,7 @@ ipcMain.on("window:set-watch-mode", (_event, watching: boolean) => {
 });
 
 ipcMain.on("tray:set-status", (_event, isLive: boolean, viewerCount: number) => {
-  tray?.setToolTip(isLive ? `ScreenShare — ao vivo (${viewerCount} espectador${viewerCount === 1 ? "" : "es"})` : "ScreenShare");
+  tray?.setToolTip(isLive ? `Screen Share — ao vivo (${viewerCount} espectador${viewerCount === 1 ? "" : "es"})` : "ScreenShare");
 });
 
 // Clipboard via Electron nativo — mais confiável que navigator.clipboard quando a janela

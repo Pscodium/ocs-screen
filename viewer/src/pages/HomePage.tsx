@@ -19,7 +19,7 @@ export function HomePage() {
 
   return (
     <div className="home-page">
-      <h1>ScreenShare</h1>
+      <h1>Screen Share</h1>
       <p className="subtitle">Compartilhe sua tela direto do navegador — sem instalar nada.</p>
 
       <div className="home-card">

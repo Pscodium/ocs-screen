@@ -1,4 +1,4 @@
-# ScreenShare
+# Screen Share
 
 Alternativa mínima ao compartilhamento de tela do Discord: sem calls, sem canais, sem servidores — só transmissão de tela em tempo real via WebRTC/LiveKit.
 
