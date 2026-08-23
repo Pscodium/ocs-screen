@@ -4,18 +4,13 @@ interface UpdateModalProps {
   updater: ReturnType<typeof useAppUpdater>;
 }
 
-// Changelog vem como markdown puro do corpo do release do GitHub — não vale a pena trazer uma
-// lib de markdown só pra isso; um render linha-a-linha (bullet pra "-"/"*", resto como parágrafo)
-// cobre o formato que qualquer changelog normal usa.
-function ReleaseNotes({ text }: { text: string }) {
-  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-  return (
-    <ul className="update-notes">
-      {lines.map((line, i) => (
-        <li key={i}>{line.replace(/^[-*]\s*/, "")}</li>
-      ))}
-    </ul>
-  );
+// `releaseNotes` do electron-updater (provider GitHub) NÃO é o markdown cru do corpo do release —
+// o feed Atom do GitHub (releases.atom) já vem com o conteúdo renderizado em HTML pelo próprio
+// GitHub (mesmo motor que renderiza a página do release). Tratar como texto puro fazia aparecer
+// tags literais tipo "<li>" na tela em vez de um bullet de verdade. É conteúdo do nosso próprio
+// repo (owner/repo fixos em electron-builder.yml), não input de terceiro — seguro renderizar direto.
+function ReleaseNotes({ html }: { html: string }) {
+  return <div className="update-notes" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 export function UpdateModal({ updater }: UpdateModalProps) {
@@ -34,7 +29,7 @@ export function UpdateModal({ updater }: UpdateModalProps) {
           </div>
         </div>
 
-        {phase === "available" && releaseNotes && <ReleaseNotes text={releaseNotes} />}
+        {phase === "available" && releaseNotes && <ReleaseNotes html={releaseNotes} />}
         {phase === "available" && !releaseNotes && (
           <p className="subtitle">Uma nova versão do Screen Share está pronta pra instalar.</p>
         )}

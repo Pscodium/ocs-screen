@@ -52,12 +52,21 @@ export function VideoPlayer({ videoRef, stats, hasAudio, playoutDelayMs, onPlayo
     }
   }, [videoRef, volume, muted]);
 
+  // Safari no iPhone não implementa a Fullscreen API padrão em containers/divs (só no iPad) —
+  // tenta o caminho padrão primeiro (funciona em desktop e Android) e cai pro fullscreen nativo
+  // do próprio <video> (`webkitEnterFullscreen`, específico de WebKit) quando aquele falhar.
   const toggleFullscreen = () => {
-    if (!containerRef) return;
     if (document.fullscreenElement) {
       document.exitFullscreen();
+      return;
+    }
+
+    if (containerRef?.requestFullscreen) {
+      containerRef.requestFullscreen().catch(() => {
+        videoRef.current?.webkitEnterFullscreen?.();
+      });
     } else {
-      containerRef.requestFullscreen();
+      videoRef.current?.webkitEnterFullscreen?.();
     }
   };
 

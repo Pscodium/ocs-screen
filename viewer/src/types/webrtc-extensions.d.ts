@@ -4,3 +4,11 @@
 interface RTCRtpReceiver {
   playoutDelayHint?: number;
 }
+
+// `webkitEnterFullscreen` é a única forma de tela cheia que o Safari no iPhone aceita — a
+// Fullscreen API padrão (`Element.requestFullscreen`) não funciona em elementos arbitrários no
+// iOS (só no iPad), então containers/divs não conseguem ir fullscreen ali. Só existe em <video>.
+// Usado em VideoPlayer.tsx.
+interface HTMLVideoElement {
+  webkitEnterFullscreen?: () => void;
+}

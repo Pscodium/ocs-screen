@@ -1176,9 +1176,9 @@ body {
   color: var(--muted);
 }
 
+/* Conteúdo vem como HTML de verdade (GitHub renderiza o markdown do release antes de entregar
+   pelo feed) — estiliza os elementos que costumam aparecer num changelog normal, não só <li>. */
 .update-notes {
-  margin: 0;
-  padding-left: 1.1rem;
   max-height: 180px;
   overflow-y: auto;
   color: var(--text);
@@ -1186,8 +1186,51 @@ body {
   line-height: 1.5;
 }
 
+.update-notes > *:first-child {
+  margin-top: 0;
+}
+
+.update-notes > *:last-child {
+  margin-bottom: 0;
+}
+
+.update-notes ul,
+.update-notes ol {
+  margin: 0.4rem 0;
+  padding-left: 1.2rem;
+}
+
 .update-notes li {
   margin-bottom: 0.3rem;
+}
+
+.update-notes p {
+  margin: 0.4rem 0;
+}
+
+.update-notes h1,
+.update-notes h2,
+.update-notes h3 {
+  font-size: 0.9rem;
+  margin: 0.6rem 0 0.3rem;
+}
+
+.update-notes code {
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.78rem;
+}
+
+.update-notes pre {
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 0.5rem;
+  overflow-x: auto;
+}
+
+.update-notes a {
+  color: var(--accent);
 }
 
 .update-progress {

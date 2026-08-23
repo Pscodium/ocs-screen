@@ -18,10 +18,14 @@ const initialState: UpdateState = {
   error: null,
 };
 
-const MOCK_RELEASE_NOTES = `- Suporte a 4K60 com codec AV1 quando o hardware aguenta
-- Corrigido áudio vindo ligado mesmo com o player mutado
-- Widget agora aparece na frente de qualquer outra janela
-- Pequenas melhorias de estabilidade`;
+// HTML de verdade, não markdown — o feed do GitHub que o electron-updater lê já vem renderizado
+// assim (ver nota em UpdateModal.tsx), o mock precisa refletir isso pra testar o caso real.
+const MOCK_RELEASE_NOTES = `<ul>
+<li>Suporte a 4K60 com codec AV1 quando o hardware aguenta</li>
+<li>Corrigido áudio vindo ligado mesmo com o player mutado</li>
+<li>Widget agora aparece na frente de qualquer outra janela</li>
+<li>Pequenas melhorias de estabilidade</li>
+</ul>`;
 
 export function useAppUpdater() {
   const [state, setState] = useState<UpdateState>(initialState);
