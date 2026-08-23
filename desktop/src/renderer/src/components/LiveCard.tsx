@@ -110,7 +110,7 @@ export function LiveCard({ info, swapping, onStop, onSwapSource, onOptimizeCodec
               className="live-stats-badge live-stats-badge-warning"
               title={[
                 isSoftwareEncoder(info.encoderImplementation)
-                  ? `Codificando por software (${info.encoderImplementation}) — pode pesar a CPU.`
+                  ? `Codificando por software (${info.encoderImplementation}) — pode pesar a CPU. Confere se "usar aceleração de hardware" tá ligado nas configurações do navegador/app.`
                   : `A camada principal tá em hardware, mas pelo menos uma camada menor do simulcast caiu em software.`,
                 info.qualityLimitationReason && info.qualityLimitationReason !== "none"
                   ? `Motivo reportado pelo navegador: ${info.qualityLimitationReason}.`
@@ -150,6 +150,21 @@ export function LiveCard({ info, swapping, onStop, onSwapSource, onOptimizeCodec
           {info.hasAudio && <span className="live-stats-badge">🔊</span>}
         </span>
       </div>
+
+      {/* HUD de dev — tudo que hoje só aparece em tooltip (hover), sempre visível, estilo contador
+          de FPS de jogo. Só existe em build de dev (`import.meta.env.DEV`); o widget já nasce mais
+          alto nesse caso (ver WIDGET_SIZE em main/index.ts) pra sobrar espaço sem cortar nada. */}
+      {import.meta.env.DEV && (
+        <div className="live-stats-dev">
+          <span>Codec: {info.codec}</span>
+          <span>Encoder: {info.encoderImplementation ?? "—"}</span>
+          <span>Perda: {info.packetLossPercent}%</span>
+          <span>QP médio: {info.avgQp ?? "—"}</span>
+          <span>Encode médio: {info.avgEncodeMs !== null ? `${info.avgEncodeMs}ms/frame` : "—"}</span>
+          <span>Limitação: {info.qualityLimitationReason ?? "—"}</span>
+          <span>Camada software: {info.hasSoftwareLayer ? "sim" : "não"}</span>
+        </div>
+      )}
 
       {pickerOpen && (
         <SourcePicker

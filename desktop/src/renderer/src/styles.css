@@ -561,6 +561,20 @@ body {
   animation: spin 0.9s linear infinite;
 }
 
+/* HUD de dev — estilo contador de FPS de jogo, sempre visível (sem hover). Só existe em
+   import.meta.env.DEV; o widget já nasce mais alto nesse caso (ver WIDGET_SIZE no main process). */
+.live-stats-dev {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px dashed var(--border);
+  font-size: 0.62rem;
+  font-family: "Consolas", "Courier New", monospace;
+  color: #7bd88f;
+}
+
 /* Seletor de fonte — estilo "Ir ao vivo" do Discord (a janela expande enquanto isso fica
    aberto, ver window:set-picker-mode no main process). */
 .picker-overlay {

@@ -713,3 +713,17 @@ body {
   opacity: 0.6;
   cursor: default;
 }
+
+/* HUD de dev — estilo contador de FPS de jogo, sempre visível (sem hover). Só existe em
+   import.meta.env.DEV. */
+.live-stats-dev {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: -0.4rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--border);
+  font-size: 0.72rem;
+  font-family: "Consolas", "Courier New", monospace;
+  color: #7bd88f;
+}

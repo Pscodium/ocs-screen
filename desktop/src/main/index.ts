@@ -16,19 +16,33 @@ import { autoUpdater } from "electron-updater";
 const ICON_PATH = join(__dirname, "../../build/icon.png");
 
 const NORMAL_SIZE = { width: 440, height: 720 };
-const WIDGET_SIZE = { width: 340, height: 140 };
+// Em dev, o widget cresce um pouco pra caber a HUD de estatísticas sempre visível (sem hover) —
+// só existe em `import.meta.env.DEV` no renderer, então em produção o widget continua 340×140.
+const WIDGET_SIZE = app.isPackaged ? { width: 340, height: 140 } : { width: 340, height: 320 };
 const WIDGET_MARGIN = 24;
 const PICKER_SIZE = { width: 720, height: 640 };
 
+// `mainWindow` continua existindo só pra coisas que são inerentemente singulares (tray
+// mostrar/focar, mensagens de update) — a primeira janela criada. Comandos que agem "na janela
+// que mandou o comando" (minimizar, widget, picker, watch) resolvem a janela via
+// `BrowserWindow.fromWebContents(event.sender)`, não mais nesse global — é o que permite abrir
+// uma segunda janela de teste (ver `resolveWindow` e window:open-test-window) sem que os
+// controles de uma janela mexam na outra por engano.
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 // O seletor de fonte fecha (e tenta restaurar o tamanho normal) assim que o usuário escolhe uma
 // fonte — mas a captura/publish ainda leva um tempo pra terminar depois disso. Se a transmissão
 // já tiver ficado ao vivo nesse meio tempo, o fechamento do seletor não pode desfazer o widget.
+// Continua global (não por-janela) — não esperado que duas janelas transmitam ao mesmo tempo;
+// suficiente pro caso de uso real (uma janela hosteia, outra só assiste pra teste).
 let isWidgetMode = false;
 
-function createWindow(): void {
-  mainWindow = new BrowserWindow({
+function resolveWindow(event: { sender: Electron.WebContents }): BrowserWindow | null {
+  return BrowserWindow.fromWebContents(event.sender);
+}
+
+function createWindow(): BrowserWindow {
+  const window = new BrowserWindow({
     width: NORMAL_SIZE.width,
     height: NORMAL_SIZE.height,
     minWidth: 340,
@@ -42,34 +56,47 @@ function createWindow(): void {
       sandbox: false,
       // Necessário pra capturar tela sem prompt do navegador — o desktopCapturer resolve o
       // stream via chromeMediaSourceId, que só funciona com Electron não-sandboxed.
+      //
+      // backgroundThrottling: por padrão o Chromium reduz a prioridade de timers/pipeline de
+      // mídia de uma janela que fica OCLUSA (coberta por outra janela) — mesmo com
+      // setAlwaysOnTop, um jogo em tela cheia (principalmente fullscreen exclusivo) cobre o
+      // widget, e o Chromium trata isso como "não visível". Testado em produção: FPS entregue
+      // oscilava 20-55fps especificamente hosteando pelo app desktop (nunca pelo navegador numa
+      // aba normal, que não sofre esse throttling porque uma aba de captura não fica "oclusa" da
+      // mesma forma) — essa é a causa mais provável. Desligado porque esse app SEMPRE precisa
+      // continuar codificando/transmitindo em velocidade plena, mesmo minimizado ou coberto.
+      backgroundThrottling: false,
     },
   });
 
-  mainWindow.on("ready-to-show", () => mainWindow?.show());
+  window.on("ready-to-show", () => window.show());
 
   // F12 abre o DevTools — não tem menu padrão nessa janela frameless pra chegar nisso de outro jeito.
-  mainWindow.webContents.on("before-input-event", (_event, input) => {
+  window.webContents.on("before-input-event", (_event, input) => {
     if (input.type === "keyDown" && input.key === "F12") {
-      mainWindow?.webContents.toggleDevTools();
+      window.webContents.toggleDevTools();
     }
   });
 
-  // Fecha o processo de verdade ao fechar a janela — não deixa pendurado em segundo plano.
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-    app.quit();
+  // Só a última janela fechada derruba o processo (window-all-closed já cuida disso) — fechar
+  // uma janela de teste secundária não pode matar o app inteiro com a principal ainda aberta.
+  window.on("closed", () => {
+    if (mainWindow === window) mainWindow = null;
   });
 
-  mainWindow.webContents.setWindowOpenHandler((details) => {
+  window.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url);
     return { action: "deny" };
   });
 
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+    window.loadURL(process.env.ELECTRON_RENDERER_URL);
   } else {
-    mainWindow.loadFile(join(__dirname, "../renderer/index.html"));
+    window.loadFile(join(__dirname, "../renderer/index.html"));
   }
+
+  if (!mainWindow) mainWindow = window;
+  return window;
 }
 
 function createTray(): void {
@@ -146,6 +173,12 @@ app.whenReady().then(() => {
   createTray();
   setupAutoUpdater();
 
+  // Dev-only: `npm run dev:multi` seta essa env var pra abrir uma segunda janela junto, pra
+  // testar host+espectador no mesmo PC sem precisar de dois computadores (ver scripts/dev-multi.js).
+  if (!app.isPackaged && process.env.OPEN_TEST_WINDOW === "1") {
+    createWindow();
+  }
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -156,19 +189,21 @@ app.on("window-all-closed", () => {
 });
 
 // Window controls (a janela é frameless — precisa desses comandos vindos do titlebar custom).
-ipcMain.on("window:minimize", () => mainWindow?.minimize());
-ipcMain.on("window:toggle-maximize", () => {
-  if (!mainWindow) return;
-  if (mainWindow.isMaximized()) mainWindow.unmaximize();
-  else mainWindow.maximize();
+// Resolvem a janela que MANDOU o comando (event.sender), não um global — permite ter mais de uma
+// janela aberta (ver window:open-test-window) sem uma controlar a outra por engano.
+ipcMain.on("window:minimize", (event) => resolveWindow(event)?.minimize());
+ipcMain.on("window:toggle-maximize", (event) => {
+  const win = resolveWindow(event);
+  if (!win) return;
+  if (win.isMaximized()) win.unmaximize();
+  else win.maximize();
 });
-ipcMain.handle("window:is-maximized", () => mainWindow?.isMaximized() ?? false);
-ipcMain.on("window:close", () => mainWindow?.close());
+ipcMain.handle("window:is-maximized", (event) => resolveWindow(event)?.isMaximized() ?? false);
+ipcMain.on("window:close", (event) => resolveWindow(event)?.close());
 
 // Aplica o tamanho/posição/travas do widget — usado tanto ao entrar ao vivo quanto ao voltar de
 // um seletor de fonte aberto durante uma troca de fonte ao vivo (mesma forma dos dois casos).
-function applyWidgetBounds(): void {
-  if (!mainWindow) return;
+function applyWidgetBounds(mainWindow: BrowserWindow): void {
   // ORDEM IMPORTA no Windows: setSize() enquanto resizable já é false é ignorado silenciosamente
   // em várias versões do Electron/Chromium (setResizable(false) muda o estilo nativo da janela —
   // WS_THICKFRAME — de um jeito que o SetWindowPos do resize seguinte não aplica). Redimensiona
@@ -192,64 +227,67 @@ function applyWidgetBounds(): void {
 
 // Encolhe/restaura a janela quando a transmissão fica ao vivo (widget compacto sempre-no-topo).
 // Sem redimensionar à mão nesse modo — tamanho fixo, igual ao overlay de screen share do Discord.
-ipcMain.on("window:set-widget-mode", (_event, isLive: boolean) => {
-  if (!mainWindow) return;
+ipcMain.on("window:set-widget-mode", (event, isLive: boolean) => {
+  const win = resolveWindow(event);
+  if (!win) return;
   if (isLive) {
-    if (mainWindow.isMaximized()) mainWindow.unmaximize();
-    if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false);
+    if (win.isMaximized()) win.unmaximize();
+    if (win.isFullScreen()) win.setFullScreen(false);
     // setSize() é clampado pelo minWidth/minHeight definidos na criação da janela (340x200) —
     // sem abaixar o mínimo primeiro, o widget nunca encolhia de verdade pra 340x140.
-    mainWindow.setMinimumSize(WIDGET_SIZE.width, WIDGET_SIZE.height);
-    applyWidgetBounds();
+    win.setMinimumSize(WIDGET_SIZE.width, WIDGET_SIZE.height);
+    applyWidgetBounds(win);
     isWidgetMode = true;
   } else {
     isWidgetMode = false;
-    mainWindow.setAlwaysOnTop(false);
-    mainWindow.setVisibleOnAllWorkspaces(false);
-    mainWindow.setResizable(true);
-    mainWindow.setMinimumSize(340, 200);
-    mainWindow.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
-    mainWindow.center();
+    win.setAlwaysOnTop(false);
+    win.setVisibleOnAllWorkspaces(false);
+    win.setResizable(true);
+    win.setMinimumSize(340, 200);
+    win.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
+    win.center();
   }
 });
 
 // Expande a janela temporariamente enquanto o seletor de fonte tá aberto — a grade de
 // telas/janelas precisa de mais espaço que a janela normal do app pra não ficar espremida.
 // Também é usado pra trocar de fonte com a transmissão já ao vivo (a partir do widget).
-ipcMain.on("window:set-picker-mode", (_event, open: boolean) => {
-  if (!mainWindow) return;
+ipcMain.on("window:set-picker-mode", (event, open: boolean) => {
+  const win = resolveWindow(event);
+  if (!win) return;
   if (open) {
     // Se vier do modo widget (troca de fonte ao vivo), a janela tá resizable:false — precisa
     // destravar ANTES de redimensionar (mesmo bug de ordem citado em applyWidgetBounds).
-    mainWindow.setResizable(true);
-    mainWindow.setAlwaysOnTop(false);
-    mainWindow.setVisibleOnAllWorkspaces(false);
-    mainWindow.setSize(PICKER_SIZE.width, PICKER_SIZE.height);
-    mainWindow.center();
+    win.setResizable(true);
+    win.setAlwaysOnTop(false);
+    win.setVisibleOnAllWorkspaces(false);
+    win.setSize(PICKER_SIZE.width, PICKER_SIZE.height);
+    win.center();
   } else if (isWidgetMode) {
     // Voltando de uma troca de fonte ao vivo — reaplica o widget em vez do tamanho normal.
-    applyWidgetBounds();
+    applyWidgetBounds(win);
   } else {
-    mainWindow.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
-    mainWindow.center();
+    win.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
+    win.center();
   }
 });
 
 // Maximiza a janela ao entrar numa sala pra assistir (mais espaço pra ver o stream) e trava
 // resize — ao sair, volta pro tamanho normal centralizado, igual ao picker-mode.
-ipcMain.on("window:set-watch-mode", (_event, watching: boolean) => {
-  if (!mainWindow) return;
+ipcMain.on("window:set-watch-mode", (event, watching: boolean) => {
+  const win = resolveWindow(event);
+  if (!win) return;
   if (watching) {
     // Mesma ordem cuidadosa do widget: ação de tamanho primeiro, trava resizable depois (ver
     // applyWidgetBounds — setSize()/maximize() pode ser ignorado silenciosamente no Windows se
     // já vier depois de setResizable(false)).
-    mainWindow.maximize();
-    mainWindow.setResizable(false);
+    win.maximize();
+    win.setResizable(false);
   } else {
-    mainWindow.unmaximize();
-    mainWindow.setResizable(true);
-    mainWindow.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
-    mainWindow.center();
+    win.unmaximize();
+    win.setResizable(true);
+    win.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
+    win.center();
   }
 });
 

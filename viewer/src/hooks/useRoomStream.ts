@@ -20,6 +20,16 @@ const STATS_POLL_MS = 2000;
 export const PLAYOUT_DELAY_MAX_MS = 1000;
 export const PLAYOUT_DELAY_DEFAULT_MS = 150;
 
+// Ver nota em services/publish.ts — LiveKit local não precisa de STUN público.
+function isLocalLivekitUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url.replace(/^ws/, "http"));
+    return hostname === "localhost" || hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+
 let lastBytesReceived = 0;
 let lastTimestamp = 0;
 
@@ -162,7 +172,11 @@ export function useRoomStream(roomId: string) {
       try {
         const { token, livekitUrl } = await fetchViewerToken(roomId);
         if (cancelled) return;
-        await room.connect(livekitUrl, token);
+        await room.connect(
+          livekitUrl,
+          token,
+          isLocalLivekitUrl(livekitUrl) ? { rtcConfig: { iceServers: [] } } : undefined,
+        );
         if (cancelled) return;
         setPhase("connected");
       } catch (err) {

@@ -18,11 +18,26 @@ export interface BroadcastSession {
 }
 
 // Espelha desktop/src/services/livekit.ts — mesma lógica de publish, cliente web em vez de Tauri.
+// SÓ 1 camada extra (2 encodes no total, não 3) — testado em produção: 3 encodes simultâneos
+// competindo pelo motor de mídia da GPU (que também renderiza o jogo) causava FPS caindo com o
+// tempo mesmo com hardware confirmado. Ver docs/INSIGHTS-ENCODER.md #4.
 function pickSimulcastLayers(actualHeight: number): VideoPreset[] {
-  if (actualHeight >= 2160) return [VideoPresets.h360, VideoPresets.h720, VideoPresets.h1440];
-  if (actualHeight >= 1440) return [VideoPresets.h360, VideoPresets.h720];
-  if (actualHeight >= 1080) return [VideoPresets.h360, VideoPresets.h720];
-  return [VideoPresets.h180, VideoPresets.h360];
+  if (actualHeight >= 1440) return [VideoPresets.h720];
+  return [VideoPresets.h360];
+}
+
+// Contra STUN público (Google/Twilio) quando o LiveKit é local — o servidor local não precisa de
+// travessia de NAT nenhuma, mas ainda tenta gatherar candidatos STUN públicos por padrão. Em
+// máquinas com várias interfaces de rede virtuais (VPN, WSL, Hyper-V), cada uma tenta
+// resolver/bindar STUN e falha (timeout), só atrasando a conexão e poluindo o log sem benefício
+// real — não afeta deploy real (LIVEKIT_URL apontando pra fora continua usando STUN/TURN normalmente).
+function isLocalLivekitUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url.replace(/^ws/, "http"));
+    return hostname === "localhost" || hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
 }
 
 export async function startBroadcast(
@@ -39,7 +54,11 @@ export async function startBroadcast(
   room.on(RoomEvent.ParticipantDisconnected, () => onParticipantCountChange(room.remoteParticipants.size));
   room.on(RoomEvent.ConnectionStateChanged, onConnectionStateChange);
 
-  await room.connect(livekitUrl, token);
+  await room.connect(
+    livekitUrl,
+    token,
+    isLocalLivekitUrl(livekitUrl) ? { rtcConfig: { iceServers: [] } } : undefined,
+  );
 
   const [track] = stream.getVideoTracks();
   const { width, height } = track.getSettings();

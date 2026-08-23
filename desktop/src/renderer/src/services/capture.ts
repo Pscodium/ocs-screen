@@ -12,18 +12,20 @@ export interface CaptureResult {
 // Electron, fora da spec padrão de MediaTrackConstraints — por isso o cast. É o que o Electron
 // expõe no lugar do getDisplayMedia() pra resolver o stream a partir de um id do desktopCapturer.
 //
-// Sem maxWidth/maxHeight/maxFrameRate de propósito: o backend WGC (Windows.Graphics.Capture, é
-// o que o Chromium usa por baixo do desktopCapturer hoje) trava em retry infinito com
-// E_INVALIDARG quando esses limites não batem exatamente com a fonte (ex.: monitor com refresh
-// rate diferente do fps pedido) — a promise do getUserMedia nunca resolve nem rejeita, sem erro
-// visível. Resolução/FPS de destino continuam controlados no publish (screenShareEncoding em
-// livekit.ts), não na captura.
+// Sem min/maxWidth/maxHeight/FrameRate dentro de `mandatory` de propósito: o backend WGC
+// (Windows.Graphics.Capture) trava em retry infinito com E_INVALIDARG quando esses limites (que
+// são EXATOS, não negociáveis) não batem com a fonte — a promise do getUserMedia nunca resolve
+// nem rejeita. `optional` é diferente: é o formato legado do Chrome pra hints NEGOCIÁVEIS (mais
+// parecido com `ideal` do padrão moderno) — não trava a sessão numa exigência inegociável, só
+// pede. Testado com o timeout de segurança abaixo como rede de proteção (se travar mesmo assim,
+// falha em 8s com erro claro em vez de travar o app pra sempre).
 interface ElectronDesktopConstraints {
   video: {
     mandatory: {
       chromeMediaSource: "desktop";
       chromeMediaSourceId: string;
     };
+    optional?: Array<{ minFrameRate: number } | { maxFrameRate: number }>;
   };
   audio:
     | false
@@ -56,6 +58,14 @@ export async function captureScreen(
         chromeMediaSource: "desktop",
         chromeMediaSourceId: source.id,
       },
+      // Pede o FPS já na negociação inicial da sessão de captura — sem isso, o WGC costuma
+      // inicializar num FPS conservador (30) e o `applyConstraints()` de depois (abaixo) só
+      // consegue REFINAR uma sessão já criada, não trocar a cadência real de entrega de frame
+      // que foi fixada na criação. Isso explicava a app desktop entregar FPS mais baixo/instável
+      // que o navegador (que já manda o frameRate desejado dentro do próprio getDisplayMedia
+      // inicial) mesmo com o mesmo encoder de hardware.
+      optional:
+        settings.fps === "auto" ? undefined : [{ minFrameRate: settings.fps }, { maxFrameRate: settings.fps }],
     },
     // `chromeMediaSource: "desktop"` no áudio pede o loopback do SISTEMA INTEIRO — não é isolado
     // por janela (a Windows não expõe captura de áudio de um app específico por essa API), mas

@@ -71,7 +71,7 @@ export function LiveCard({ info, onStop, onOptimizeCodec, optimizingCodec }: Liv
             className="live-stats-warning"
             title={[
               isSoftwareEncoder(info.encoderImplementation)
-                ? `Codificando por software (${info.encoderImplementation}) — pode pesar a CPU.`
+                ? `Codificando por software (${info.encoderImplementation}) — pode pesar a CPU. Confere se "usar aceleração de hardware" tá ligado nas configurações do navegador.`
                 : "A camada principal tá em hardware, mas pelo menos uma camada menor do simulcast caiu em software.",
               info.qualityLimitationReason && info.qualityLimitationReason !== "none"
                 ? `Motivo reportado pelo navegador: ${info.qualityLimitationReason}.`
@@ -97,6 +97,16 @@ export function LiveCard({ info, onStop, onOptimizeCodec, optimizingCodec }: Liv
         {info.avgQp !== null && <span title="QP médio — quanto maior, mais comprimido/blocado">QP {info.avgQp}</span>}
         {info.hasAudio && <span>🔊 áudio</span>}
       </div>
+
+      {/* HUD de dev — mesmos campos que hoje só aparecem no tooltip do aviso de CPU, sempre
+          visíveis, sem precisar de hover. Só existe em build de dev. */}
+      {import.meta.env.DEV && (
+        <div className="live-stats-dev">
+          <span>Encode médio: {info.avgEncodeMs !== null ? `${info.avgEncodeMs}ms/frame` : "—"}</span>
+          <span>Limitação: {info.qualityLimitationReason ?? "—"}</span>
+          <span>Camada software: {info.hasSoftwareLayer ? "sim" : "não"}</span>
+        </div>
+      )}
 
       <button className="btn-danger" onClick={onStop}>
         Encerrar transmissão

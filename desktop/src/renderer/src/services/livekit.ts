@@ -20,11 +20,30 @@ export interface BroadcastSession {
 
 // Camadas simulcast por resolução alvo — permite que espectadores com banda menor recebam
 // qualidade menor sem exigir um encode independente do host (CLAUDE.md §Simulcast/SVC).
+// SÓ 1 camada extra (2 encodes no total, não 3) — testado em produção: com 2 camadas extras (3
+// encodes simultâneos) rodando jogo, o FPS entregue caía com o tempo mesmo com encoder de
+// hardware confirmado (MediaFoundationVideoEncodeAccelerator nas 3 camadas, sem cair pra
+// software) — a GPU compartilha o motor de mídia entre renderizar o jogo e codificar todas as
+// camadas ao mesmo tempo, e não sustenta isso por muito tempo. Prioriza estabilidade de FPS sobre
+// diversidade de qualidade entre espectadores (ver docs/INSIGHTS-ENCODER.md #4).
 function pickSimulcastLayers(actualHeight: number): VideoPreset[] {
-  if (actualHeight >= 2160) return [VideoPresets.h360, VideoPresets.h720, VideoPresets.h1440];
-  if (actualHeight >= 1440) return [VideoPresets.h360, VideoPresets.h720];
-  if (actualHeight >= 1080) return [VideoPresets.h360, VideoPresets.h720];
-  return [VideoPresets.h180, VideoPresets.h360];
+  if (actualHeight >= 1440) return [VideoPresets.h720];
+  return [VideoPresets.h360];
+}
+
+// Contra STUN público (Google/Twilio) quando o LiveKit é local — o servidor local não precisa de
+// travessia de NAT nenhuma, mas ainda tenta gatherar candidatos STUN públicos por padrão (herdado
+// da config do servidor LiveKit). Em máquinas com várias interfaces de rede virtuais (VPN, WSL,
+// Hyper-V), cada uma tenta resolver/bindar STUN e falha (timeout), o que só atrasa o
+// estabelecimento da conexão e polui o log sem nenhum benefício real — não afeta deploy real
+// (LIVEKIT_URL apontando pra fora continua usando STUN/TURN normalmente).
+function isLocalLivekitUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url.replace(/^ws/, "http"));
+    return hostname === "localhost" || hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
 }
 
 export async function startBroadcast(
@@ -44,7 +63,11 @@ export async function startBroadcast(
   room.on(RoomEvent.ParticipantDisconnected, () => onParticipantCountChange(room.remoteParticipants.size));
   room.on(RoomEvent.ConnectionStateChanged, onConnectionStateChange);
 
-  await room.connect(livekitUrl, token);
+  await room.connect(
+    livekitUrl,
+    token,
+    isLocalLivekitUrl(livekitUrl) ? { rtcConfig: { iceServers: [] } } : undefined,
+  );
 
   const [track] = stream.getVideoTracks();
   const { width, height } = track.getSettings();

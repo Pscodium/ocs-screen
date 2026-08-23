@@ -5,5 +5,15 @@ rtc:
   port_range_end: 50100
   use_external_ip: false
   node_ip: 127.0.0.1
+  # Sem STUN público explícito, o LiveKit anuncia o default dele (Google/Twilio) pros clientes —
+  # em dev 100% local isso só gera tentativa de bind/DNS fadada ao fracasso em toda interface de
+  # rede virtual da máquina (VPN, WSL, Hyper-V), sem nenhum benefício (não tem NAT real pra
+  # atravessar entre localhost e localhost). O client já força `iceServers: []` quando detecta
+  # LIVEKIT_URL local (ver services/livekit.ts), isso aqui é a mesma coisa do lado do servidor.
+  stun_servers: []
+  # ICE lite: o SFU nunca INICIA conexão, só responde — não precisa descobrir candidatos srflx
+  # próprios (já sabe seu próprio endereço via node_ip). Reduz handshake ICE ao mínimo, apropriado
+  # pra um servidor com endereço fixo conhecido (típico de qualquer deploy de SFU, não só dev).
+  use_ice_lite: true
 keys:
   devkey: devsecret1234567890

@@ -1,5 +1,5 @@
 export type Resolution = "auto" | "720p" | "1080p" | "1440p" | "2160p";
-export type Fps = "auto" | 30 | 60;
+export type Fps = "auto" | 30 | 60 | 120;
 export type Quality = "auto" | "low" | "medium" | "high" | "max";
 
 export interface StreamSettings {
@@ -27,7 +27,9 @@ export const RESOLUTION_CONSTRAINTS: Record<Exclude<Resolution, "auto">, Resolut
   "2160p": { width: 3840, height: 2160 },
 };
 
-export const FPS_OPTIONS: Fps[] = ["auto", 30, 60];
+// 120 só faz sentido com monitor de alto refresh (144Hz+) e GPU/encoder de sobra — sem garantia
+// nenhuma, igual todo o resto de captura (CLAUDE.md §Captura de tela): o pedido é best-effort.
+export const FPS_OPTIONS: Fps[] = ["auto", 30, 60, 120];
 export const RESOLUTION_OPTIONS: Resolution[] = ["auto", "720p", "1080p", "1440p", "2160p"];
 export const QUALITY_OPTIONS: Quality[] = ["auto", "low", "medium", "high", "max"];
 
