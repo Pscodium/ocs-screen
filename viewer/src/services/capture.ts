@@ -1,4 +1,4 @@
-import { RESOLUTION_CONSTRAINTS, type StreamSettings } from "../types/stream";
+import { AUTO_FPS_TARGET, RESOLUTION_CONSTRAINTS, type StreamSettings } from "../types/stream";
 
 export interface CaptureResult {
   stream: MediaStream;
@@ -8,13 +8,15 @@ export interface CaptureResult {
 
 export async function captureScreen(settings: StreamSettings): Promise<CaptureResult> {
   const resolution = settings.resolution === "auto" ? undefined : RESOLUTION_CONSTRAINTS[settings.resolution];
-  const frameRate = settings.fps === "auto" ? undefined : settings.fps;
+  // "Automático" manda um alvo real (AUTO_FPS_TARGET) em vez de nenhum hint — mesmo raciocínio
+  // do capture.ts do desktop: "automático" deve ser "um bom padrão", não "sem controle nenhum".
+  const frameRate = settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps;
 
   const stream = await navigator.mediaDevices.getDisplayMedia({
     video: {
       width: resolution ? { ideal: resolution.width } : undefined,
       height: resolution ? { ideal: resolution.height } : undefined,
-      frameRate: frameRate ? { ideal: frameRate } : undefined,
+      frameRate: { ideal: frameRate },
     },
     // Sempre pede áudio — o navegador exige confirmação separada (switch no próprio diálogo de
     // seleção), então não tem custo pedir por padrão.

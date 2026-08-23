@@ -59,14 +59,18 @@ const QUALITY_MULTIPLIER: Record<Quality, number> = {
 const BITS_PER_PIXEL = 0.15;
 const MIN_BITRATE_BPS = 1_000_000;
 const MAX_BITRATE_BPS = 50_000_000;
-const FALLBACK_FPS: Exclude<Fps, "auto"> = 30;
+// Também usado por capture.ts como alvo REAL de captura quando fps="auto" — sem pedir nada, o
+// WGC não necessariamente escolhe algo razoável sozinho (testado em produção: ficou em ~20fps sem
+// hint nenhum, pior que pedir 30 explicitamente). "Automático" deve significar "um bom padrão",
+// não "sem controle nenhum".
+export const AUTO_FPS_TARGET: Exclude<Fps, "auto"> = 30;
 
 // Calcula pelo tamanho REAL capturado (width/height de `track.getSettings()`), não pelo enum de
 // resolução escolhido — a captura roda na resolução nativa do monitor (não temos mais controle
 // de constraint na captura, ver capture.ts), então o bitrate precisa acompanhar isso ou a imagem
 // sai borrada/blocada em texto quando o monitor é maior que o perfil selecionado.
 export function getMaxBitrate(width: number, height: number, settings: Pick<StreamSettings, "fps" | "quality">): number {
-  const fps = settings.fps === "auto" ? FALLBACK_FPS : settings.fps;
+  const fps = settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps;
   const qualityMultiplier = QUALITY_MULTIPLIER[settings.quality];
 
   const raw = width * height * fps * BITS_PER_PIXEL * qualityMultiplier;

@@ -1,4 +1,4 @@
-import { RESOLUTION_CONSTRAINTS, type StreamSettings } from "../types/stream";
+import { AUTO_FPS_TARGET, RESOLUTION_CONSTRAINTS, type StreamSettings } from "../types/stream";
 import type { CaptureSource } from "../../../preload/index";
 
 export interface CaptureResult {
@@ -64,8 +64,15 @@ export async function captureScreen(
       // que foi fixada na criação. Isso explicava a app desktop entregar FPS mais baixo/instável
       // que o navegador (que já manda o frameRate desejado dentro do próprio getDisplayMedia
       // inicial) mesmo com o mesmo encoder de hardware.
-      optional:
-        settings.fps === "auto" ? undefined : [{ minFrameRate: settings.fps }, { maxFrameRate: settings.fps }],
+      //
+      // "Automático" também manda um alvo real (AUTO_FPS_TARGET) em vez de não mandar nada —
+      // testado em produção: sem NENHUM hint, o WGC não necessariamente escolhe algo razoável
+      // sozinho (ficou em ~20fps, pior que pedir 30 explicitamente). "Automático" precisa
+      // significar "um bom padrão", não "sem controle nenhum".
+      optional: [
+        { minFrameRate: settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps },
+        { maxFrameRate: settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps },
+      ],
     },
     // `chromeMediaSource: "desktop"` no áudio pede o loopback do SISTEMA INTEIRO — não é isolado
     // por janela (a Windows não expõe captura de áudio de um app específico por essa API), mas
@@ -87,9 +94,8 @@ export async function captureScreen(
   // não `mandatory`) depois que a track já existe — esse caminho é negociado, não trava o app se
   // o SO recusar (só ignora, sem hang, diferente do `mandatory` que travava em loop).
   const desiredConstraints: MediaTrackConstraints = {};
-  if (settings.fps !== "auto") {
-    desiredConstraints.frameRate = { ideal: settings.fps, max: settings.fps };
-  }
+  const fpsTarget = settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps;
+  desiredConstraints.frameRate = { ideal: fpsTarget, max: fpsTarget };
   if (settings.resolution !== "auto") {
     const { width, height } = RESOLUTION_CONSTRAINTS[settings.resolution];
     desiredConstraints.width = { ideal: width, max: width };

@@ -56,12 +56,14 @@ const QUALITY_MULTIPLIER: Record<Quality, number> = {
 const BITS_PER_PIXEL = 0.15;
 const MIN_BITRATE_BPS = 1_000_000;
 const MAX_BITRATE_BPS = 50_000_000;
-const FALLBACK_FPS: Exclude<Fps, "auto"> = 30;
+// Também usado por capture.ts como alvo REAL de captura quando fps="auto" (ver nota lá) —
+// "automático" deve significar "um bom padrão", não "sem controle nenhum".
+export const AUTO_FPS_TARGET: Exclude<Fps, "auto"> = 30;
 
 // Calcula pelo tamanho REAL capturado (width/height de `track.getSettings()`), não pelo enum de
 // resolução escolhido — o navegador pode entregar resolução diferente da pedida.
 export function getMaxBitrate(width: number, height: number, settings: Pick<StreamSettings, "fps" | "quality">): number {
-  const fps = settings.fps === "auto" ? FALLBACK_FPS : settings.fps;
+  const fps = settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps;
   const qualityMultiplier = QUALITY_MULTIPLIER[settings.quality];
 
   const raw = width * height * fps * BITS_PER_PIXEL * qualityMultiplier;

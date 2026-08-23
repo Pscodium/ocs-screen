@@ -13,6 +13,33 @@ import {
 import { join } from "path";
 import { autoUpdater } from "electron-updater";
 
+// `backgroundThrottling: false` (webPreferences) só evita o Chromium throttlar TIMERS/rAF do
+// renderer quando a janela fica oclusa/sem foco — existe uma camada SEPARADA, em nível de
+// processo, que baixa a prioridade de agendamento do processo renderer inteiro (não só JS) nesse
+// mesmo cenário, e essa aqui só se desliga por flag de linha de comando (tem que rodar ANTES de
+// app.whenReady()). Browsers de verdade (Chrome/Edge) já rodam com esse comportamento mais afinado
+// pra WebRTC/captura de tela; Electron herda o padrão agressivo do Chromium. Isso explica o app
+// desktop continuar perdendo pro navegador mesmo depois do fix de `backgroundThrottling` — o
+// processo inteiro (não só os timers) tava sendo despriorizado pelo Windows quando um jogo em
+// tela cheia cobre o widget.
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
+
+// O Chromium mantém uma lista interna de GPU/driver marcados como "problemáticos" — quando a
+// combinação bate nessa lista, ele cai pra renderização/composição por SOFTWARE silenciosamente,
+// sem nenhum aviso na UI (diferente do toggle visível de "aceleração de hardware" que o Chrome/
+// Edge de verdade expõem em Configurações). Electron herda essa mesma lista. Como a captura de
+// tela (WGC) passa pelo processo de GPU do Chromium antes de chegar no encoder, isso explicaria
+// o app desktop entregar FPS pior que o navegador mesmo com o ENCODER confirmado em hardware
+// (MediaFoundationVideoEncodeAccelerator) — o gargalo seria a composição/cópia do frame capturado,
+// não o encode em si. `ignore-gpu-blocklist` força o Chromium a tentar hardware mesmo se achar
+// que o driver é problemático; `enable-gpu-rasterization` força rasterização por GPU em vez de
+// software; `disable-gpu-sandbox` é workaround documentado pra travas de captura de tela via GPU
+// no Windows quando o processo de GPU roda sandboxado.
+app.commandLine.appendSwitch("ignore-gpu-blocklist");
+app.commandLine.appendSwitch("enable-gpu-rasterization");
+app.commandLine.appendSwitch("disable-gpu-sandbox");
+
 const ICON_PATH = join(__dirname, "../../build/icon.png");
 
 const NORMAL_SIZE = { width: 440, height: 720 };
@@ -108,18 +135,31 @@ function createTray(): void {
     mainWindow.show();
     mainWindow.focus();
   });
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      {
-        label: "Abrir",
-        click: () => {
-          mainWindow?.show();
-          mainWindow?.focus();
-        },
+  const menuTemplate: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: "Abrir",
+      click: () => {
+        mainWindow?.show();
+        mainWindow?.focus();
       },
-      { label: "Sair", click: () => app.quit() },
-    ]),
-  );
+    },
+  ];
+
+  // Dev-only: `chrome://gpu` mostra "Hardware accelerated" vs "Software only" por recurso — o
+  // jeito mais direto de confirmar se o Chromium caiu pra composição por software (ver flags
+  // ignore-gpu-blocklist acima) sem depender de inferir isso pelo Gerenciador de Tarefas.
+  if (!app.isPackaged) {
+    menuTemplate.push({
+      label: "GPU Info (debug)",
+      click: () => {
+        const gpuWindow = new BrowserWindow({ width: 900, height: 700, title: "chrome://gpu" });
+        gpuWindow.loadURL("chrome://gpu");
+      },
+    });
+  }
+
+  menuTemplate.push({ label: "Sair", click: () => app.quit() });
+  tray.setContextMenu(Menu.buildFromTemplate(menuTemplate));
 }
 
 // Baixa só quando o usuário aprovar no modal (não é auto-download nem auto-instala no quit) —
