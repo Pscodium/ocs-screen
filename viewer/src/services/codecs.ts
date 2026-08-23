@@ -11,6 +11,14 @@ const CODEC_PRIORITY: { codec: VideoCodec; mimeType: string }[] = [
   { codec: "vp8", mimeType: "video/VP8" },
 ];
 
+// Nomes de encoder por software que os browsers reportam em `encoderImplementation` — o resto
+// (ex.: "ExternalEncoder", nomes de vendor) é hardware. Compartilhado entre `publish.ts`
+// (readPublishStats) e `LiveCard.tsx` (aviso visível) pra não duplicar a regex.
+export function isSoftwareEncoder(name: string | null): boolean {
+  if (!name) return false;
+  return /libvpx|libaom|openh264|libx264/i.test(name);
+}
+
 let cachedCodec: VideoCodec | null = null;
 
 export function detectBestVideoCodec(): VideoCodec {
@@ -28,4 +36,11 @@ export function detectBestVideoCodec(): VideoCodec {
 
   cachedCodec = "vp8";
   return cachedCodec;
+}
+
+// Ver nota em desktop/src/renderer/src/services/codecs.ts e docs/INSIGHTS-ENCODER.md #15 — evita
+// que uma escolha ruim de uma transmissão passada (caiu em software por motivo passageiro)
+// contamine todas as próximas na mesma sessão do app.
+export function resetCodecCache(): void {
+  cachedCodec = null;
 }

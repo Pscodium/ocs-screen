@@ -694,3 +694,22 @@ body {
 .live-stats-warning {
   color: #f0b132;
 }
+
+.live-optimize-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.15rem 0.5rem;
+  color: var(--text);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.live-optimize-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.live-optimize-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

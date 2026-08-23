@@ -11,10 +11,12 @@ export function HomePage() {
   const [settings, setSettings] = useState(defaultStreamSettings);
   const [slug, setSlug] = useState("");
   const [tab, setTab] = useState<Tab>("share");
-  const { state, info, error, start, stop } = useBroadcast();
+  const { state, info, error, start, stop, optimizeCodec, optimizingCodec } = useBroadcast();
 
   if (state === "live" && info) {
-    return <LiveCard info={info} onStop={stop} />;
+    return (
+      <LiveCard info={info} onStop={stop} onOptimizeCodec={optimizeCodec} optimizingCodec={optimizingCodec} />
+    );
   }
 
   return (

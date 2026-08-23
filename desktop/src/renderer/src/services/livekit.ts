@@ -9,7 +9,7 @@ import {
   type VideoPreset,
 } from "livekit-client";
 import { getMaxBitrate, type StreamSettings } from "../types/stream";
-import { detectBestVideoCodec } from "./codecs";
+import { detectBestVideoCodec, isSoftwareEncoder, resetCodecCache } from "./codecs";
 
 export interface BroadcastSession {
   room: Room;
@@ -99,6 +99,10 @@ export async function startBroadcast(
     audioPublication,
     disconnect: async () => {
       await room.disconnect();
+      // Reseta a escolha cacheada de codec ao final da transmissão — se essa sessão caiu em
+      // software por algum motivo passageiro (outro app segurando a GPU, por exemplo), a próxima
+      // transmissão reavalia do zero em vez de herdar a escolha ruim (docs/INSIGHTS-ENCODER.md #15).
+      resetCodecCache();
     },
   };
 }
@@ -135,6 +139,34 @@ export async function swapAudioTrack(
   return session.audioPublication;
 }
 
+// Ação explícita (nunca automática) pra quando o codec preferencial caiu em software pesado
+// (AV1/VP9 via libaom/libvpx) — despublica e republica a MESMA track já forçando H.264, que tem
+// encoder de hardware praticamente garantido em qualquer GPU. Republicar (em vez de trocar o
+// codec da publicação existente, que o LiveKit não permite) causa um soluço visual curto pros
+// espectadores — por isso é sempre o usuário quem aciona (ver docs/INSIGHTS-ENCODER.md #13),
+// nunca decidido sozinho pelo app.
+export async function switchToH264(session: BroadcastSession, settings: StreamSettings): Promise<void> {
+  const track = session.publication.track?.mediaStreamTrack;
+  if (!track) throw new Error("Nenhuma track de vídeo ativa pra trocar de codec.");
+
+  const { width, height } = track.getSettings();
+
+  await session.room.localParticipant.unpublishTrack(session.publication.track!);
+
+  session.publication = await session.room.localParticipant.publishTrack(track, {
+    source: Track.Source.ScreenShare,
+    simulcast: true,
+    videoCodec: "h264",
+    backupCodec: true,
+    degradationPreference: "maintain-framerate",
+    screenShareEncoding: {
+      maxBitrate: getMaxBitrate(width ?? 1920, height ?? 1080, settings),
+      maxFramerate: settings.fps === "auto" ? undefined : settings.fps,
+    },
+    screenShareSimulcastLayers: pickSimulcastLayers(height ?? 1080),
+  });
+}
+
 export interface PublishStats {
   bitrateKbps: number;
   packetLossPercent: number;
@@ -154,6 +186,19 @@ export interface PublishStats {
   // antigo como um snapshot único de `getSettings()` no início da transmissão ficaria.
   actualResolution: string;
   actualFps: number;
+  // "none" | "cpu" | "bandwidth" | "other" — o próprio Chromium já sabe dizer POR QUE tá
+  // reduzindo qualidade, em vez de precisar inferir isso a partir de QP/bitrate. "cpu" é o sinal
+  // mais direto possível de "esse PC não tá dando conta" (docs/INSIGHTS-ENCODER.md #14).
+  qualityLimitationReason: string | null;
+  // Tempo médio de encode por frame (ms) desde a última leitura — indicador ANTECEDENTE: se isso
+  // se aproxima do orçamento de frame (1000/fps), o encoder tá "correndo contra o relógio" antes
+  // mesmo de frames começarem a cair de verdade. `null` quando o browser não expõe `totalEncodeTime`.
+  avgEncodeMs: number | null;
+  // true quando QUALQUER camada do simulcast (não só a base/primária usada pros campos acima)
+  // está em encoder de software — GPUs de consumo limitam sessões de hardware encode simultâneas,
+  // então é possível a camada base estar em hardware e as menores terem caído pra software sem o
+  // aviso de CPU (que só olhava a primária) nunca detectar (docs/INSIGHTS-ENCODER.md #12).
+  hasSoftwareLayer: boolean;
 }
 
 // Simulcast publica 3 camadas simultâneas — cada uma vira seu próprio outbound-rtp no mesmo
@@ -164,6 +209,7 @@ const lastBytesSentByLayer = new Map<string, number>();
 let lastTimestamp = 0;
 let lastQpSum = 0;
 let lastFramesEncoded = 0;
+let lastTotalEncodeTime = 0;
 
 export async function readPublishStats(publication: LocalTrackPublication): Promise<PublishStats | null> {
   const sender = publication.track?.sender;
@@ -216,14 +262,26 @@ export async function readPublishStats(publication: LocalTrackPublication): Prom
   const encoderImplementation: string | null = primary.encoderImplementation ?? null;
   const qpSum: number | undefined = primary.qpSum;
   const framesEncoded: number | undefined = primary.framesEncoded;
+  const totalEncodeTime: number | undefined = primary.totalEncodeTime;
+  const qualityLimitationReason: string | null = primary.qualityLimitationReason ?? null;
 
   let avgQp: number | null = null;
+  let avgEncodeMs: number | null = null;
   if (typeof qpSum === "number" && typeof framesEncoded === "number") {
     const framesDelta = framesEncoded - lastFramesEncoded;
-    if (framesDelta > 0) avgQp = Math.round(((qpSum - lastQpSum) / framesDelta) * 10) / 10;
+    if (framesDelta > 0) {
+      avgQp = Math.round(((qpSum - lastQpSum) / framesDelta) * 10) / 10;
+      if (typeof totalEncodeTime === "number") {
+        const encodeTimeDelta = totalEncodeTime - lastTotalEncodeTime;
+        avgEncodeMs = Math.round((encodeTimeDelta / framesDelta) * 1000 * 10) / 10;
+      }
+    }
     lastQpSum = qpSum;
     lastFramesEncoded = framesEncoded;
+    if (typeof totalEncodeTime === "number") lastTotalEncodeTime = totalEncodeTime;
   }
+
+  const hasSoftwareLayer = videoStats.some((stat) => isSoftwareEncoder(stat.encoderImplementation ?? null));
 
   let codec = "?";
   const codecId: string | undefined = primary.codecId;
@@ -237,5 +295,16 @@ export async function readPublishStats(publication: LocalTrackPublication): Prom
     primary.frameWidth && primary.frameHeight ? `${primary.frameWidth} × ${primary.frameHeight}` : "—";
   const actualFps = primary.framesPerSecond ? Math.round(primary.framesPerSecond) : 0;
 
-  return { bitrateKbps, packetLossPercent, codec, encoderImplementation, avgQp, actualResolution, actualFps };
+  return {
+    bitrateKbps,
+    packetLossPercent,
+    codec,
+    encoderImplementation,
+    avgQp,
+    actualResolution,
+    actualFps,
+    qualityLimitationReason,
+    avgEncodeMs,
+    hasSoftwareLayer,
+  };
 }

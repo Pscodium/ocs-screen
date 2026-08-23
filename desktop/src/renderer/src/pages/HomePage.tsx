@@ -20,10 +20,19 @@ export function HomePage({ broadcast }: HomePageProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("share");
   const [watchingRoomId, setWatchingRoomId] = useState<string | null>(null);
-  const { state, info, error, start, stop, swapSource, swapping } = broadcast;
+  const { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec } = broadcast;
 
   if (state === "live" && info) {
-    return <LiveCard info={info} swapping={swapping} onStop={stop} onSwapSource={swapSource} />;
+    return (
+      <LiveCard
+        info={info}
+        swapping={swapping}
+        onStop={stop}
+        onSwapSource={swapSource}
+        onOptimizeCodec={optimizeCodec}
+        optimizingCodec={optimizingCodec}
+      />
+    );
   }
 
   if (watchingRoomId) {

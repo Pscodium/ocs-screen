@@ -9,7 +9,7 @@ import {
   type VideoPreset,
 } from "livekit-client";
 import { getMaxBitrate, type StreamSettings } from "../types/stream";
-import { detectBestVideoCodec } from "./codecs";
+import { detectBestVideoCodec, isSoftwareEncoder, resetCodecCache } from "./codecs";
 
 export interface BroadcastSession {
   room: Room;
@@ -86,8 +86,37 @@ export async function startBroadcast(
     publication,
     disconnect: async () => {
       await room.disconnect();
+      // Ver docs/INSIGHTS-ENCODER.md #15 — evita que uma escolha ruim de codec (caiu em software
+      // por motivo passageiro) contamine as próximas transmissões nessa mesma sessão do app.
+      resetCodecCache();
     },
   };
+}
+
+// Ação explícita (nunca automática) pra quando o codec preferencial caiu em software pesado
+// (AV1/VP9 via libaom/libvpx) — despublica e republica a MESMA track já forçando H.264. Causa um
+// soluço visual curto pros espectadores (é republicação, não replaceTrack), por isso é sempre o
+// usuário quem aciona (docs/INSIGHTS-ENCODER.md #13).
+export async function switchToH264(session: BroadcastSession, settings: StreamSettings): Promise<void> {
+  const track = session.publication.track?.mediaStreamTrack;
+  if (!track) throw new Error("Nenhuma track de vídeo ativa pra trocar de codec.");
+
+  const { width, height } = track.getSettings();
+
+  await session.room.localParticipant.unpublishTrack(session.publication.track!);
+
+  session.publication = await session.room.localParticipant.publishTrack(track, {
+    source: Track.Source.ScreenShare,
+    simulcast: true,
+    videoCodec: "h264",
+    backupCodec: true,
+    degradationPreference: "maintain-framerate",
+    screenShareEncoding: {
+      maxBitrate: getMaxBitrate(width ?? 1920, height ?? 1080, settings),
+      maxFramerate: settings.fps === "auto" ? undefined : settings.fps,
+    },
+    screenShareSimulcastLayers: pickSimulcastLayers(height ?? 1080),
+  });
 }
 
 export interface PublishStats {
@@ -102,6 +131,14 @@ export interface PublishStats {
   // poll — não confundir com o preset escolhido nas configurações, que é só teto/alvo.
   actualResolution: string;
   actualFps: number;
+  // "none" | "cpu" | "bandwidth" | "other" — o Chromium já sabe dizer por que tá reduzindo
+  // qualidade (docs/INSIGHTS-ENCODER.md #14).
+  qualityLimitationReason: string | null;
+  // Tempo médio de encode por frame (ms) — indicador antecedente de sobrecarga, antes de frames
+  // começarem a cair de verdade.
+  avgEncodeMs: number | null;
+  // true quando qualquer camada do simulcast (não só a base) está em software.
+  hasSoftwareLayer: boolean;
 }
 
 // Simulcast publica 3 camadas simultâneas — cada uma vira seu próprio outbound-rtp no mesmo
@@ -110,6 +147,7 @@ const lastBytesSentByLayer = new Map<string, number>();
 let lastTimestamp = 0;
 let lastQpSum = 0;
 let lastFramesEncoded = 0;
+let lastTotalEncodeTime = 0;
 
 export async function readPublishStats(publication: LocalTrackPublication): Promise<PublishStats | null> {
   const sender = publication.track?.sender;
@@ -159,14 +197,26 @@ export async function readPublishStats(publication: LocalTrackPublication): Prom
   const encoderImplementation: string | null = primary.encoderImplementation ?? null;
   const qpSum: number | undefined = primary.qpSum;
   const framesEncoded: number | undefined = primary.framesEncoded;
+  const totalEncodeTime: number | undefined = primary.totalEncodeTime;
+  const qualityLimitationReason: string | null = primary.qualityLimitationReason ?? null;
 
   let avgQp: number | null = null;
+  let avgEncodeMs: number | null = null;
   if (typeof qpSum === "number" && typeof framesEncoded === "number") {
     const framesDelta = framesEncoded - lastFramesEncoded;
-    if (framesDelta > 0) avgQp = Math.round(((qpSum - lastQpSum) / framesDelta) * 10) / 10;
+    if (framesDelta > 0) {
+      avgQp = Math.round(((qpSum - lastQpSum) / framesDelta) * 10) / 10;
+      if (typeof totalEncodeTime === "number") {
+        const encodeTimeDelta = totalEncodeTime - lastTotalEncodeTime;
+        avgEncodeMs = Math.round((encodeTimeDelta / framesDelta) * 1000 * 10) / 10;
+      }
+    }
     lastQpSum = qpSum;
     lastFramesEncoded = framesEncoded;
+    if (typeof totalEncodeTime === "number") lastTotalEncodeTime = totalEncodeTime;
   }
+
+  const hasSoftwareLayer = videoStats.some((stat) => isSoftwareEncoder(stat.encoderImplementation ?? null));
 
   let codec = "?";
   const codecId: string | undefined = primary.codecId;
@@ -179,5 +229,16 @@ export async function readPublishStats(publication: LocalTrackPublication): Prom
     primary.frameWidth && primary.frameHeight ? `${primary.frameWidth} × ${primary.frameHeight}` : "—";
   const actualFps = primary.framesPerSecond ? Math.round(primary.framesPerSecond) : 0;
 
-  return { bitrateKbps, packetLossPercent, codec, encoderImplementation, avgQp, actualResolution, actualFps };
+  return {
+    bitrateKbps,
+    packetLossPercent,
+    codec,
+    encoderImplementation,
+    avgQp,
+    actualResolution,
+    actualFps,
+    qualityLimitationReason,
+    avgEncodeMs,
+    hasSoftwareLayer,
+  };
 }

@@ -1,18 +1,19 @@
 import { useState } from "react";
 import { ConnectionState } from "livekit-client";
 import type { BroadcastInfo } from "../hooks/useBroadcast";
+import { isSoftwareEncoder } from "../services/codecs";
 
 interface LiveCardProps {
   info: BroadcastInfo;
   onStop: () => void;
+  onOptimizeCodec: () => void;
+  optimizingCodec: boolean;
 }
 
-// Nomes de encoder por software que os browsers reportam em `encoderImplementation` — o resto
-// (ex.: "ExternalEncoder", nomes de vendor) é hardware. Usado só pra avisar o usuário que a
-// transmissão pode estar pesando mais CPU do que deveria (ver docs/INSIGHTS-ENCODER.md #2).
-function isSoftwareEncoder(name: string | null): boolean {
-  if (!name) return false;
-  return /libvpx|libaom|openh264|libx264/i.test(name);
+// Codecs pesados de codificar por software (AV1/VP9 usam libaom/libvpx) — só esses valem a troca
+// forçada pra H.264. H.264 por software (openh264) já é o mais leve que existe.
+function isHeavyCodec(codec: string): boolean {
+  return codec.toUpperCase() === "AV1" || codec.toUpperCase() === "VP9";
 }
 
 const connectionLabel: Record<ConnectionState, string> = {
@@ -23,7 +24,7 @@ const connectionLabel: Record<ConnectionState, string> = {
   [ConnectionState.SignalReconnecting]: "Reconectando...",
 };
 
-export function LiveCard({ info, onStop }: LiveCardProps) {
+export function LiveCard({ info, onStop, onOptimizeCodec, optimizingCodec }: LiveCardProps) {
   const [copied, setCopied] = useState(false);
   const isLive = info.connectionState === ConnectionState.Connected;
 
@@ -65,13 +66,33 @@ export function LiveCard({ info, onStop }: LiveCardProps) {
             {info.encoderImplementation && ` (${info.encoderImplementation})`}
           </span>
         )}
-        {isSoftwareEncoder(info.encoderImplementation) && (
+        {(isSoftwareEncoder(info.encoderImplementation) || info.hasSoftwareLayer) && (
           <span
             className="live-stats-warning"
-            title={`Codificando por software (${info.encoderImplementation}) — pode pesar a CPU. Sem encoder de hardware disponível pra esse codec nesse PC.`}
+            title={[
+              isSoftwareEncoder(info.encoderImplementation)
+                ? `Codificando por software (${info.encoderImplementation}) — pode pesar a CPU.`
+                : "A camada principal tá em hardware, mas pelo menos uma camada menor do simulcast caiu em software.",
+              info.qualityLimitationReason && info.qualityLimitationReason !== "none"
+                ? `Motivo reportado pelo navegador: ${info.qualityLimitationReason}.`
+                : null,
+              info.avgEncodeMs !== null ? `Tempo médio de encode: ${info.avgEncodeMs}ms/frame.` : null,
+            ]
+              .filter(Boolean)
+              .join("\n")}
           >
             ⚠️ CPU
           </span>
+        )}
+        {isSoftwareEncoder(info.encoderImplementation) && isHeavyCodec(info.codec) && (
+          <button
+            className="live-optimize-btn"
+            onClick={onOptimizeCodec}
+            disabled={optimizingCodec}
+            title="Trocar pra H.264 agora — mais leve que AV1/VP9 por software. Causa um soluço curto de vídeo pros espectadores."
+          >
+            {optimizingCodec ? "Otimizando..." : "⚡ Otimizar codec"}
+          </button>
         )}
         {info.avgQp !== null && <span title="QP médio — quanto maior, mais comprimido/blocado">QP {info.avgQp}</span>}
         {info.hasAudio && <span>🔊 áudio</span>}

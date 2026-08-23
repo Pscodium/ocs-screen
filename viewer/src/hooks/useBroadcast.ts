@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState } from "livekit-client";
 import { captureScreen, stopCapture } from "../services/capture";
 import { createRoom, endRoom } from "../services/backend";
-import { startBroadcast, readPublishStats, type BroadcastSession } from "../services/publish";
+import { startBroadcast, readPublishStats, switchToH264, type BroadcastSession } from "../services/publish";
 import type { StreamSettings } from "../types/stream";
 
 export type BroadcastState = "idle" | "starting" | "live" | "error";
@@ -20,6 +20,9 @@ export interface BroadcastInfo {
   codec: string;
   encoderImplementation: string | null;
   avgQp: number | null;
+  qualityLimitationReason: string | null;
+  avgEncodeMs: number | null;
+  hasSoftwareLayer: boolean;
 }
 
 const STATS_POLL_MS = 2000;
@@ -28,15 +31,18 @@ export function useBroadcast() {
   const [state, setState] = useState<BroadcastState>("idle");
   const [info, setInfo] = useState<BroadcastInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [optimizingCodec, setOptimizingCodec] = useState(false);
 
   const streamRef = useRef<MediaStream | null>(null);
   const sessionRef = useRef<BroadcastSession | null>(null);
   const roomIdRef = useRef<string | null>(null);
   const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const settingsRef = useRef<StreamSettings | null>(null);
 
   const start = useCallback(async (settings: StreamSettings, slug?: string) => {
     setState("starting");
     setError(null);
+    settingsRef.current = settings;
     try {
       const { stream, settings: actualSettings, hasAudio } = await captureScreen(settings);
       streamRef.current = stream;
@@ -71,6 +77,9 @@ export function useBroadcast() {
         codec: "?",
         encoderImplementation: null,
         avgQp: null,
+        qualityLimitationReason: null,
+        avgEncodeMs: null,
+        hasSoftwareLayer: false,
       });
       setState("live");
 
@@ -86,6 +95,9 @@ export function useBroadcast() {
                   codec: stats.codec,
                   encoderImplementation: stats.encoderImplementation,
                   avgQp: stats.avgQp,
+                  qualityLimitationReason: stats.qualityLimitationReason,
+                  avgEncodeMs: stats.avgEncodeMs,
+                  hasSoftwareLayer: stats.hasSoftwareLayer,
                   actualResolution: stats.actualResolution !== "—" ? stats.actualResolution : prev.actualResolution,
                   actualFps: stats.actualFps > 0 ? stats.actualFps : prev.actualFps,
                 }
@@ -104,6 +116,21 @@ export function useBroadcast() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Ação explícita do usuário (nunca automática — docs/INSIGHTS-ENCODER.md #13) pra forçar H.264
+  // quando o codec preferencial cair em software pesado. Causa um soluço visual curto pros
+  // espectadores (é republicação, não replaceTrack).
+  const optimizeCodec = useCallback(async () => {
+    if (!sessionRef.current || !settingsRef.current) return;
+    setOptimizingCodec(true);
+    try {
+      await switchToH264(sessionRef.current, settingsRef.current);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao otimizar codec.");
+    } finally {
+      setOptimizingCodec(false);
+    }
+  }, []);
+
   const stop = useCallback(async () => {
     if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
     statsIntervalRef.current = null;
@@ -115,6 +142,7 @@ export function useBroadcast() {
     streamRef.current = null;
     sessionRef.current = null;
     roomIdRef.current = null;
+    settingsRef.current = null;
     setInfo(null);
     setState("idle");
   }, []);
@@ -125,5 +153,5 @@ export function useBroadcast() {
     };
   }, []);
 
-  return { state, info, error, start, stop };
+  return { state, info, error, start, stop, optimizeCodec, optimizingCodec };
 }

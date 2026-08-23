@@ -7,6 +7,7 @@ import {
   readPublishStats,
   swapVideoTrack,
   swapAudioTrack,
+  switchToH264,
   type BroadcastSession,
 } from "../services/livekit";
 import type { StreamSettings } from "../types/stream";
@@ -27,6 +28,9 @@ export interface BroadcastInfo {
   codec: string;
   encoderImplementation: string | null;
   avgQp: number | null;
+  qualityLimitationReason: string | null;
+  avgEncodeMs: number | null;
+  hasSoftwareLayer: boolean;
 }
 
 const STATS_POLL_MS = 2000;
@@ -36,6 +40,7 @@ export function useBroadcast() {
   const [info, setInfo] = useState<BroadcastInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [swapping, setSwapping] = useState(false);
+  const [optimizingCodec, setOptimizingCodec] = useState(false);
 
   const stopCaptureRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef<BroadcastSession | null>(null);
@@ -84,6 +89,9 @@ export function useBroadcast() {
         codec: "?",
         encoderImplementation: null,
         avgQp: null,
+        qualityLimitationReason: null,
+        avgEncodeMs: null,
+        hasSoftwareLayer: false,
       });
       setState("live");
 
@@ -99,6 +107,9 @@ export function useBroadcast() {
                   codec: stats.codec,
                   encoderImplementation: stats.encoderImplementation,
                   avgQp: stats.avgQp,
+                  qualityLimitationReason: stats.qualityLimitationReason,
+                  avgEncodeMs: stats.avgEncodeMs,
+                  hasSoftwareLayer: stats.hasSoftwareLayer,
                   // Só sobrescreve quando o outbound-rtp já tem um frame real codificado — evita
                   // piscar pro "—"/0 caso uma leitura pontual venha sem esses campos.
                   actualResolution: stats.actualResolution !== "—" ? stats.actualResolution : prev.actualResolution,
@@ -163,6 +174,21 @@ export function useBroadcast() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Ação explícita do usuário (nunca automática — ver docs/INSIGHTS-ENCODER.md #13) pra forçar
+  // H.264 quando detectar que o codec preferencial caiu em software pesado. Causa um soluço
+  // visual curto pros espectadores (é uma republicação, não um replaceTrack), por isso não roda sozinho.
+  const optimizeCodec = useCallback(async () => {
+    if (!sessionRef.current || !settingsRef.current) return;
+    setOptimizingCodec(true);
+    try {
+      await switchToH264(sessionRef.current, settingsRef.current);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao otimizar codec.");
+    } finally {
+      setOptimizingCodec(false);
+    }
+  }, []);
+
   const stop = useCallback(async () => {
     if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
     statsIntervalRef.current = null;
@@ -185,5 +211,5 @@ export function useBroadcast() {
     };
   }, []);
 
-  return { state, info, error, start, stop, swapSource, swapping };
+  return { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec };
 }

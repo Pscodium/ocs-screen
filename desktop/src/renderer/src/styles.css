@@ -541,6 +541,26 @@ body {
   background: rgba(240, 177, 50, 0.18);
 }
 
+.live-stats-optimize {
+  border: none;
+  padding: 0;
+  font-family: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.live-stats-optimize:hover:not(:disabled) {
+  background: var(--border);
+}
+
+.live-stats-optimize:disabled {
+  opacity: 0.6;
+}
+
+.live-stats-optimize-spinning {
+  animation: spin 0.9s linear infinite;
+}
+
 /* Seletor de fonte — estilo "Ir ao vivo" do Discord (a janela expande enquanto isso fica
    aberto, ver window:set-picker-mode no main process). */
 .picker-overlay {
