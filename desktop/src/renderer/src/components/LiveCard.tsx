@@ -163,6 +163,7 @@ export function LiveCard({ info, swapping, onStop, onSwapSource, onOptimizeCodec
           <span>Encode médio: {info.avgEncodeMs !== null ? `${info.avgEncodeMs}ms/frame` : "—"}</span>
           <span>Limitação: {info.qualityLimitationReason ?? "—"}</span>
           <span>Camada software: {info.hasSoftwareLayer ? "sim" : "não"}</span>
+          <span>FPS de captura nativa: {info.captureFps ?? "— (não é captura nativa)"}</span>
         </div>
       )}
 

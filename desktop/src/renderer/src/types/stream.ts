@@ -12,6 +12,11 @@ export interface StreamSettings {
   // sofre estouro de QP/frame drop com bitrate fixo — testado em produção, ver
   // docs/INSIGHTS-ENCODER.md #1). Por isso não é padrão — o usuário escolhe por sessão.
   sharpText: boolean;
+  // Só se aplica à captura nativa (DXGI Desktop Duplication não desenha cursor por padrão, ver
+  // services/nativeCapture.ts e docs/NATIVE_CAPTURE.md) — desktopCapturer/WGC já inclui o cursor
+  // por conta própria, então esse toggle é ignorado (sem efeito, não é erro) fora do caminho
+  // nativo.
+  showCursor: boolean;
 }
 
 export interface ResolutionConstraint {
@@ -38,6 +43,7 @@ export const defaultStreamSettings: StreamSettings = {
   fps: 60,
   quality: "high",
   sharpText: false,
+  showCursor: true,
 };
 
 // Multiplicador aplicado ao bitrate base conforme o nível de qualidade escolhido.

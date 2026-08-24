@@ -1322,3 +1322,52 @@ body {
   opacity: 1;
   color: var(--text);
 }
+
+/* Painel de teste da captura nativa (docs/NATIVE_CAPTURE.md) — dev-only. */
+.native-capture-debug {
+  position: fixed;
+  top: 0.6rem;
+  right: 0.6rem;
+  width: 280px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  z-index: 60;
+}
+
+.native-capture-debug-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: var(--muted);
+}
+
+.native-capture-debug-fps {
+  color: #7bd88f;
+  font-family: "Consolas", "Courier New", monospace;
+}
+
+.native-capture-debug-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.native-capture-debug-actions .btn-secondary {
+  width: 100%;
+  font-size: 0.72rem;
+  padding: 0.4rem 0.5rem;
+}
+
+.native-capture-debug-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: black;
+  border-radius: 6px;
+  object-fit: contain;
+}

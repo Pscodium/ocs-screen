@@ -146,5 +146,12 @@ vite.config.ts.timestamp-*
 desktop/out/
 desktop/dist/
 
+# NVIDIA ENCODER
+desktop/encoder/
+# SDK vendorizado (headers/lib do NVIDIA Video Codec SDK, licença própria da NVIDIA) e build
+# artifacts do addon nativo — não versionar binário compilado nem SDK de terceiros.
+desktop/native/*/vendor/
+desktop/native/*/build/
+
 # Docs
 docs/

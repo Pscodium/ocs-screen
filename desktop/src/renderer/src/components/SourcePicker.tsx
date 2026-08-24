@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CaptureSource } from "../../../preload/index";
+import { isNativeCaptureAvailable } from "../services/nativeCapture";
 
 interface SourcePickerProps {
   onSelect: (source: CaptureSource) => void;
@@ -24,11 +25,22 @@ export function SourcePicker({ onSelect, onCancel }: SourcePickerProps) {
   }, []);
 
   useEffect(() => {
-    window.screenshare.capture
-      .listSources()
-      .then((list) => {
-        setSources(list);
-        if (!list.some((s) => s.type === "screen") && list.some((s) => s.type === "window")) {
+    // Captura nativa (DXGI) só existe pra monitor inteiro, nunca janela — marca as fontes do tipo
+    // "screen" com o índice de monitor equivalente pra `capture.ts` poder decidir qual caminho
+    // usar (nativo vs desktopCapturer). Ordem de enumeração de tela do Electron/Chromium e de
+    // saída do DXGI (EnumOutputs) seguem a mesma ordem que o Windows expõe os monitores — testado
+    // em produção com 1 monitor; setups multi-monitor caem de volta pro desktopCapturer se a
+    // ordem não bater (usuário sempre pode escolher outro tile).
+    Promise.all([window.screenshare.capture.listSources(), isNativeCaptureAvailable()])
+      .then(([list, nativeAvailable]) => {
+        let screenIndex = 0;
+        const tagged = list.map((source) =>
+          source.type === "screen" && nativeAvailable
+            ? { ...source, nativeMonitorIndex: screenIndex++ }
+            : source,
+        );
+        setSources(tagged);
+        if (!tagged.some((s) => s.type === "screen") && tagged.some((s) => s.type === "window")) {
           setTab("window");
         }
       })

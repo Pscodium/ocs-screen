@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState } from "livekit-client";
-import { captureScreen } from "../services/capture";
+import { captureScreen, type CaptureResult } from "../services/capture";
 import { createRoom, endRoom } from "../services/backend";
 import {
   startBroadcast,
@@ -31,6 +31,9 @@ export interface BroadcastInfo {
   qualityLimitationReason: string | null;
   avgEncodeMs: number | null;
   hasSoftwareLayer: boolean;
+  // fps de captura nativa (medido no main process, antes do encoder) — `null` quando a fonte
+  // atual não usa o caminho nativo (desktopCapturer não tem equivalente a reportar).
+  captureFps: number | null;
 }
 
 const STATS_POLL_MS = 2000;
@@ -48,19 +51,36 @@ export function useBroadcast() {
   const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Guardado pra poder recapturar com as mesmas preferências ao trocar de fonte ao vivo.
   const settingsRef = useRef<StreamSettings | null>(null);
+  const unsubscribeCaptureStatsRef = useRef<(() => void) | null>(null);
+
+  // Assina (ou limpa, se a fonte nova não for nativa) as estatísticas de fps de captura — chamado
+  // tanto no `start()` quanto no `swapSource()`, já que trocar de fonte pode entrar ou sair do
+  // caminho nativo.
+  const subscribeCaptureStats = useCallback((onCaptureStats: CaptureResult["onCaptureStats"]) => {
+    unsubscribeCaptureStatsRef.current?.();
+    unsubscribeCaptureStatsRef.current = null;
+    if (!onCaptureStats) {
+      setInfo((prev) => (prev ? { ...prev, captureFps: null } : prev));
+      return;
+    }
+    unsubscribeCaptureStatsRef.current = onCaptureStats((stats) => {
+      setInfo((prev) => (prev ? { ...prev, captureFps: stats.fps } : prev));
+    });
+  }, []);
 
   const start = useCallback(async (settings: StreamSettings, source: CaptureSource, slug?: string) => {
     setState("starting");
     setError(null);
     settingsRef.current = settings;
     try {
-      const { stream, settings: actualSettings, hasAudio, stopAll } = await captureScreen(
+      const { stream, settings: actualSettings, hasAudio, stopAll, onCaptureStats } = await captureScreen(
         settings,
         source,
         // Track pode parar sozinha (ex.: usuário fecha a janela compartilhada).
         () => stop(),
       );
       stopCaptureRef.current = stopAll;
+      subscribeCaptureStats(onCaptureStats);
 
       const room = await createRoom(settings, slug);
       roomIdRef.current = room.roomId;
@@ -92,6 +112,7 @@ export function useBroadcast() {
         qualityLimitationReason: null,
         avgEncodeMs: null,
         hasSoftwareLayer: false,
+        captureFps: null,
       });
       setState("live");
 
@@ -136,7 +157,7 @@ export function useBroadcast() {
     if (!sessionRef.current || !settingsRef.current) return;
     setSwapping(true);
     try {
-      const { stream, settings: actualSettings, hasAudio, stopAll } = await captureScreen(
+      const { stream, settings: actualSettings, hasAudio, stopAll, onCaptureStats } = await captureScreen(
         settingsRef.current,
         source,
         () => stop(),
@@ -152,6 +173,7 @@ export function useBroadcast() {
       const previousStop = stopCaptureRef.current;
       stopCaptureRef.current = stopAll;
       previousStop?.();
+      subscribeCaptureStats(onCaptureStats);
 
       setInfo((prev) =>
         prev
@@ -192,6 +214,8 @@ export function useBroadcast() {
   const stop = useCallback(async () => {
     if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
     statsIntervalRef.current = null;
+    unsubscribeCaptureStatsRef.current?.();
+    unsubscribeCaptureStatsRef.current = null;
 
     if (stopCaptureRef.current) stopCaptureRef.current();
     if (sessionRef.current) await sessionRef.current.disconnect();

@@ -5,6 +5,17 @@ directories:
 files:
   - out/**/*
   - package.json
+  # Addon nativo (captura DXGI, ver docs/NATIVE_CAPTURE.md) — não fica em node_modules, então
+  # precisa ser listado explicitamente (senão o build de produção nunca embarca o .node e a
+  # captura nativa fica sempre indisponível, caindo direto pro desktopCapturer sem avisar por quê).
+  - native/capture-core/build/Release/capture_core.node
+# Arquivo binário nativo NÃO pode ser carregado de dentro do app.asar (require de .node dentro de
+# um asar arquivado falha) — sem isso, `require()` em main/index.ts quebraria silenciosamente em
+# produção mesmo com o arquivo listado acima em `files`. asarUnpack extrai pra
+# app.asar.unpacked/native/... e o Electron redireciona o require automaticamente pro caminho
+# extraído (mesmo padrão usado por qualquer addon nativo em node_modules).
+asarUnpack:
+  - native/capture-core/build/Release/capture_core.node
 win:
   target: nsis
   icon: build/icon.ico

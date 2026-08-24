@@ -9,6 +9,8 @@ import {
   desktopCapturer,
   clipboard,
   nativeImage,
+  MessageChannelMain,
+  type MessagePortMain,
 } from "electron";
 import { join } from "path";
 import { autoUpdater } from "electron-updater";
@@ -359,3 +361,161 @@ ipcMain.handle("capture:list-sources", async () => {
     appIconDataUrl: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null,
   }));
 });
+
+// Captura nativa (DXGI Desktop Duplication + Direct3D 11) — alternativa ao WGC-via-Chromium do
+// `desktopCapturer` acima. Ver docs/NATIVE_CAPTURE.md. Só existe em Windows; carregamento com
+// try/catch pra cair de volta pro desktopCapturer padrão em qualquer plataforma/ambiente onde o
+// addon não tenha sido compilado (ex.: macOS/Linux, ou build sem as ferramentas de C++).
+interface NativeMonitor {
+  index: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface NativeFrame {
+  width: number;
+  height: number;
+  buffer: Buffer;
+  accessLost?: boolean;
+}
+
+interface NativeCaptureAddon {
+  initialize(): boolean;
+  listMonitors(): NativeMonitor[];
+  start(monitorIndex: number): boolean;
+  stop(): void;
+  acquireFrame(timeoutMs: number): NativeFrame | null;
+  setCursorEnabled(enabled: boolean): void;
+}
+
+let nativeCapture: NativeCaptureAddon | null = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  nativeCapture = require(join(__dirname, "../../native/capture-core/build/Release/capture_core.node"));
+  if (!nativeCapture?.initialize()) {
+    console.error("[native-capture] initialize() retornou false — addon carregou mas D3D11/DXGI falhou.");
+    nativeCapture = null;
+  } else {
+    console.log("[native-capture] addon carregado e inicializado com sucesso.");
+  }
+} catch (err) {
+  console.error("[native-capture] falha ao carregar o addon nativo, caindo pra desktopCapturer:", err);
+  nativeCapture = null;
+}
+
+let captureFramePort: MessagePortMain | null = null;
+let capturing = false;
+// Contadores de estatística — resetados a cada `start()`, reportados pro renderer 1x/segundo
+// (frequência baixa demais pra justificar o MessagePort de frames; vai por `webContents.send`
+// normal mesmo).
+let framesSinceStats = 0;
+let timeoutsSinceStats = 0;
+let lastStatsAt = 0;
+
+function stopNativeCapture(): void {
+  capturing = false;
+  if (captureFramePort) {
+    captureFramePort.close();
+    captureFramePort = null;
+  }
+  nativeCapture?.stop();
+}
+
+ipcMain.handle("native-capture:available", () => !!nativeCapture);
+
+ipcMain.handle("native-capture:list-monitors", () => nativeCapture?.listMonitors() ?? []);
+
+ipcMain.on("native-capture:set-cursor-enabled", (_event, enabled: boolean) => {
+  nativeCapture?.setCursorEnabled(enabled);
+});
+
+// Loop de captura recursivo via setImmediate, NÃO setInterval de cadência fixa — testado em
+// produção: com setInterval(cb, ~17ms) mirando 60fps, se `acquireFrame` retornasse ANTES do
+// timeout (frame já pronto), o processo ficava ocioso esperando o próximo tick agendado em vez
+// de já pedir o próximo frame — desperdiçando tempo morto entre capturas e limitando o FPS real
+// abaixo do que o DXGI conseguiria entregar. `AcquireNextFrame` já bloqueia até `timeoutMs`
+// esperando frame novo (ou retorna na hora se já tem um pronto), então reagendar assim que a
+// chamada anterior volta já respeita o ritmo real de entrega sem dormir tempo extra à toa.
+function runCaptureLoop(monitorIndex: number, win: BrowserWindow, timeoutMs: number): void {
+  if (!capturing || !nativeCapture || !captureFramePort) return;
+
+  const frame = nativeCapture.acquireFrame(timeoutMs);
+
+  if (frame?.accessLost) {
+    // Sessão de duplicação morreu (troca de resolução, prompt de UAC, GPU resetou) — tenta
+    // recriar sozinho antes de desistir e avisar o renderer.
+    nativeCapture.stop();
+    if (!nativeCapture.start(monitorIndex)) {
+      win.webContents.send("native-capture:error", "Captura nativa perdeu acesso ao monitor.");
+      stopNativeCapture();
+      return;
+    }
+  } else if (frame) {
+    framesSinceStats++;
+
+    // `frame.buffer` é um Buffer do Node — `.buffer` é o ArrayBuffer por trás dele. Buffers desse
+    // tamanho (múltiplos MB) nunca vêm do pool interno do Node (só objetos pequenos, <4KB, são
+    // fatiados de um pool compartilhado), então byteOffset é sempre 0 aqui — ainda assim uma
+    // pequena verificação evita mandar lixo se isso mudar de comportamento algum dia.
+    //
+    // `MessagePortMain.postMessage` (lado Node/main) só aceita OUTROS MessagePortMain na lista de
+    // transferência — não ArrayBuffer como o `postMessage` de browser normal. O ArrayBuffer ainda
+    // atravessa via structured clone automático do Electron, só não é um transfer sem cópia; dado
+    // o resto do pipeline já ter uma cópia GPU→CPU, mais uma cópia aqui é aceitável por agora.
+    const buffer =
+      frame.buffer.byteOffset === 0
+        ? frame.buffer.buffer
+        : frame.buffer.buffer.slice(frame.buffer.byteOffset, frame.buffer.byteOffset + frame.buffer.byteLength);
+
+    captureFramePort.postMessage({ width: frame.width, height: frame.height, buffer });
+  } else {
+    // `frame === null` = timeout normal (tela sem mudança) — não é erro, só não tinha frame novo.
+    timeoutsSinceStats++;
+  }
+
+  const now = Date.now();
+  if (now - lastStatsAt >= 1000) {
+    win.webContents.send("native-capture:stats", { fps: framesSinceStats, timeouts: timeoutsSinceStats });
+    framesSinceStats = 0;
+    timeoutsSinceStats = 0;
+    lastStatsAt = now;
+  }
+
+  setImmediate(() => runCaptureLoop(monitorIndex, win, timeoutMs));
+}
+
+// `MessageChannelMain` em vez de mandar cada frame por `ipcMain`/`webContents.send` — frame de
+// 1080p BGRA é ~8MB; serializar isso a 30-60x por segundo pelo canal de IPC normal (que faz
+// structured clone) reintroduziria o mesmo tipo de bloqueio que travou o app na tentativa anterior
+// de captura nativa (docs/POC-NATIVE-CAPTURE.md, arquivado). Transferir um ArrayBuffer por um
+// MessagePort é só troca de dono do buffer, sem cópia de serialização.
+ipcMain.on("native-capture:start", (event, monitorIndex: number, targetFps: number) => {
+  if (!nativeCapture) return;
+  const win = resolveWindow(event);
+  if (!win) return;
+
+  stopNativeCapture();
+
+  if (!nativeCapture.start(monitorIndex)) {
+    win.webContents.send("native-capture:error", "Falha ao iniciar a captura nativa desse monitor.");
+    return;
+  }
+
+  const { port1, port2 } = new MessageChannelMain();
+  captureFramePort = port1;
+  // MessagePortMain enfileira (ou descarta) mensagens até start() ser chamado explicitamente —
+  // sem isso, todo postMessage() abaixo simplesmente nunca chega no outro lado, sem erro nenhum.
+  captureFramePort.start();
+  win.webContents.postMessage("native-capture:port", null, [port2]);
+
+  capturing = true;
+  framesSinceStats = 0;
+  timeoutsSinceStats = 0;
+  lastStatsAt = Date.now();
+  const timeoutMs = Math.max(1, Math.round(1000 / Math.max(1, targetFps)));
+  setImmediate(() => runCaptureLoop(monitorIndex, win, timeoutMs));
+});
+
+ipcMain.on("native-capture:stop", () => stopNativeCapture());

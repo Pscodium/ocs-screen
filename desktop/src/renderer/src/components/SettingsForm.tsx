@@ -87,6 +87,21 @@ export function SettingsForm({ settings, onChange }: SettingsFormProps) {
           <span className="toggle-slider" />
         </span>
       </label>
+
+      <label className="toggle-row">
+        <span className="toggle-row-label">
+          Mostrar cursor
+          <span className="toggle-row-hint">Só afeta captura de tela inteira (monitor)</span>
+        </span>
+        <span className="toggle-switch">
+          <input
+            type="checkbox"
+            checked={settings.showCursor}
+            onChange={(e) => onChange({ ...settings, showCursor: e.target.checked })}
+          />
+          <span className="toggle-slider" />
+        </span>
+      </label>
     </div>
   );
 }
