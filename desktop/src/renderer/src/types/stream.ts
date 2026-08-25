@@ -17,6 +17,21 @@ export interface StreamSettings {
   // por conta própria, então esse toggle é ignorado (sem efeito, não é erro) fora do caminho
   // nativo.
   showCursor: boolean;
+  // Pipeline nativo de ponta a ponta (captura DXGI → encode NVENC → transporte libdatachannel,
+  // ver docs/NATIVE_CAPTURE.md Fase 3/4) em vez de LiveKit pro vídeo — evita o encoder por
+  // software do Chromium (gargalo medido em produção: `qualityLimitationReason: "cpu"` sob carga
+  // de jogo, derrubando resolução mesmo com hardware de sobra). Opt-in e só disponível quando a
+  // fonte é um monitor (captura nativa não cobre janela) e os addons `capture_core`/
+  // `transport_core` carregaram. V1 é 1 espectador por sala (sem SFU próprio ainda).
+  nativeTransport: boolean;
+  // Opt-in, só tem efeito com `nativeTransport` ligado — pede HEVC ao encoder em vez de H.264
+  // (CLAUDE.md §Codecs prioriza H.264 por garantia de hardware, esse toggle é uma EXCEÇÃO
+  // deliberada do usuário pra quem quer testar/aproveitar HEVC). Cascata de fallback automática
+  // do lado nativo se HEVC não der: GPU/driver sem suporte → NVENC H.264; nenhum encoder MF de
+  // HEVC na máquina → software H.264; viewer sem decode de HEVC (Chrome depende de hardware do
+  // dispositivo) → host detecta e reinicia em H.264 sozinho. Ver docs/NATIVE_CAPTURE.md Fase 3
+  // "HEVC".
+  preferHevc: boolean;
 }
 
 export interface ResolutionConstraint {
@@ -44,6 +59,8 @@ export const defaultStreamSettings: StreamSettings = {
   quality: "high",
   sharpText: false,
   showCursor: true,
+  nativeTransport: false,
+  preferHevc: false,
 };
 
 // Multiplicador aplicado ao bitrate base conforme o nível de qualidade escolhido.

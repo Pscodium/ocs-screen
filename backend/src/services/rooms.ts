@@ -1,5 +1,6 @@
 import { config } from "../config.js";
 import { generateRoomId } from "../utils/ids.js";
+import { cleanupNativeSockets } from "./nativeWsRelay.js";
 import type { Room, RoomSettings } from "../types/room.js";
 
 const defaultSettings: RoomSettings = {
@@ -13,7 +14,12 @@ const emptyTimers = new Map<string, NodeJS.Timeout>();
 
 export class SlugTakenError extends Error {}
 
-export function createRoom(hostIdentity: string, settings?: Partial<RoomSettings>, slug?: string): Room {
+export function createRoom(
+  hostIdentity: string,
+  settings?: Partial<RoomSettings>,
+  slug?: string,
+  nativeMode = false,
+): Room {
   const id = slug ?? generateRoomId();
   if (slug && rooms.has(slug)) throw new SlugTakenError(`Sala "${slug}" já está em uso.`);
 
@@ -22,6 +28,7 @@ export function createRoom(hostIdentity: string, settings?: Partial<RoomSettings
     hostIdentity,
     createdAt: Date.now(),
     settings: { ...defaultSettings, ...settings },
+    nativeMode,
   };
   rooms.set(room.id, room);
   return room;
@@ -40,6 +47,7 @@ export function listRooms(): Room[] {
 
 export function deleteRoom(roomId: string): void {
   rooms.delete(roomId);
+  cleanupNativeSockets(roomId);
   const timer = emptyTimers.get(roomId);
   if (timer) {
     clearTimeout(timer);

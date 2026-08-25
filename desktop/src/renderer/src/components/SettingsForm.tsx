@@ -102,6 +102,44 @@ export function SettingsForm({ settings, onChange }: SettingsFormProps) {
           <span className="toggle-slider" />
         </span>
       </label>
+
+      <label className="toggle-row">
+        <span className="toggle-row-label">
+          Pipeline nativo (beta)
+          <span className="toggle-row-hint">
+            Encode NVENC nativo em vez do encoder por software do navegador — só monitor, sem troca
+            de fonte ao vivo ainda
+          </span>
+        </span>
+        <span className="toggle-switch">
+          <input
+            type="checkbox"
+            checked={settings.nativeTransport}
+            onChange={(e) => onChange({ ...settings, nativeTransport: e.target.checked })}
+          />
+          <span className="toggle-slider" />
+        </span>
+      </label>
+
+      {settings.nativeTransport && (
+        <label className="toggle-row">
+          <span className="toggle-row-label">
+            Usar HEVC (beta)
+            <span className="toggle-row-hint">
+              Só com pipeline nativo. Cai pra H.264 sozinho se a GPU/navegador do espectador não
+              suportar
+            </span>
+          </span>
+          <span className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={settings.preferHevc}
+              onChange={(e) => onChange({ ...settings, preferHevc: e.target.checked })}
+            />
+            <span className="toggle-slider" />
+          </span>
+        </label>
+      )}
     </div>
   );
 }

@@ -29,6 +29,19 @@ export interface NativeMonitor {
   height: number;
 }
 
+export interface NativeTransportStartArgs {
+  roomId: string;
+  backendUrl: string;
+  monitorIndex: number;
+  targetFps: number;
+  bitrateBps: number;
+  stunUrls: string[];
+  showCursor: boolean;
+  // Opcional (padrão "h264") — PEDIDO, não garantia (cascata de fallback interna pode degradar
+  // pra H.264, e o viewer pode não conseguir decodificar HEVC — ver `onEncoderInfo`).
+  codec?: "h264" | "hevc";
+}
+
 export interface NativeCaptureStats {
   // Frames de fato entregues no último segundo — distinto do fps que o LiveKit reporta (esse é
   // do lado de captura, antes do encoder; útil pra diferenciar "captura tá lenta" de "encoder tá
@@ -102,6 +115,42 @@ const api = {
       const listener = (_event: IpcRendererEvent, stats: NativeCaptureStats) => callback(stats);
       ipcRenderer.on("native-capture:stats", listener);
       return () => ipcRenderer.removeListener("native-capture:stats", listener);
+    },
+  },
+  // Transporte nativo (libdatachannel, ver docs/NATIVE_CAPTURE.md Fase 4) — publish opt-in que
+  // pula LiveKit pro vídeo. Ver ipcMain.handle("native-transport:*") em main/index.ts.
+  nativeTransport: {
+    isAvailable: (): Promise<boolean> => ipcRenderer.invoke("native-transport:available"),
+    start: (args: NativeTransportStartArgs): Promise<boolean> => ipcRenderer.invoke("native-transport:start", args),
+    stop: (): Promise<void> => ipcRenderer.invoke("native-transport:stop"),
+    // `viewerId` identifica de qual sessão é o evento (1 por espectador, ver
+    // docs/NATIVE_CAPTURE.md Fase 4 "SFU"); `connectedCount` é quantos espectadores estão
+    // conectados AGORA no total — usado pro contador no LiveCard.
+    onState: (callback: (info: { viewerId: string; state: string; connectedCount: number }) => void) => {
+      const listener = (_event: IpcRendererEvent, info: { viewerId: string; state: string; connectedCount: number }) =>
+        callback(info);
+      ipcRenderer.on("native-transport:state", listener);
+      return () => ipcRenderer.removeListener("native-transport:state", listener);
+    },
+    onEnded: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on("native-transport:ended", listener);
+      return () => ipcRenderer.removeListener("native-transport:ended", listener);
+    },
+    onError: (callback: (message: string) => void) => {
+      const listener = (_event: IpcRendererEvent, message: string) => callback(message);
+      ipcRenderer.on("native-transport:error", listener);
+      return () => ipcRenderer.removeListener("native-transport:error", listener);
+    },
+    // Avisa se o encoder caiu pro fallback de software (Media Foundation) por NVENC indisponível
+    // e/ou o codec ativo (pode ter degradado de HEVC pra H.264, ver docs/NATIVE_CAPTURE.md Fase 3
+    // "Fallback de encoder por software"/"HEVC"). Dispara de novo se reiniciar em H.264 porque o
+    // viewer não conseguiu decodificar HEVC.
+    onEncoderInfo: (callback: (info: { software: boolean; codec: "h264" | "hevc" }) => void) => {
+      const listener = (_event: IpcRendererEvent, info: { software: boolean; codec: "h264" | "hevc" }) =>
+        callback(info);
+      ipcRenderer.on("native-transport:encoder", listener);
+      return () => ipcRenderer.removeListener("native-transport:encoder", listener);
     },
   },
 };

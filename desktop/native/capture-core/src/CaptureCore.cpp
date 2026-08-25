@@ -24,17 +24,22 @@ bool CaptureCore::Initialize() {
         context_.GetAddressOf());
     if (FAILED(hr)) return false;
 
-    // Prioridade máxima de agendamento de GPU (0-7, 7 = mais alta) pra esse device — sem isso,
+    // Pequeno boost de agendamento de GPU (escala -7 a 7, 0 = padrão) pra esse device — sem isso,
     // sob contenção real de GPU (jogo rodando ao mesmo tempo), o driver pode atrasar os comandos
     // de CopyResource da captura atrás dos comandos de renderização do jogo, derrubando o fps de
     // CAPTURA mesmo com AcquireNextFrame retornando rápido (frame pronto, só a cópia é que demora
-    // a ser agendada na GPU). É a mesma técnica usada por ferramentas de captura de jogo
-    // (OBS Game Capture etc.) pra não perder pra prioridade padrão do processo do jogo.
+    // a ser agendada na GPU).
+    //
+    // NÃO usar o valor máximo (7) aqui — medido em teste: o EncoderCore roda NVENC no MESMO
+    // device (mesma prioridade), então captura+encode com prioridade 7 (máxima da escala) ficam
+    // ACIMA do processo do jogo (prioridade padrão 0) e literalmente roubam fatia de GPU dele a
+    // cada frame — jogo trava/stutter. 1 é o suficiente pra não passar fome sob contenção leve,
+    // sem sequestrar o jogo.
     // `SetGPUThreadPriority` não é suportado por todo driver — falha graciosamente sem quebrar a
     // captura (só continua na prioridade padrão do driver).
     ComPtr<IDXGIDevice> dxgiDevice;
     if (SUCCEEDED(device_.As(&dxgiDevice))) {
-        dxgiDevice->SetGPUThreadPriority(7);
+        dxgiDevice->SetGPUThreadPriority(1);
     }
 
     return true;
@@ -204,6 +209,13 @@ AcquireResult CaptureCore::AcquireFrame(FrameData& outFrame, uint32_t timeoutMs)
         return AcquireResult::AccessLost;
     }
     if (FAILED(hr)) {
+        // Falha genérica (não timeout, não access-lost) — confere se o DEVICE inteiro morreu
+        // (TDR do driver) antes de devolver um erro "normal". Se morreu, NENHUMA chamada D3D11
+        // daqui pra frente é segura (é o caminho mais provável do crash sem log medido sob carga
+        // pesada de GPU — ver AcquireResult::DeviceLost).
+        if (device_ && FAILED(device_->GetDeviceRemovedReason())) {
+            return AcquireResult::DeviceLost;
+        }
         return AcquireResult::Error;
     }
 
@@ -248,5 +260,56 @@ AcquireResult CaptureCore::AcquireFrame(FrameData& outFrame, uint32_t timeoutMs)
 
     context_->Unmap(stagingTexture_.Get(), 0);
 
+    return AcquireResult::Ok;
+}
+
+AcquireResult CaptureCore::AcquireFrameGpuOnly(uint32_t timeoutMs) {
+    if (!duplication_) return AcquireResult::Error;
+
+    ComPtr<IDXGIResource> desktopResource;
+    DXGI_OUTDUPL_FRAME_INFO frameInfo;
+
+    HRESULT hr = duplication_->AcquireNextFrame(timeoutMs, &frameInfo, desktopResource.ReleaseAndGetAddressOf());
+    if (hr == DXGI_ERROR_WAIT_TIMEOUT) {
+        return AcquireResult::Timeout;
+    }
+    if (hr == DXGI_ERROR_ACCESS_LOST) {
+        return AcquireResult::AccessLost;
+    }
+    if (FAILED(hr)) {
+        // Ver nota igual em AcquireFrame() — device removido precisa parar ANTES de qualquer
+        // outra chamada D3D11/NVENC nele.
+        if (device_ && FAILED(device_->GetDeviceRemovedReason())) {
+            return AcquireResult::DeviceLost;
+        }
+        return AcquireResult::Error;
+    }
+
+    ComPtr<ID3D11Texture2D> acquiredTexture;
+    hr = desktopResource.As(&acquiredTexture);
+    if (FAILED(hr)) {
+        duplication_->ReleaseFrame();
+        return AcquireResult::Error;
+    }
+
+    context_->CopyResource(composeTexture_.Get(), acquiredTexture.Get());
+    duplication_->ReleaseFrame();
+
+    if (captureCursor_) {
+        DrawCursorOverlay();
+        // `IDXGISurface1::GetDC`/`ReleaseDC` (dentro de DrawCursorOverlay) é interop GDI↔DXGI —
+        // não sincroniza sozinho com comandos D3D11 SEGUINTES no mesmo device. Sem esse Flush, o
+        // `CopyResource` que o EncoderCore faz logo depois (ler composeTexture_ pro buffer de
+        // entrada do NVENC) pode disparar antes do desenho do cursor terminar de ser submetido de
+        // verdade na GPU — textura "rasgada" (parte com o desenho, parte sem), que decodifica como
+        // um artefato de cor visível (medido em produção: bloco de cor errada, sempre no mesmo
+        // instante das micro-engasgadas — mesma causa, dois sintomas). O readback antigo
+        // (Map/memcpy, removido por custo) escondia isso de graça porque Map() já força esse
+        // mesmo sync como efeito colateral.
+        context_->Flush();
+    }
+
+    // Sem staging/Map/memcpy — a textura composta (GetComposeTexture()) já é o suficiente pro
+    // NVENC ler direto via CopyResource GPU→GPU (EncoderCore::EncodeFrame).
     return AcquireResult::Ok;
 }

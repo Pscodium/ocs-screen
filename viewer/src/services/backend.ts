@@ -38,3 +38,29 @@ export async function fetchActiveRooms(): Promise<RoomSummary[]> {
   const data = await res.json();
   return data.rooms;
 }
+
+export interface RoomInfo {
+  roomId: string;
+  createdAt: number;
+  nativeMode: boolean;
+}
+
+// Chamado antes de decidir qual hook usar pra assistir (LiveKit vs transporte nativo, ver
+// hooks/useNativeStream.ts) — WatchPage precisa saber `nativeMode` antes de conectar em qualquer
+// um dos dois.
+export async function fetchRoomInfo(roomId: string): Promise<RoomInfo> {
+  const res = await fetch(`${backendUrl}/rooms/${roomId}`);
+  if (!res.ok) throw new Error("Sala não encontrada ou encerrada.");
+  return res.json();
+}
+
+// Sinalização do transporte nativo via WebSocket (libdatachannel, ver docs/NATIVE_CAPTURE.md Fase
+// 4 e backend/src/services/nativeWsRelay.ts) — substitui o REST+polling anterior. Backend só faz
+// relay puro; o protocolo (mensagens JSON `{type: "offer"|"answer"|"ice", ...}`) é decidido e lido
+// direto em useNativeStream.ts, aqui só abre a conexão.
+export type NativeVideoCodec = "h264" | "hevc";
+
+export function openNativeSignalingSocket(roomId: string): WebSocket {
+  const wsUrl = `${backendUrl.replace(/^http/, "ws")}/rooms/${roomId}/native/ws?role=viewer`;
+  return new WebSocket(wsUrl);
+}

@@ -103,7 +103,7 @@ Napi::Value OnLocalDescription(const Napi::CallbackInfo& info) {
     auto tsfn = Napi::ThreadSafeFunction::New(env, info[1].As<Napi::Function>(), "onLocalDescription", 0, 1);
     session->OnLocalDescription([tsfn](const std::string& sdp, const std::string& type) mutable {
         auto* data = new std::pair<std::string, std::string>(sdp, type);
-        tsfn.BlockingCall(data, [](Napi::Env env, Napi::Function jsCallback, std::pair<std::string, std::string>* data) {
+        tsfn.NonBlockingCall(data, [](Napi::Env env, Napi::Function jsCallback, std::pair<std::string, std::string>* data) {
             jsCallback.Call({Napi::String::New(env, data->first), Napi::String::New(env, data->second)});
             delete data;
         });
@@ -120,7 +120,7 @@ Napi::Value OnLocalCandidate(const Napi::CallbackInfo& info) {
     auto tsfn = Napi::ThreadSafeFunction::New(env, info[1].As<Napi::Function>(), "onLocalCandidate", 0, 1);
     session->OnLocalCandidate([tsfn](const std::string& candidate, const std::string& mid) mutable {
         auto* data = new std::pair<std::string, std::string>(candidate, mid);
-        tsfn.BlockingCall(data, [](Napi::Env env, Napi::Function jsCallback, std::pair<std::string, std::string>* data) {
+        tsfn.NonBlockingCall(data, [](Napi::Env env, Napi::Function jsCallback, std::pair<std::string, std::string>* data) {
             jsCallback.Call({Napi::String::New(env, data->first), Napi::String::New(env, data->second)});
             delete data;
         });
@@ -137,7 +137,11 @@ Napi::Value OnStateChange(const Napi::CallbackInfo& info) {
     auto tsfn = Napi::ThreadSafeFunction::New(env, info[1].As<Napi::Function>(), "onStateChange", 0, 1);
     session->OnStateChange([tsfn](const std::string& state) mutable {
         auto* data = new std::string(state);
-        tsfn.BlockingCall(data, [](Napi::Env env, Napi::Function jsCallback, std::string* data) {
+        // NonBlockingCall (não BlockingCall): a thread interna do libdatachannel só enfileira e
+        // segue — se bloqueasse esperando o JS terminar, e o JS reagir a "failed" fechando a
+        // sessão (pc_->close() tentando parar essa mesma thread), é auto-join/destruição a partir
+        // da própria callback → crash reproduzido (ver docs/NATIVE_CAPTURE.md Sprint 22).
+        tsfn.NonBlockingCall(data, [](Napi::Env env, Napi::Function jsCallback, std::string* data) {
             jsCallback.Call({Napi::String::New(env, *data)});
             delete data;
         });
@@ -153,7 +157,9 @@ Napi::Value OnPliRequest(const Napi::CallbackInfo& info) {
 
     auto tsfn = Napi::ThreadSafeFunction::New(env, info[1].As<Napi::Function>(), "onPliRequest", 0, 1);
     session->OnPliRequest([tsfn]() mutable {
-        tsfn.BlockingCall([](Napi::Env env, Napi::Function jsCallback) {
+        // NonBlockingCall pelo mesmo motivo do OnStateChange acima — mesma thread interna que
+        // recebe RTCP PLI é a que pode acabar bloqueada num pc_->close() em cadeia.
+        tsfn.NonBlockingCall([](Napi::Env env, Napi::Function jsCallback) {
             jsCallback.Call({});
         });
     });

@@ -10,10 +10,21 @@ import {
   clipboard,
   nativeImage,
   MessageChannelMain,
+  crashReporter,
   type MessagePortMain,
 } from "electron";
 import { join } from "path";
+import { createWriteStream } from "fs";
 import { autoUpdater } from "electron-updater";
+import WebSocket from "ws";
+
+// Salva dump LOCAL de crash (sem subir pra lugar nenhum, `uploadToServer: false`) — sem isso o
+// crash reporter interno do Chromium tenta conectar num servidor de coleta que não existe nesse
+// build de dev e desiste silenciosamente ("crashpad_client_win.cc: not connected"), sem salvar
+// nada. Crash sob carga pesada de GPU (jogo + captura+NVENC) já aconteceu 2x nessa sessão sem
+// deixar rastro nenhum — isso dá visibilidade real da próxima vez.
+crashReporter.start({ submitURL: "", uploadToServer: false, compress: false });
+console.log("[crash-reporter] dumps salvos em:", app.getPath("crashDumps"));
 
 // `backgroundThrottling: false` (webPreferences) só evita o Chromium throttlar TIMERS/rAF do
 // renderer quando a janela fica oclusa/sem foco — existe uma camada SEPARADA, em nível de
@@ -230,6 +241,32 @@ app.on("window-all-closed", () => {
   app.quit();
 });
 
+// Transmissão nativa não tem NENHUMA rede de segurança do lado do backend (diferente do LiveKit,
+// que detecta o host sumindo via webhook + TTL de sala vazia) — sem isso aqui, fechar o app com
+// uma transmissão ativa deixava a sala presa pra sempre (bug real: continuava em "Assistir" depois
+// do processo já ter morrido). `before-quit` intercepta uma vez (preventDefault), avisa o backend
+// (best-effort, com timeout curto pra não travar o app fechando se o backend estiver fora do ar) e
+// deixa o quit seguir de verdade na segunda vez.
+let quitCleanupDone = false;
+app.on("before-quit", (event) => {
+  if (quitCleanupDone || !ntActive || !ntRoomId || !ntBackendUrl) return;
+  quitCleanupDone = true;
+  event.preventDefault();
+  const roomId = ntRoomId;
+  const backendUrl = ntBackendUrl;
+  (async () => {
+    try {
+      const abort = new AbortController();
+      const timeout = setTimeout(() => abort.abort(), 2000);
+      await fetch(`${backendUrl}/rooms/${roomId}`, { method: "DELETE", signal: abort.signal }).catch(() => {});
+      clearTimeout(timeout);
+    } finally {
+      stopNativeTransport();
+      app.quit();
+    }
+  })();
+});
+
 // Window controls (a janela é frameless — precisa desses comandos vindos do titlebar custom).
 // Resolvem a janela que MANDOU o comando (event.sender), não um global — permite ter mais de uma
 // janela aberta (ver window:open-test-window) sem uma controlar a outra por engano.
@@ -379,6 +416,10 @@ interface NativeFrame {
   height: number;
   buffer: Buffer;
   accessLost?: boolean;
+  // Device D3D11 morreu de vez (TDR) — diferente de accessLost (sessão de duplicação morta mas
+  // device sobrevive, dá pra Stop()+Start() de novo). Aqui NENHUMA chamada D3D11/NVENC seguinte
+  // é segura — ver AcquireResult::DeviceLost em CaptureCore.h.
+  deviceLost?: boolean;
 }
 
 interface NativeCaptureAddon {
@@ -387,7 +428,72 @@ interface NativeCaptureAddon {
   start(monitorIndex: number): boolean;
   stop(): void;
   acquireFrame(timeoutMs: number): NativeFrame | null;
+  // Mesma captura, sem o readback GPU→CPU (Map+memcpy de um frame inteiro) — usado pelo loop do
+  // transporte nativo, que só precisa da textura composta (encodeCurrentFrame lê ela direto da
+  // GPU). Sem width/height/buffer, só accessLost/deviceLost/ok.
+  acquireFrameGpuOnly(timeoutMs: number): { ok?: boolean; accessLost?: boolean; deviceLost?: boolean } | null;
   setCursorEnabled(enabled: boolean): void;
+  // Encoder NVENC (Fase 3) — opera sobre a captura já em andamento (mesmo device/dimensões do
+  // CaptureCore). Ver addon.cpp: InitEncoder/EncodeCurrentFrame/ForceKeyframe/SetEncoderBitrate.
+  // `codec` opcional ("h264"/"hevc", padrão "h264") é o PEDIDO — cascata de fallback interna
+  // (EncoderCore::Initialize) pode degradar pra H.264 sozinha (GPU/MFT sem suporte a HEVC).
+  // `getActiveCodec()` diz o que realmente ficou ativo depois dessa chamada.
+  initEncoder(fps: number, bitrateBps: number, codec?: "h264" | "hevc"): boolean;
+  // true quando NVENC não inicializou e caiu pro fallback de software (Media Foundation, ver
+  // SoftwareEncoderCore.cpp) — bem mais pesado em CPU, o host quer saber pra avisar o usuário.
+  isUsingSoftwareEncoder(): boolean;
+  getActiveCodec(): "h264" | "hevc";
+  destroyEncoder(): void;
+  encodeCurrentFrame(): Buffer[];
+  forceKeyframe(): void;
+  // `forceKeyframe` (opcional, padrão true) — passar `false` no ajuste automático de
+  // congestionamento (AIMD): forçar keyframe bem na hora que já tá represado piora em vez de
+  // ajudar (bug real medido — ver docs/NATIVE_CAPTURE.md Fase 4 "Congestion control").
+  setEncoderBitrate(bitrateBps: number, forceKeyframe?: boolean): boolean;
+  // Transporte nativo (libdatachannel, Fase 4) — mesclado neste mesmo addon, ver addon.cpp. 1
+  // sessão POR ESPECTADOR (`viewerId`, gerado pelo backend na conexão WS — ver
+  // backend/src/services/nativeWsRelay.ts) — é o "SFU" do projeto: mesmo frame codificado
+  // (`transportSendVideoFrame`, sem viewerId) é mandado pra TODAS as sessões ativas de uma vez,
+  // fan-out direto em C++.
+  // `codec` TEM que ser o codec REALMENTE ativo do encoder (getActiveCodec()), não o pedido —
+  // usado pra detectar keyframe certo no bitstream (ver TransportCore.cpp).
+  transportCreateSession(viewerId: string, stunUrls: string[], codec?: "h264" | "hevc"): boolean;
+  // Fecha só a sessão desse espectador — os outros continuam recebendo o stream.
+  transportCloseSession(viewerId: string): void;
+  // Fecha TODAS as sessões — usado só ao parar a transmissão inteira, não no ciclo normal de um
+  // espectador saindo.
+  transportCloseAllSessions(): void;
+  transportAddVideoChannel(viewerId: string): boolean;
+  transportCreateOffer(viewerId: string): boolean;
+  transportSetRemoteDescription(viewerId: string, sdp: string, type: string): boolean;
+  transportAddRemoteCandidate(viewerId: string, candidate: string, mid: string): boolean;
+  transportIsConnected(viewerId: string): boolean;
+  // Quantos espectadores estão com sessão conectada agora — usado pro contador no LiveCard.
+  transportConnectedCount(): number;
+  // Maior `bufferedAmount()` (bytes represados esperando a rede escoar) entre as sessões
+  // conectadas — sinal de congestionamento pro bitrate adaptativo (ver docs/NATIVE_CAPTURE.md
+  // Fase 4 "Congestion control"). 0 = ninguém conectado ou tudo escoando bem.
+  transportMaxBufferedAmount(): number;
+  transportSendVideoFrame(data: Buffer, timestampUs: number): boolean;
+  // Callbacks GLOBAIS (registrados 1x, não por sessão) — `viewerId` sempre vem primeiro, pra
+  // saber de qual espectador é a mensagem (ver addon.cpp, `g_on*Tsfn`).
+  transportOnLocalDescription(callback: (viewerId: string, sdp: string, type: string) => void): void;
+  transportOnLocalCandidate(callback: (viewerId: string, candidate: string, mid: string) => void): void;
+  transportOnStateChange(callback: (viewerId: string, state: string) => void): void;
+  // Loop de captura+encode+envio numa thread nativa própria — ver StreamWorker.h/.cpp.
+  startStream(monitorIndex: number, targetFps: number): boolean;
+  stopStream(): void;
+  getStreamStats(): {
+    running: boolean;
+    ended?: boolean;
+    acquired?: number;
+    timeouts?: number;
+    encodedPackets?: number;
+    emptyEncodeCalls?: number;
+    sendOk?: number;
+    sendFail?: number;
+    bytes?: number;
+  };
 }
 
 let nativeCapture: NativeCaptureAddon | null = null;
@@ -519,3 +625,350 @@ ipcMain.on("native-capture:start", (event, monitorIndex: number, targetFps: numb
 });
 
 ipcMain.on("native-capture:stop", () => stopNativeCapture());
+
+// Transporte nativo (libdatachannel, ver docs/NATIVE_CAPTURE.md Fase 4) — caminho opt-in que
+// substitui LiveKit pro vídeo: DXGI (captura) → NVENC (encode, mesmo device, zero-copy) → RTP H.264
+// direto pro espectador, sem o encoder por software do Chromium no meio (gargalo medido em
+// produção: `qualityLimitationReason: "cpu"` sob carga de jogo). V1 = 1 espectador (sem SFU
+// próprio ainda — `TransportCore` já modela 1 sessão por espectador, mas só uma é usada aqui).
+//
+// Mesclado no MESMO addon que a captura/encoder (era `transport-core` separado) — o motivo é
+// StreamWorker (C++) poder chamar `TransportCore::SendVideoFrame` DIRETO, sem cruzar N-API por
+// frame. Medido em produção: rodando o loop via `setImmediate`/N-API por chamada (como era antes),
+// a cadência de captura caía de ~165/s pra ~50/s sob movimento de tela real (scroll contínuo) —
+// cada chamada N-API síncrona bloqueava a thread principal do Electron, e sob carga (frames
+// maiores) isso serializava o processo inteiro. Agora captura+encode+envio rodam inteiramente
+// numa thread nativa própria (StreamWorker) — só sinalização (SDP/ICE, baixa frequência) ainda
+// cruza pra JS.
+
+interface NativeTransportStartArgs {
+  roomId: string;
+  backendUrl: string;
+  monitorIndex: number;
+  targetFps: number;
+  bitrateBps: number;
+  stunUrls: string[];
+  showCursor: boolean;
+  // Opcional (padrão "h264") — PEDIDO, não garantia (ver `getActiveCodec()`/cascata de fallback
+  // em EncoderCore::Initialize, docs/NATIVE_CAPTURE.md Fase 3 "HEVC").
+  codec?: "h264" | "hevc";
+}
+
+ipcMain.handle("native-transport:available", () => !!nativeCapture);
+
+let ntActive = false;
+let ntStatsInterval: ReturnType<typeof setInterval> | null = null;
+// Sala/backend da transmissão nativa ativa — guardado só pra poder avisar o backend (DELETE) se o
+// app fechar com uma transmissão no ar. Ver app.on("before-quit") mais abaixo: caminho nativo não
+// tem NENHUMA rede de segurança do lado do backend (diferente do LiveKit, que detecta o host
+// caindo via webhook + TTL) — sem isso aqui, fechar o app com a sala aberta deixava ela presa pra
+// sempre (bug real, sala continuava aparecendo em "Assistir" depois do app fechado).
+let ntRoomId: string | null = null;
+let ntBackendUrl: string | null = null;
+// WS de sinalização ativo (host) — UMA conexão pra transmissão inteira (não por espectador). Cada
+// espectador negocia sua própria sessão TransportCore por cima dessa mesma conexão, roteado por
+// `viewerId` (ver backend/src/services/nativeWsRelay.ts). Substitui o REST+polling antigo.
+let ntWs: WebSocket | null = null;
+let ntStunUrls: string[] = [];
+// Guardados pra poder reiniciar o encoder em H.264 e recriar sessão sem precisar re-plumbar esses
+// valores — ver o fallback de "viewer não decodifica HEVC" no handler de mensagens do WS abaixo.
+let ntTargetFps = 30;
+let ntBitrateBps = 0;
+// Codec ATIVO agora (pode ter degradado de HEVC pra H.264 em qualquer momento — cascata de
+// fallback do encoder, ou fallback por decode do primeiro viewer). Toda sessão NOVA usa esse
+// valor. Só tenta o fallback HEVC→H.264 UMA vez por transmissão.
+let ntActiveCodec: "h264" | "hevc" = "h264";
+let ntCodecFallbackDone = false;
+
+function stopNativeTransport(): void {
+  ntActive = false;
+  ntWs?.close();
+  ntWs = null;
+  if (ntStatsInterval) clearInterval(ntStatsInterval);
+  ntStatsInterval = null;
+  nativeCapture?.transportCloseAllSessions();
+  nativeCapture?.destroyEncoder();
+  nativeCapture?.stop();
+  ntRoomId = null;
+  ntBackendUrl = null;
+}
+
+// WS pode ainda não estar "open" na hora — enfileira via `once("open", ...)` nesse caso raro em
+// vez de perder a mensagem.
+function sendWhenOpen(ws: WebSocket, payload: Record<string, unknown>): void {
+  const json = JSON.stringify(payload);
+  if (ws.readyState === WebSocket.OPEN) ws.send(json);
+  else ws.once("open", () => ws.send(json));
+}
+
+// Cria a sessão TransportCore de UM espectador (viewerId) e manda o offer dele — chamado toda vez
+// que o backend avisa `{type:"viewer-joined"}` (espectador novo entrando OU um já conectado antes
+// que precisa negociar de novo com um host reconectado). Diferente do V1 (1 sessão global), isso
+// nunca derruba os outros espectadores — cada um vive/morre independente.
+function createViewerSession(viewerId: string): boolean {
+  if (!nativeCapture) return false;
+  if (!nativeCapture.transportCreateSession(viewerId, ntStunUrls, ntActiveCodec)) return false;
+  if (!nativeCapture.transportAddVideoChannel(viewerId)) return false;
+  if (!nativeCapture.transportCreateOffer(viewerId)) return false;
+  return true;
+}
+
+ipcMain.handle("native-transport:start", async (event, args: NativeTransportStartArgs): Promise<boolean> => {
+  if (!nativeCapture) return false;
+  const win = resolveWindow(event);
+  if (!win) return false;
+
+  stopNativeTransport();
+  stopNativeCapture(); // caminho antigo (raw frame → LiveKit) e o nativo não rodam ao mesmo tempo — os dois disputam o mesmo CaptureCore singleton.
+
+  const { roomId, backendUrl, monitorIndex, targetFps, bitrateBps, stunUrls, showCursor, codec } = args;
+  ntRoomId = roomId;
+  ntBackendUrl = backendUrl;
+  ntTargetFps = targetFps;
+  ntBitrateBps = bitrateBps;
+  ntStunUrls = stunUrls;
+  ntCodecFallbackDone = false;
+
+  if (!nativeCapture.start(monitorIndex)) return false;
+  nativeCapture.setCursorEnabled(showCursor);
+  if (!nativeCapture.initEncoder(targetFps, bitrateBps, codec ?? "h264")) {
+    nativeCapture.stop();
+    return false;
+  }
+  // Codec REALMENTE ativo pode ter degradado do pedido (cascata de fallback dentro do addon) —
+  // nunca assume que o pedido foi atendido, lê de volta.
+  ntActiveCodec = nativeCapture.getActiveCodec();
+  // Avisa o renderer se caiu pro fallback de software (NVENC indisponível) e/ou codec degradou —
+  // bem mais pesado em CPU o primeiro, e o usuário pediu HEVC mas ganhou H.264 no segundo (ver
+  // docs/NATIVE_CAPTURE.md Fase 3 "Fallback de encoder por software"/"HEVC").
+  win.webContents.send("native-transport:encoder", { software: nativeCapture.isUsingSoftwareEncoder(), codec: ntActiveCodec });
+
+  // Callbacks GLOBAIS de sinalização (1x, não por sessão) — `viewerId` vem sempre primeiro (ver
+  // addon.cpp, `g_on*Tsfn`). Precisam existir ANTES de qualquer `transportCreateSession`.
+  nativeCapture.transportOnStateChange((viewerId, state) => {
+    win.webContents.send("native-transport:state", {
+      viewerId,
+      state,
+      connectedCount: nativeCapture?.transportConnectedCount() ?? 0,
+    });
+    if (state === "failed" || state === "closed" || state === "disconnected") {
+      // Só derruba a sessão DESSE espectador — os outros continuam recebendo o stream. Diferente
+      // do V1 (sessão global única), não tem "renegociação da transmissão inteira" mais: se esse
+      // mesmo espectador voltar (F5), o WS dele reconecta com um `viewerId` NOVO e o backend
+      // manda `viewer-joined` de novo sozinho.
+      nativeCapture?.transportCloseSession(viewerId);
+    }
+  });
+  nativeCapture.transportOnLocalDescription((viewerId, sdp, type) => {
+    if (ntWs) sendWhenOpen(ntWs, { type, viewerId, sdp, codec: ntActiveCodec });
+  });
+  nativeCapture.transportOnLocalCandidate((viewerId, candidate, mid) => {
+    if (ntWs) sendWhenOpen(ntWs, { type: "ice", viewerId, candidate, mid });
+  });
+
+  // WS de sinalização — UMA conexão pra transmissão inteira, multiplexada por `viewerId` (ver
+  // backend/src/services/nativeWsRelay.ts). Substitui o REST+polling antigo por completo.
+  const wsUrl = `${backendUrl.replace(/^http/, "ws")}/rooms/${roomId}/native/ws?role=host`;
+  const ws = new WebSocket(wsUrl);
+  ntWs = ws;
+
+  ws.on("message", (data) => {
+    if (!ntActive) return;
+    let msg: { type?: string; viewerId?: string; sdp?: string; decoderOk?: boolean; candidate?: string; mid?: string };
+    try {
+      msg = JSON.parse(data.toString());
+    } catch {
+      return; // mensagem malformada — ignora, próxima que chegar tenta de novo
+    }
+    if (!msg.viewerId) return;
+
+    if (msg.type === "viewer-joined") {
+      if (!createViewerSession(msg.viewerId)) {
+        console.error(`[native-transport] falha ao criar sessão pro espectador ${msg.viewerId}`);
+      }
+    } else if (msg.type === "viewer-left") {
+      nativeCapture?.transportCloseSession(msg.viewerId);
+    } else if (msg.type === "answer" && msg.sdp) {
+      // Viewer checou `VideoDecoder.isConfigSupported()` ANTES de responder e reportou que não
+      // consegue decodificar HEVC (Chrome só decodifica com suporte de hardware do dispositivo,
+      // nem sempre presente — ver docs/NATIVE_CAPTURE.md Fase 3 "HEVC"). O encoder é
+      // COMPARTILHADO entre todos os espectadores (1 encode só, fan-out pra N sessões) — só dá
+      // pra derrubar pra H.264 globalmente se ainda não tiver NINGUÉM conectado de verdade em
+      // HEVC (senão quebraria quem já tá funcionando). Se já tiver, esse espectador específico
+      // fica sem vídeo — limitação conhecida do encoder único (SVC/encode duplo resolveria, fora
+      // de escopo agora).
+      if (ntActiveCodec === "hevc" && msg.decoderOk === false && !ntCodecFallbackDone) {
+        const connectedCount = nativeCapture?.transportConnectedCount() ?? 0;
+        if (connectedCount === 0) {
+          ntCodecFallbackDone = true;
+          console.warn("[native-transport] viewer não decodifica HEVC — reiniciando encoder em H.264.");
+          nativeCapture?.transportCloseSession(msg.viewerId);
+          nativeCapture?.destroyEncoder();
+          nativeCapture?.initEncoder(ntTargetFps, ntBitrateBps, "h264");
+          ntActiveCodec = nativeCapture?.getActiveCodec() ?? "h264";
+          win.webContents.send("native-transport:encoder", {
+            software: nativeCapture?.isUsingSoftwareEncoder() ?? false,
+            codec: ntActiveCodec,
+          });
+          createViewerSession(msg.viewerId);
+          return;
+        }
+        console.warn(
+          `[native-transport] viewer ${msg.viewerId} não decodifica HEVC, mas já tem espectador(es) recebendo HEVC — não dá pra trocar o codec agora.`,
+        );
+        nativeCapture?.transportCloseSession(msg.viewerId);
+        return;
+      }
+      nativeCapture?.transportSetRemoteDescription(msg.viewerId, msg.sdp, "answer");
+    } else if (msg.type === "ice" && msg.candidate) {
+      nativeCapture?.transportAddRemoteCandidate(msg.viewerId, msg.candidate, msg.mid ?? "0");
+    }
+  });
+
+  ws.on("error", (err) => {
+    console.error("[native-transport] erro no WebSocket de sinalização:", err);
+  });
+
+  ntActive = true;
+
+  // Loop em JS (setImmediate reagendado a cada volta) em vez de StreamWorker (thread nativa) —
+  // ver docs/NATIVE_CAPTURE.md: a thread nativa não eliminou um stutter residual sob movimento
+  // contínuo de tela mesmo depois de vários fixes (pacing, VBV, prioridade MMCSS, timestamp de
+  // relógio real) — revertido temporariamente enquanto a causa raiz (provável contenção com
+  // threads internas do libdatachannel) não é investigada mais a fundo. Mantém os fixes que JÁ
+  // se mostraram corretos independente do loop: pacing 8x, VBV, NonBlockingCall no PLI/state.
+  const activeWin = win;
+  const timeoutMs = Math.max(1, Math.round(1000 / Math.max(1, targetFps)));
+  const startTime = Date.now();
+
+  let dbgAcquired = 0;
+  let dbgTimeouts = 0;
+  let dbgEncodedPackets = 0;
+  let dbgEncodedEmptyCalls = 0;
+  let dbgSendOk = 0;
+  let dbgSendFail = 0;
+  let dbgBytes = 0;
+  let dbgLastLog = Date.now();
+
+  // Controle de congestionamento (AIMD) — sem RTP/REMB nesse caminho (vídeo vai por DataChannel,
+  // não media track), o sinal disponível é o `bufferedAmount()` do canal SCTP: cresce quando a
+  // rede não escoa os frames na velocidade que o encoder produz. Encode é COMPARTILHADO entre
+  // todos os espectadores (1 bitrate só), então adapta pro PIOR conectado
+  // (`transportMaxBufferedAmount()` já retorna o máximo entre as sessões). `bitrateBps` (do
+  // settings) é o TETO — nunca sobe além do que o usuário pediu, só desce sob congestionamento e
+  // recupera de volta até esse teto quando a rede folga de novo.
+  let ntCurrentBitrateBps = bitrateBps;
+  let ntLowBufferStreak = 0;
+  // Exige 2 ticks ALTOS seguidos (não 1 só) antes de baixar — um pico isolado de bufferedAmount
+  // (rajada normal de encode, não congestionamento de verdade) não deve disparar queda de bitrate
+  // + keyframe à toa. Ver bug real corrigido: mesmo em loopback local sem congestionamento
+  // nenhum, 1 tick alto isolado já disparava reação.
+  let ntHighBufferStreak = 0;
+  const CONGESTION_MIN_BITRATE_BPS = 500_000;
+  const CONGESTION_DECREASE_FACTOR = 0.7;
+  const CONGESTION_HIGH_STREAK_REQUIRED = 2;
+  // Igual ao VBV do EncoderCore (~3 frames de orçamento) — folga generosa antes de considerar
+  // "represado de verdade" (jitter normal de rede não deve disparar queda de qualidade à toa).
+  const congestionHighWatermarkBytes = () => (ntCurrentBitrateBps / 8 / targetFps) * 3;
+  // Exige alguns ticks seguidos de buffer baixo (não só 1) antes de subir — evita ficar
+  // oscilando bitrate pra cima e pra baixo repetidamente com jitter momentâneo.
+  const CONGESTION_LOW_STREAK_REQUIRED = 5;
+  const CONGESTION_INCREASE_STEP_BPS = Math.round(bitrateBps * 0.1);
+
+  // DEBUG temporário — grava o bitstream H.264 cru (mesmos bytes que vão pro DataChannel) num
+  // arquivo, pra validar com ffprobe/ffplay FORA do WebCodecs inteiro. Isola se a corrupção
+  // visual já vem do encoder (aparece no dump também) ou só surge no decode/transporte (dump
+  // limpo, artefato só no lado do espectador).
+  const dumpPath = join(app.getPath("temp"), "native-transport-debug.h264");
+  const dumpStream = createWriteStream(dumpPath);
+  console.log(`[native-transport] gravando bitstream de debug em: ${dumpPath}`);
+
+  function runNativeTransportLoop(): void {
+    if (!ntActive || !nativeCapture) return;
+
+    const frame = nativeCapture.acquireFrameGpuOnly(timeoutMs);
+    if (frame?.deviceLost) {
+      // Device D3D11 morreu (TDR do driver — comum sob contenção pesada de GPU, jogo 3D +
+      // captura+NVENC disputando). Recuperar de verdade exigiria recriar todo o pipeline; por
+      // ora só para com segurança em vez de continuar chamando encode/send num device morto
+      // (esse era o caminho provável do crash sem log nenhum, medido jogando Rocket League).
+      console.error("[native-transport] device D3D11 perdido (TDR) — encerrando a transmissão nativa.");
+      activeWin.webContents.send("native-transport:error", "A GPU reiniciou (sobrecarga) e a transmissão precisou parar. Tenta de novo.");
+      activeWin.webContents.send("native-transport:ended");
+      stopNativeTransport();
+      return;
+    }
+    if (frame?.accessLost) {
+      nativeCapture.stop();
+      if (!nativeCapture.start(monitorIndex)) {
+        activeWin.webContents.send("native-transport:ended");
+        stopNativeTransport();
+        return;
+      }
+    } else if (frame) {
+      dbgAcquired++;
+      const packets = nativeCapture.encodeCurrentFrame();
+      if (packets.length === 0) dbgEncodedEmptyCalls++;
+      // Microssegundos reais desde o início (relógio real, não passo fixo por frame) — vídeo vai
+      // por DataChannel agora, não RTP, então não precisa de unidade de clock 90kHz.
+      const timestampUs = (Date.now() - startTime) * 1000;
+      for (const packet of packets) {
+        dbgEncodedPackets++;
+        dbgBytes += packet.length;
+        dumpStream.write(packet);
+        const ok = nativeCapture.transportSendVideoFrame(packet, timestampUs);
+        if (ok) dbgSendOk++;
+        else dbgSendFail++;
+      }
+    } else {
+      dbgTimeouts++;
+    }
+
+    const now = Date.now();
+    if (now - dbgLastLog >= 1000) {
+      const maxBuffered = nativeCapture.transportMaxBufferedAmount();
+      console.log(
+        `[native-transport] acquired=${dbgAcquired} timeouts=${dbgTimeouts} encodedPackets=${dbgEncodedPackets} emptyEncodeCalls=${dbgEncodedEmptyCalls} sendOk=${dbgSendOk} sendFail=${dbgSendFail} bytes=${dbgBytes} viewersConnected=${nativeCapture.transportConnectedCount()} bitrateBps=${ntCurrentBitrateBps} maxBuffered=${maxBuffered}`,
+      );
+      dbgAcquired = dbgTimeouts = dbgEncodedPackets = dbgEncodedEmptyCalls = dbgSendOk = dbgSendFail = dbgBytes = 0;
+      dbgLastLog = now;
+
+      // AIMD: decréscimo multiplicativo rápido sob congestionamento, recuperação aditiva lenta —
+      // mesmo espírito de TCP/qualquer congestion control clássico (cai rápido quando dói, sobe
+      // devagar pra não estourar de novo na hora). `false` no forceKeyframe: forçar keyframe (bem
+      // maior que delta frame) exatamente quando já tá represado piora em vez de ajudar (bug real
+      // corrigido — ver docs/NATIVE_CAPTURE.md Fase 4 "Congestion control").
+      const isHigh = maxBuffered > congestionHighWatermarkBytes();
+      ntHighBufferStreak = isHigh ? ntHighBufferStreak + 1 : 0;
+
+      if (isHigh) {
+        ntLowBufferStreak = 0;
+        if (ntHighBufferStreak >= CONGESTION_HIGH_STREAK_REQUIRED) {
+          const next = Math.max(CONGESTION_MIN_BITRATE_BPS, Math.round(ntCurrentBitrateBps * CONGESTION_DECREASE_FACTOR));
+          if (next < ntCurrentBitrateBps) {
+            ntCurrentBitrateBps = next;
+            nativeCapture.setEncoderBitrate(ntCurrentBitrateBps, false);
+            console.warn(`[native-transport] congestionamento detectado (buffer=${maxBuffered}B) — bitrate reduzido pra ${ntCurrentBitrateBps}bps.`);
+          }
+        }
+      } else if (ntCurrentBitrateBps < bitrateBps) {
+        ntLowBufferStreak++;
+        if (ntLowBufferStreak >= CONGESTION_LOW_STREAK_REQUIRED) {
+          ntLowBufferStreak = 0;
+          ntCurrentBitrateBps = Math.min(bitrateBps, ntCurrentBitrateBps + CONGESTION_INCREASE_STEP_BPS);
+          nativeCapture.setEncoderBitrate(ntCurrentBitrateBps);
+          console.log(`[native-transport] rede recuperada — bitrate subindo pra ${ntCurrentBitrateBps}bps.`);
+        }
+      }
+    }
+
+    setImmediate(runNativeTransportLoop);
+  }
+  setImmediate(runNativeTransportLoop);
+
+  return true;
+});
+
+ipcMain.handle("native-transport:stop", async () => {
+  stopNativeTransport();
+});

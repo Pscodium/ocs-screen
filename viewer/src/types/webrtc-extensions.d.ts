@@ -12,3 +12,21 @@ interface RTCRtpReceiver {
 interface HTMLVideoElement {
   webkitEnterFullscreen?: () => void;
 }
+
+// `MediaStreamTrackGenerator` (Insertable Streams) não faz parte do lib.dom.d.ts padrão do TS
+// ainda — usado em useNativeStream.ts pra transformar os `VideoFrame` decodificados pelo
+// `VideoDecoder` (WebCodecs) numa MediaStreamTrack de verdade, anexável no <video>.
+declare class MediaStreamTrackGenerator<T = VideoFrame> extends MediaStreamTrack {
+  constructor(init: { kind: "video" | "audio" });
+  readonly writable: WritableStream<T>;
+}
+
+// `avc.format` é suportado pelo Chromium (permite Annex-B — SPS/PPS embutido no bitstream, com
+// start code — em vez de exigir AVCC com `description` separada) mas ainda não está no
+// VideoDecoderConfig do lib.dom.d.ts desta versão do TS.
+interface VideoDecoderConfig {
+  avc?: { format: "annexb" | "avc" };
+  // Mesmo caso do `avc` acima, mas pro HEVC (usado em useNativeStream.ts quando o host negocia
+  // HEVC em vez de H.264 — ver docs/NATIVE_CAPTURE.md Fase 3 "HEVC").
+  hevc?: { format: "annexb" | "hevc" };
+}

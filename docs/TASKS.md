@@ -165,3 +165,133 @@
 - Indicador de áudio nos dois lados: host mostra "🔊 áudio" quando a track foi entregue de verdade; viewer mostra controle de volume (popover estilo Discord, hover revela slider) só quando a track de áudio chega, senão mostra "sem áudio" — nunca finge que tem som quando não tem.
 - Player do viewer começa mudo por padrão (`muted` direto no `<video>`, não via effect) — autoplay com som é bloqueado pelo navegador sem gesto do usuário; antes disso o ícone mostrava 🔊 mas não tocava nada até mexer em algo, parecia bug.
 - POC de captura nativa (Fase A: pipeline `MediaStreamTrackProcessor`→`Generator`; Fase B: `Windows.Graphics.Capture` via Rust) foi **revertida por completo** — Fase A funcionou, Fase B tirava a barra do Chromium mas travava o app inteiro (decode síncrono de frame grande na thread da UI). Registro do que foi tentado e por que ficou em `docs/POC-NATIVE-CAPTURE.md` (arquivado, código não existe mais no repo).
+
+## Sprint 23 — Sessão real ponta a ponta: F5, sala presa, flood de polling, contador de espectadores
+
+Primeiro teste real do pipeline nativo com backend+viewer+desktop rodando juntos (não isolado em
+script). Vários bugs reais encontrados e corrigidos, um débito técnico confirmado e adiado de
+propósito, um pendente de firewall que só dá pra validar com build de produção.
+
+### Corrigido e confirmado
+
+- [x] **F5 no viewer derrubava a transmissão inteira**: sessão nativa é singleton (V1 = 1 viewer,
+  sem SFU ainda). `transportOnStateChange` chamava `stopNativeTransport()` (mata captura+encoder)
+  em qualquer `failed`/`closed`/`disconnected` — F5 fecha o `RTCPeerConnection` do viewer, host via
+  isso como desconexão e matava tudo. `beginNativeNegotiation()` (`desktop/src/main/index.ts`) virou
+  função reentrante: recria só a sessão WebRTC (fecha, recria, novo offer) sem tocar captura/encoder.
+- [x] **`/native/offer` 404 eterno depois do F5**: `beginNativeNegotiation` disparava o
+  `POST /native/reset` sem `await`, concorrente com o offer novo (que `AddVideoChannel()` já dispara
+  sozinho via auto-negociação do libdatachannel) — se o reset chegasse DEPOIS do offer no backend,
+  apagava o offer recém-setado pra sempre. Corrigido com `await` antes de recriar a sessão.
+- [x] **sala nativa sumia da lista "Assistir" sozinha**: `GET /rooms` cruza com `LiveKit.listRooms()`
+  e apaga quem não aparece lá depois de 20s — mas sala nativa NUNCA entra no LiveKit (vídeo não passa
+  por lá), então toda sala nativa virava "órfã" e se autodestruía ~20s depois de criada, mesmo ativa.
+  `routes/rooms.ts`: `isOrphan` agora pula salas com `nativeMode: true`.
+- [x] **sala nativa presa pra sempre se o app fechasse**: caminho LiveKit tem rede de segurança
+  (webhook + TTL); nativo não tinha nenhuma — `window-all-closed` só chamava `app.quit()`. Adicionado
+  `app.on("before-quit")`: manda `DELETE /rooms/:id` (best-effort, timeout 2s) antes de deixar
+  fechar de verdade, só quando tinha transmissão nativa ativa.
+- [x] **flood de polling no backend**: 3 problemas juntos — (1) loop de ICE candidates do host rodava
+  pra sempre mesmo depois de conectado (2 req/s por HORAS à toa); (2) o mesmo bug do lado do viewer
+  (`useNativeStream.ts`); (3) poll de `/native/answer` (esperando o primeiro viewer) e de
+  `/native/offer` do lado do viewer eram intervalo fixo de 500ms sem nunca parar enquanto ninguém
+  conectava. Corrigido: loops de ICE agora param assim que a conexão fecha (`transportIsConnected()`
+  no host, `pc.connectionState === "connected"` no viewer); polls de offer/answer ganharam backoff
+  exponencial (1s → dobra → teto 5s host / 5s viewer) em vez de martelar fixo.
+- [x] **contador de espectadores sempre "0" no LiveCard no modo nativo**: `useBroadcast.ts` fixava
+  `viewerCount: 0` no `setInfo` inicial e nunca atualizava de novo nesse caminho (diferente do
+  LiveKit, que tem callback de `numParticipants`). Ligado `onNativeTransportState` — "connected" vira
+  1, resto vira 0 (V1 = no máximo 1 espectador mesmo).
+- [x] **teste real no celular (rede local) "Load failed"**: `viewer/.env` não existia — Vite só lê
+  `.env` da PRÓPRIA raiz (`viewer/`), não do `.env` da raiz do monorepo. `VITE_BACKEND_URL` nunca
+  chegava no bundle, caía no fallback `http://localhost:4000` — no celular, "localhost" é o próprio
+  celular, não a máquina host. Criado `viewer/.env` com o IP da LAN.
+
+### Confirmado, mas adiado de propósito (decisão consciente)
+
+- **Múltiplos espectadores simultâneos**: dá erro — segundo viewer rouba a única sessão do primeiro
+  (renegocia, joga o 1º fora). Já era débito técnico CONHECIDO e documentado (Fase 4, "SFU próprio"),
+  só confirmado em teste real agora. Fix de verdade = múltiplas sessões `TransportCore` (uma por
+  viewer) + sinalização por viewer (não por sala) + mandar o mesmo frame codificado pra N sessões —
+  trabalho grande, melhor fazer junto com a troca de sinalização REST→WebSocket (mesmo motivo: não
+  vale redesenhar o modelo de sessão duas vezes).
+- **Sinalização REST+polling vs WebSocket**: polling com backoff resolveu o flood por ora. WS é o
+  fix "certo" de produção (já pendente documentado), mas adiado até fazer junto com o SFU acima —
+  o modelo de sessão muda de qualquer jeito quando virar multi-viewer.
+
+### Pendente, não testável ainda (precisa build de produção)
+
+- **PC/celular em rede diferente do host (mesmo Wi-Fi, mas cabo→WiFi) trava em "conectando..." até
+  timeout**: suspeita forte é Windows Firewall bloqueando UDP de entrada no processo Electron de dev
+  (sem regra configurada) — mesma LAN não deveria precisar de STUN/TURN pra candidato "host" direto
+  funcionar. Não dá pra confirmar/testar de forma conclusiva rodando em dev; fica pendente até
+  existir um build de produção (assinado, com o app instalado de verdade, onde regra de firewall
+  pode ser testada igual usuário final veria). TURN também continua fora do escopo por ora (mesma
+  decisão de sempre, CLAUDE.md §Infraestrutura) — só relevante se o problema não for firewall.
+- **Micro engasgadas residuais**: usuário reporta FPS estável tanto em compartilhamento de tela
+  normal quanto em jogo, mas com "microengasgadas" ocasionais — possivelmente a mesma "aberração
+  cromática periódica" já em aberto desde a sessão de 2026-08-24 (`docs/NATIVE_CAPTURE.md`, seção
+  "Em aberto"), possivelmente outra coisa. Não é bloqueio (avaliado como baixo risco pelo usuário
+  dado que FPS já tá estável) — fica pra investigar depois, junto com a causa raiz da aberração
+  cromática já mapeada (suspeita de contenção de GPU no decode, testável só com dispositivo de
+  decode separado).
+
+## Sprint 24 — HEVC opt-in e Fase 4 completa (sinalização WS + SFU multi-espectador)
+
+- [x] **HEVC opt-in com fallback automático em 3 camadas** (toggle "Usar HEVC (beta)", só com
+  pipeline nativo): (1) `EncoderCore` cascateia NVENC HEVC → NVENC H.264 → software HEVC (Media
+  Foundation, `MFTEnumEx`) → software H.264; (2) viewer roda `VideoDecoder.isConfigSupported()`
+  ANTES de responder o offer (Chrome só decodifica HEVC com hardware do dispositivo, inconsistente)
+  e reporta `decoderOk` na answer; (3) host reage sozinho, reiniciando o encoder em H.264 se
+  necessário. **Bug real achado durante a implementação**: `<codecapi.h>` sozinho não declara
+  `ICodecAPI` (só as GUIDs) — a interface de verdade é `<icodecapi.h>`, header separado; e usar os
+  dois junto com `<mfidl.h>`/`<mftransform.h>` no mesmo arquivo quebra a compilação (`ICodecAPI`
+  fica só forward-declarado via `<strmif.h>` puxado transitivamente) — resolvido isolando o uso de
+  `ICodecAPI` num arquivo próprio (`CodecApiHelper.h/.cpp`). **Validado em produção pelo usuário**:
+  100% funcional; bônus grande não esperado — com HEVC+NVENC juntos, a aberração cromática
+  periódica (em aberto desde 24/08) sumiu quase por completo e o stuttering não foi mais sentido,
+  confirmando a suspeita de contenção de GPU no decode por software do H.264 (ver
+  `docs/NATIVE_CAPTURE.md`, seção "Em aberto").
+- [x] **Sinalização REST+polling → WebSocket**: `backend/src/services/nativeWsRelay.ts` (novo,
+  substitui `nativeSignaling.ts` removido) — relay puro, sem storage de offer/answer (elimina a
+  classe de bug do polling: nada fica "velho" porque não existe onde ficar velho). Validado com
+  script isolado (host+viewer, incluindo viewer conectando depois do host já ter mandado offer).
+- [x] **Multi-espectador de verdade (SFU do projeto)**: `g_transportSessions` (mapa por
+  `viewerId`) substituiu o `g_transport` singleton em `addon.cpp` — 1 sessão `TransportCore` por
+  espectador, mesmo encode compartilhado, fan-out em C++ (`TransportSendVideoFrame` manda pro
+  mapa inteiro de uma vez). Protocolo de sinalização evoluiu junto: cada espectador ganha um
+  `viewerId` só dele (gerado no backend), host recebe `viewer-joined`/`viewer-left` e negocia uma
+  sessão por espectador. Um espectador saindo (F5, fechou aba) só derruba a própria sessão — os
+  outros continuam recebendo o stream sem interrupção, MUDANÇA GRANDE em relação ao V1 (qualquer
+  desconexão matava a transmissão inteira pra todo mundo). Validado com script isolado simulando
+  host+2 viewers simultâneos: cada um só vê o próprio offer, respostas roteadas certas, fechar um
+  não afeta o outro. **Validado em produção pelo usuário**: 100% funcional, contador de
+  espectadores do LiveCard refletindo corretamente via WS.
+- **Limitação conhecida, aceita por ora**: encoder é compartilhado entre todos os espectadores (1
+  encode só). Se HEVC tá ativo e um espectador NOVO não decodifica, só dá pra reverter o encoder
+  pra H.264 globalmente se ainda não tiver ninguém conectado de verdade em HEVC — senão quebraria
+  quem já funciona. Nesse caso o espectador novo fica sem vídeo. Corrigir de verdade precisaria de
+  SVC ou encode duplicado — fora de escopo agora, documentado como trade-off consciente.
+- **Pendente pra próxima sessão**: testar de verdade com múltiplos dispositivos reais assistindo
+  ao mesmo tempo (validado com host+cliente(s) na mesma máquina; ainda não testado com hardware
+  fisicamente separado); simulcast e latência adaptativa continuam de fora (Fase 4 do
+  `docs/NATIVE_CAPTURE.md`); AV1 continua adiado (mesmo motivo de antes — disponibilidade de
+  encoder inconsistente, precisa investigar antes).
+
+## Sprint 25 — Congestion control (AIMD) + bug real de FPS
+
+- [x] **Congestion control via `bufferedAmount()` do DataChannel** (sem REMB — resquício de RTP,
+  não se aplica mais desde a troca pra DataChannel/SCTP): `TransportCore::GetBufferedAmount()` +
+  `transportMaxBufferedAmount()` no addon (pior caso entre todas as sessões, já que o encode é
+  compartilhado). AIMD no loop de 1s de `main/index.ts`: buffer alto → queda multiplicativa
+  (×0.7, piso 500kbps); buffer baixo sustentado → sobe aditivo (+10%) até o teto configurado.
+- [x] **Bug real corrigido no mesmo sprint (achado pelo usuário em teste real)**: FPS caiu de 60
+  cravado pra 48-55 (HEVC+NVENC) mesmo em loopback local SEM congestionamento nenhum, assim que o
+  congestion control foi ligado. Causa: `EncoderCore::SetBitrate` sempre forçava keyframe
+  (`forceIDR=1`, herdado do uso original de troca de qualidade manual) — cada ajuste do AIMD
+  injetava um keyframe (bem maior que frame normal) EXATAMENTE na hora que o buffer já tava alto,
+  piorando o represamento em vez de aliviar, ciclo de queda-keyframe-represa-queda. Corrigido:
+  `SetBitrate` ganhou parâmetro `forceKeyframe` (padrão `true`, preserva troca manual do usuário);
+  AIMD passa `false`. Também endurecido o gatilho de queda pra exigir 2 ticks ALTOS seguidos (não
+  reage a 1 pico isolado de rajada normal de encode) — só a subida já exigia 5 ticks baixos.
+  Recompilado — usuário ainda vai revalidar que os 60fps cravados voltaram.

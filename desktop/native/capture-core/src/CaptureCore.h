@@ -30,8 +30,16 @@ enum class AcquireResult {
     // Nenhum frame novo dentro do timeout — normal (tela parada), não é erro.
     Timeout,
     // DXGI_ERROR_ACCESS_LOST — a sessão de duplicação morreu (troca de resolução, UAC, GPU
-    // resetou). Quem chama precisa Stop() + Start() de novo.
+    // resetou mas o DEVICE em si sobreviveu). Quem chama precisa Stop() + Start() de novo.
     AccessLost,
+    // O DEVICE D3D11 inteiro morreu (TDR do driver, "Timeout Detection and Recovery" — comum sob
+    // contenção pesada de GPU: jogo 3D + nossa captura+NVENC disputando a mesma GPU). Diferente
+    // de AccessLost: aqui NENHUMA chamada D3D11/NVENC nesse device é segura — continuar chamando
+    // CopyResource/EncodeFrame num device removido é o caminho mais provável do crash sem stack
+    // trace nenhum medido em produção (jogando Rocket League, processo inteiro sumiu sem log).
+    // Recuperar de verdade exigiria recriar TODO o pipeline (device, duplication, encoder) do
+    // zero — fora de escopo por ora; por enquanto só para com segurança em vez de arriscar crash.
+    DeviceLost,
     Error
 };
 
@@ -47,6 +55,12 @@ public:
     bool Start(int monitorIndex);
     void Stop();
     AcquireResult AcquireFrame(FrameData& outFrame, uint32_t timeoutMs);
+    // Mesma captura, SEM o readback GPU→CPU (Map+memcpy de um frame inteiro, ~8MB em 1080p) — pro
+    // caminho de transporte nativo, que só precisa da textura já composta (GetComposeTexture())
+    // pro NVENC ler direto da GPU. Esse readback era puro desperdício nesse caminho, e o `Map()`
+    // pode dar stall esperando a GPU quando ela também tá ocupada codificando (medido em produção:
+    // taxa de loop caindo sob movimento de tela — ver StreamWorker.cpp).
+    AcquireResult AcquireFrameGpuOnly(uint32_t timeoutMs);
     void SetCaptureCursor(bool enabled) { captureCursor_ = enabled; }
 
     // Pra o EncoderCore (NVENC) codificar direto da GPU sem passar pela CPU — precisa do MESMO
