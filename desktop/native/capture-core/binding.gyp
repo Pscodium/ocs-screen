@@ -10,7 +10,6 @@
             "src/EncoderCore.cpp",
             "src/SoftwareEncoderCore.cpp",
             "src/CodecApiHelper.cpp",
-            "src/StreamWorker.cpp",
             "vendor/nvenc/NvEncoder.cpp",
             "vendor/nvenc/NvEncoderD3D11.cpp",
             "../transport-core/src/TransportCore.cpp"

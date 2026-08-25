@@ -39,7 +39,14 @@ bool SoftwareEncoderCore::Initialize(ID3D11Device* device, ID3D11DeviceContext* 
     // máquina tiver encoder Intel QuickSync/AMD AMF exposto via Media Foundation, a gente ganha
     // hardware de graça aqui também, mesmo sem NVENC — não só o encoder 100% software da
     // Microsoft). Isso é o fallback de verdade pra "sem NVENC", não assume CPU sempre.
-    const GUID outSubtype = codec == VideoCodecType::HEVC ? MFVideoFormat_HEVC : MFVideoFormat_H264;
+    // MFVideoFormat_AV1 existe desde o Windows 10 2004 (headers), mas o Windows NÃO garante um MFT
+    // de encode AV1 embutido (ao contrário do H.264, que sempre tem) — `MFTEnumEx` abaixo
+    // simplesmente não acha nada nesse caso (activateCount == 0) e o Initialize retorna false,
+    // deixando a cascata de 4 níveis do EncoderCore cair pro software H.264 normalmente. Só ganha
+    // AV1 por software de verdade se a máquina tiver um MFT de terceiro (Intel/AMD) registrado.
+    const GUID outSubtype = codec == VideoCodecType::HEVC ? MFVideoFormat_HEVC
+        : codec == VideoCodecType::AV1 ? MFVideoFormat_AV1
+        : MFVideoFormat_H264;
     MFT_REGISTER_TYPE_INFO inType{ MFMediaType_Video, MFVideoFormat_NV12 };
     MFT_REGISTER_TYPE_INFO outType{ MFMediaType_Video, outSubtype };
     IMFActivate** activates = nullptr;

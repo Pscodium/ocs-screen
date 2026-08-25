@@ -115,7 +115,7 @@ export function useBroadcast() {
         // docs/NATIVE_CAPTURE.md Fase 3 "Fallback de encoder por software"/"HEVC"). Dispara de
         // novo se o host reiniciar em H.264 porque o viewer não decodifica HEVC.
         unsubscribeNativeEncoderInfoRef.current = onNativeTransportEncoderInfo(({ software, codec }) => {
-          const codecLabel = codec === "hevc" ? "HEVC" : "H.264";
+          const codecLabel = codec === "hevc" ? "HEVC" : codec === "av1" ? "AV1" : "H.264";
           const engineLabel = software ? "software, sem NVENC" : "NVENC (nativo)";
           setInfo((prev) => (prev ? { ...prev, codec, encoderImplementation: `${codecLabel} — ${engineLabel}` } : prev));
           if (software) {

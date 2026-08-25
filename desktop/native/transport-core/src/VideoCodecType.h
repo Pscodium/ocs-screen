@@ -8,4 +8,5 @@
 enum class VideoCodecType {
     H264,
     HEVC,
+    AV1,
 };

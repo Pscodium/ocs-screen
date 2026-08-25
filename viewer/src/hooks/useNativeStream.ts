@@ -13,6 +13,11 @@ const STATS_POLL_MS = 2000;
 // de patchear a lib vendorizada, o vídeo passa a ir cru (H.264 Annex-B) por um DataChannel SCTP
 // (confiável/ordenado por padrão, sem precisar configurar nada) e é decodificado aqui com
 // `VideoDecoder` (WebCodecs), igual o projeto de referência SlipStream faz na mesma stack.
+// "high"/"low" — os dois tiers fixos do simulcast (Sprint 27, ver docs/NATIVE_CAPTURE.md Fase 4
+// "Simulcast"). Seleção manual nessa v1 (sem medição automática de rede do lado do espectador
+// ainda) — ver `setQuality` abaixo.
+export type NativeQualityTier = "high" | "low";
+
 export function useNativeStream(roomId: string) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [phase, setPhase] = useState<ConnectionPhase>("connecting");
@@ -20,13 +25,27 @@ export function useNativeStream(roomId: string) {
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<StreamStats | null>(null);
   const [playoutDelayMs, setPlayoutDelayMsState] = useState(PLAYOUT_DELAY_DEFAULT_MS);
+  const [quality, setQualityState] = useState<NativeQualityTier>("high");
+  // `sendWhenOpen` de dentro do useEffect não é visível pro `setQuality` exposto no retorno do
+  // hook (closures diferentes) — guarda a referência aqui pra poder mandar a troca de qualidade
+  // a qualquer momento depois que o WS conectar.
+  const sendMessageRef = useRef<((payload: Record<string, unknown>) => void) | null>(null);
+
+  const setQuality = useCallback((tier: NativeQualityTier) => {
+    setQualityState(tier);
+    sendMessageRef.current?.({ type: "set-quality", tier });
+  }, []);
 
   // Sem RTCRtpReceiver nesse caminho (DataChannel, não RTP) — não tem "playout delay" nativo do
-  // navegador pra ajustar. Mantido só pra não quebrar a prop do VideoPlayer; vira um no-op aqui
-  // (fora de escopo por ora — se precisar de colchão de jitter, seria um buffer próprio antes do
-  // MediaStreamTrackGenerator).
+  // navegador pra ajustar, por isso o buffer de jitter é implementado à mão abaixo (ver
+  // `channel.onmessage`/`decoder.output`). O valor aqui vira o PISO mínimo do buffer adaptativo —
+  // o usuário pode pedir "quero mais suavização" e o algoritmo nunca desce abaixo disso, mas ainda
+  // pode subir mais sozinho se a rede pedir (ver `userFloorMsRef`).
+  const userFloorMsRef = useRef(PLAYOUT_DELAY_DEFAULT_MS);
   const applyPlayoutDelay = useCallback((ms: number) => {
-    setPlayoutDelayMsState(Math.max(0, Math.min(PLAYOUT_DELAY_MAX_MS, ms)));
+    const clamped = Math.max(0, Math.min(PLAYOUT_DELAY_MAX_MS, ms));
+    userFloorMsRef.current = clamped;
+    setPlayoutDelayMsState(clamped);
   }, []);
 
   useEffect(() => {
@@ -36,6 +55,22 @@ export function useNativeStream(roomId: string) {
     let framesDecoded = 0;
     let bytesReceived = 0;
     let lastStatsAt = performance.now();
+
+    // Buffer de jitter adaptativo (Sprint 29, ver docs/NATIVE_CAPTURE.md Fase 4 "Latência
+    // adaptativa") — sem RTP nesse caminho, não existe jitter buffer nativo do navegador pra usar.
+    // `anchorLocalMs`/`anchorStreamUs` ancoram o relógio de STREAM (timestampUs, gerado pelo host
+    // como `Date.now()-startTime` — ver main/index.ts) no relógio LOCAL (`performance.now()`) a
+    // partir do PRIMEIRO chunk recebido. Todo chunk seguinte compara "quando deveria ter chegado
+    // se a rede fosse perfeitamente estável" (`expectedLocalMs`) com "quando chegou de verdade" —
+    // a diferença é jitter de rede cru. `jitterEstimateMs` suaviza isso com EWMA (mesmo espírito da
+    // fórmula de estimativa de jitter do RFC 3550/RTP, só que sobre o próprio timestamp de
+    // aplicação em vez de RTP timestamp).
+    let anchorLocalMs: number | null = null;
+    let anchorStreamUs = 0;
+    let jitterEstimateMs = 0;
+    let autoDelayMs = 0;
+    const JITTER_EWMA_ALPHA = 1 / 16; // mesmo peso que RFC 3550 usa pra estimativa de jitter RTP
+    const JITTER_SAFETY_MULTIPLIER = 4; // margem de segurança sobre o jitter médio medido
 
     const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
     // Setado ANTES do canal de vídeo abrir de verdade (só abre depois do SDP fechar) — o handler
@@ -50,6 +85,7 @@ export function useNativeStream(roomId: string) {
       if (ws.readyState === WebSocket.OPEN) ws.send(json);
       else ws.addEventListener("open", () => ws.send(json), { once: true });
     };
+    sendMessageRef.current = sendWhenOpen;
 
     pc.onconnectionstatechange = () => {
       const map: Record<RTCPeerConnectionState, ConnectionState> = {
@@ -104,7 +140,22 @@ export function useNativeStream(roomId: string) {
             setPhase("connected");
           }
           framesDecoded++;
-          writer.write(frame).catch(() => frame.close());
+
+          // `frame.timestamp` = o MESMO `timestampUs` que o chunk carregava (WebCodecs preserva
+          // timestamp do chunk pro frame decodificado) — dá pra recalcular quando esse frame
+          // "deveria" aparecer na tela usando a mesma âncora local/stream do onmessage abaixo.
+          const effectiveDelayMs = Math.max(userFloorMsRef.current, autoDelayMs);
+          if (anchorLocalMs === null) {
+            writer.write(frame).catch(() => frame.close());
+            return;
+          }
+          const targetLocalMs = anchorLocalMs + (frame.timestamp - anchorStreamUs) / 1000 + effectiveDelayMs;
+          const waitMs = targetLocalMs - performance.now();
+          if (waitMs <= 0) {
+            writer.write(frame).catch(() => frame.close());
+          } else {
+            setTimeout(() => writer.write(frame).catch(() => frame.close()), waitMs);
+          }
         },
         error: () => {
           // Frame corrompido/decoder num estado ruim — não é fatal (próximo keyframe do host
@@ -119,6 +170,14 @@ export function useNativeStream(roomId: string) {
         // equivalente do EncoderCore pro HEVC), essa string só é o feature-gate grosseiro que o
         // Chrome usa antes de sequer olhar os bytes.
         decoder.configure({ codec: "hev1.1.6.L120.B0", optimizeForLatency: true, hevc: { format: "annexb" } });
+      } else if (negotiatedCodec === "av1") {
+        // "av01.0.04M.08" = profile Main (0) + level 4.0 (04) + tier Main (M) + 8-bit (08) —
+        // mesmo espírito de string genérica que HEVC/H.264 acima, o profile/level real vem do
+        // Sequence Header embutido no bitstream (`repeatSeqHdr=1` no EncoderCore). Diferente de
+        // avc/hevc, o WebCodecs não tem um sub-objeto `{format: "annexb"}` pro AV1 — o spec só
+        // conhece o formato "low overhead" (OBUs crus concatenados), que é exatamente o que
+        // `outputAnnexBFormat=0` no EncoderCore já produz.
+        decoder.configure({ codec: "av01.0.04M.08", optimizeForLatency: true });
       } else {
         // `avc: { format: "annexb" }` — o encoder manda SPS/PPS embutido em CADA keyframe
         // (repeatSPSPPS=1 no EncoderCore), não precisa de `description` separada em AVCC.
@@ -143,6 +202,22 @@ export function useNativeStream(roomId: string) {
         const payload = new Uint8Array(buffer, 9);
         bytesReceived += payload.byteLength;
 
+        // Âncora stream-time↔local-time no PRIMEIRO chunk (ver comentário no topo do effect) —
+        // todo chunk seguinte atualiza a estimativa de jitter comparando chegada esperada (se a
+        // rede fosse perfeitamente estável) com chegada real.
+        const arrivalLocalMs = performance.now();
+        if (anchorLocalMs === null) {
+          anchorLocalMs = arrivalLocalMs;
+          anchorStreamUs = timestampUs;
+        } else {
+          const expectedLocalMs = anchorLocalMs + (timestampUs - anchorStreamUs) / 1000;
+          const delta = arrivalLocalMs - expectedLocalMs;
+          // EWMA — só a MAGNITUDE do desvio importa (adiantado ou atrasado, os dois indicam rede
+          // instável), não o sinal.
+          jitterEstimateMs += (Math.abs(delta) - jitterEstimateMs) * JITTER_EWMA_ALPHA;
+          autoDelayMs = Math.min(PLAYOUT_DELAY_MAX_MS, Math.max(0, Math.round(jitterEstimateMs * JITTER_SAFETY_MULTIPLIER)));
+        }
+
         if (!gotFirstFrame && !isKeyframe) return; // WebCodecs exige que o primeiro chunk seja "key"
 
         try {
@@ -162,7 +237,11 @@ export function useNativeStream(roomId: string) {
         framesDecoded = 0;
         bytesReceived = 0;
         lastStatsAt = now;
-        setStats((prev) => (prev ? { ...prev, fps, bitrateKbps } : prev));
+        // `latencyMs` aqui é o buffer de jitter ADAPTATIVO efetivo (piso manual ou auto, o que for
+        // maior) — reaproveita o campo que já existia na UI (rótulo "buffer" no painel de
+        // estatísticas do VideoPlayer), sem precisar de UI nova.
+        const effectiveDelayMs = Math.max(userFloorMsRef.current, autoDelayMs);
+        setStats((prev) => (prev ? { ...prev, fps, bitrateKbps, latencyMs: effectiveDelayMs } : prev));
       }, STATS_POLL_MS);
     };
 
@@ -192,7 +271,10 @@ export function useNativeStream(roomId: string) {
             // `false` aqui faz o host reiniciar o encoder em H.264 e renegociar (ver
             // beginNativeNegotiation em desktop/src/main/index.ts) — H.264 nunca precisa checar,
             // assumido sempre suportado.
-            const decoderOk = negotiatedCodec !== "hevc" || (await isHevcDecodeSupported());
+            const decoderOk =
+              negotiatedCodec === "hevc" ? await isHevcDecodeSupported()
+              : negotiatedCodec === "av1" ? await isAv1DecodeSupported()
+              : true;
 
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
@@ -217,6 +299,7 @@ export function useNativeStream(roomId: string) {
 
     return () => {
       cancelled = true;
+      sendMessageRef.current = null;
       ws.close();
       if (statsInterval) clearInterval(statsInterval);
       pc.close();
@@ -233,6 +316,8 @@ export function useNativeStream(roomId: string) {
     hasAudio: false,
     playoutDelayMs,
     setPlayoutDelayMs: applyPlayoutDelay,
+    quality,
+    setQuality,
   };
 }
 
@@ -250,6 +335,19 @@ async function isHevcDecodeSupported(): Promise<boolean> {
   } catch {
     // Navegador nem reconhece a config (erro em vez de {supported:false}) — trata como não
     // suportado, mais seguro que assumir suporte.
+    return false;
+  }
+}
+
+// Mesma lógica de isHevcDecodeSupported, codec string AV1 — decode por hardware ainda mais
+// inconsistente que HEVC entre dispositivos (GPU mais recente que decode HEVC pode não ter decode
+// AV1 de hardware; alguns navegadores/SO têm fallback por software libaom, outros não expõem nada).
+async function isAv1DecodeSupported(): Promise<boolean> {
+  try {
+    if (typeof VideoDecoder === "undefined" || !VideoDecoder.isConfigSupported) return false;
+    const result = await VideoDecoder.isConfigSupported({ codec: "av01.0.04M.08" });
+    return result.supported === true;
+  } catch {
     return false;
   }
 }

@@ -72,7 +72,9 @@ bool EncoderCore::InitializeNvenc(ID3D11Device* device, int width, int height, i
         encodeConfig_ = { NV_ENC_CONFIG_VER };
         initializeParams_.encodeConfig = &encodeConfig_;
 
-        const GUID codecGuid = codec == VideoCodecType::HEVC ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
+        const GUID codecGuid = codec == VideoCodecType::HEVC ? NV_ENC_CODEC_HEVC_GUID
+            : codec == VideoCodecType::AV1 ? NV_ENC_CODEC_AV1_GUID
+            : NV_ENC_CODEC_H264_GUID;
 
         // P4 (qualidade/velocidade equilibrada) + LOW_LATENCY — CLAUDE.md prioriza baixa latência
         // pra jogos/suporte remoto sobre nitidez máxima; P4 já é rápido o bastante pra manter
@@ -116,6 +118,18 @@ bool EncoderCore::InitializeNvenc(ID3D11Device* device, int width, int height, i
             // Annex-B com VPS/SPS/PPS repetidos em cada keyframe — mesmo raciocínio do H.264
             // (repeatSPSPPS) logo abaixo, campo espelhado na struct de config do HEVC.
             encodeConfig_.encodeCodecConfig.hevcConfig.repeatSPSPPS = 1;
+        } else if (codec == VideoCodecType::AV1) {
+            encodeConfig_.encodeCodecConfig.av1Config.idrPeriod = encodeConfig_.gopLength;
+            // `repeatSeqHdr` é o equivalente AV1 de repeatSPSPPS — Sequence Header só sai de novo
+            // em cada keyframe. TransportCore::ContainsKeyframeObu (ver TransportCore.cpp) detecta
+            // keyframe procurando esse OBU no bitstream — sem isso, a detecção de keyframe do
+            // transporte (usada pra saber se atende PLI/decisão de recuperação) fica cega.
+            encodeConfig_.encodeCodecConfig.av1Config.repeatSeqHdr = 1;
+            // Deixa em 0 (formato "low overhead", OBUs concatenados direto) — Annex B do AV1 é uma
+            // estrutura de container totalmente diferente (temporal unit/frame unit com tamanho
+            // leb128 prefixado), TransportCore não sabe parsear isso e o WebCodecs do lado do
+            // viewer também não precisa: `EncodedVideoChunk` só quer os OBUs crus.
+            encodeConfig_.encodeCodecConfig.av1Config.outputAnnexBFormat = 0;
         } else {
             encodeConfig_.encodeCodecConfig.h264Config.idrPeriod = encodeConfig_.gopLength;
             // Annex-B (start code 0x00000001 antes de cada NAL) — formato que dá pra escrever direto

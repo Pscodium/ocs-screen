@@ -41,7 +41,7 @@ function WatchRoomGate({ roomId }: { roomId: string }) {
 }
 
 function NativeWatchRoom({ roomId }: { roomId: string }) {
-  const { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs } =
+  const { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs, quality, setQuality } =
     useNativeStream(roomId);
   return (
     <WatchRoomView
@@ -53,6 +53,8 @@ function NativeWatchRoom({ roomId }: { roomId: string }) {
       hasAudio={hasAudio}
       playoutDelayMs={playoutDelayMs}
       setPlayoutDelayMs={setPlayoutDelayMs}
+      quality={quality}
+      setQuality={setQuality}
     />
   );
 }
@@ -83,7 +85,9 @@ function WatchRoomView({
   hasAudio,
   playoutDelayMs,
   setPlayoutDelayMs,
-}: ReturnType<typeof useRoomStream>) {
+  quality,
+  setQuality,
+}: ReturnType<typeof useRoomStream> & Partial<Pick<ReturnType<typeof useNativeStream>, "quality" | "setQuality">>) {
 
   if (phase === "error") return <StatusMessage text={error ?? "Erro ao conectar."} />;
   if (phase === "ended") return <StatusMessage text="A transmissão foi encerrada." />;
@@ -101,6 +105,8 @@ function WatchRoomView({
         hasAudio={hasAudio}
         playoutDelayMs={playoutDelayMs}
         onPlayoutDelayChange={setPlayoutDelayMs}
+        quality={quality}
+        onQualityChange={setQuality}
       />
     </div>
   );

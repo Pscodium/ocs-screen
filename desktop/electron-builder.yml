@@ -5,17 +5,32 @@ directories:
 files:
   - out/**/*
   - package.json
-  # Addon nativo (captura DXGI, ver docs/NATIVE_CAPTURE.md) — não fica em node_modules, então
-  # precisa ser listado explicitamente (senão o build de produção nunca embarca o .node e a
-  # captura nativa fica sempre indisponível, caindo direto pro desktopCapturer sem avisar por quê).
+  # Addon nativo (captura DXGI + encoder NVENC + transporte libdatachannel, ver docs/NATIVE_CAPTURE.md)
+  # — não fica em node_modules, então precisa ser listado explicitamente (senão o build de produção
+  # nunca embarca o .node e a captura nativa fica sempre indisponível, caindo direto pro
+  # desktopCapturer/LiveKit sem avisar por quê). As DLLs abaixo são dependências de runtime do
+  # transporte (libdatachannel + libjuice + OpenSSL/SRTP) carregadas via DLL search path do Windows,
+  # não via require() — precisam ficar na MESMA pasta do .node ou o LoadLibrary falha silenciosamente
+  # (mesmo bug de fundo: build "funcionava" mas o pipeline nativo caía sempre pro fallback).
   - native/capture-core/build/Release/capture_core.node
-# Arquivo binário nativo NÃO pode ser carregado de dentro do app.asar (require de .node dentro de
-# um asar arquivado falha) — sem isso, `require()` em main/index.ts quebraria silenciosamente em
-# produção mesmo com o arquivo listado acima em `files`. asarUnpack extrai pra
-# app.asar.unpacked/native/... e o Electron redireciona o require automaticamente pro caminho
-# extraído (mesmo padrão usado por qualquer addon nativo em node_modules).
+  - native/capture-core/build/Release/datachannel.dll
+  - native/capture-core/build/Release/juice.dll
+  - native/capture-core/build/Release/libcrypto-3-x64.dll
+  - native/capture-core/build/Release/libssl-3-x64.dll
+  - native/capture-core/build/Release/srtp2.dll
+# Arquivos binários nativos NÃO podem ser carregados de dentro do app.asar (require/LoadLibrary de
+# dentro de um asar arquivado falha) — sem isso, tanto o require() em main/index.ts quanto o
+# DLL search path do Windows quebrariam silenciosamente em produção, mesmo com os arquivos listados
+# acima em `files`. asarUnpack extrai pra app.asar.unpacked/native/... e o Electron redireciona o
+# require automaticamente pro caminho extraído (mesmo padrão usado por qualquer addon nativo em
+# node_modules); as DLLs precisam do mesmo tratamento por ficarem na mesma pasta do .node.
 asarUnpack:
   - native/capture-core/build/Release/capture_core.node
+  - native/capture-core/build/Release/datachannel.dll
+  - native/capture-core/build/Release/juice.dll
+  - native/capture-core/build/Release/libcrypto-3-x64.dll
+  - native/capture-core/build/Release/libssl-3-x64.dll
+  - native/capture-core/build/Release/srtp2.dll
 win:
   target: nsis
   icon: build/icon.ico

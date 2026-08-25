@@ -26,6 +26,23 @@ import WebSocket from "ws";
 crashReporter.start({ submitURL: "", uploadToServer: false, compress: false });
 console.log("[crash-reporter] dumps salvos em:", app.getPath("crashDumps"));
 
+// Crashpad acima só pega crash NATIVO (SEH/access violation). Exceção JS não tratada no processo
+// main é fatal por padrão no Node (stack impresso no stderr, processo morre) — sem dump, sem
+// evento no Windows Event Viewer, e o stderr pode nem chegar no terminal dependendo de como o
+// Electron reencaminha stdio dos processos filhos. Gravar em arquivo garante que o erro fica
+// visível na próxima reprodução, independente do console.
+process.on("uncaughtException", (err) => {
+  try {
+    const logPath = join(app.getPath("userData"), "uncaught-exception.log");
+    const entry = `[${new Date().toISOString()}] ${err.stack ?? err}\n`;
+    createWriteStream(logPath, { flags: "a" }).end(entry);
+  } catch {
+    // se nem isso funcionar, não tem mais nada a fazer — deixa cair mesmo
+  }
+  console.error("[uncaughtException]", err);
+  app.exit(1);
+});
+
 // `backgroundThrottling: false` (webPreferences) só evita o Chromium throttlar TIMERS/rAF do
 // renderer quando a janela fica oclusa/sem foco — existe uma camada SEPARADA, em nível de
 // processo, que baixa a prioridade de agendamento do processo renderer inteiro (não só JS) nesse
@@ -438,26 +455,41 @@ interface NativeCaptureAddon {
   // `codec` opcional ("h264"/"hevc", padrão "h264") é o PEDIDO — cascata de fallback interna
   // (EncoderCore::Initialize) pode degradar pra H.264 sozinha (GPU/MFT sem suporte a HEVC).
   // `getActiveCodec()` diz o que realmente ficou ativo depois dessa chamada.
-  initEncoder(fps: number, bitrateBps: number, codec?: "h264" | "hevc"): boolean;
+  initEncoder(fps: number, bitrateBps: number, codec?: "h264" | "hevc" | "av1"): boolean;
+  // Segundo encoder independente, tier "low" do simulcast (Sprint 27, ver docs/NATIVE_CAPTURE.md
+  // Fase 4 "Simulcast") — MESMA resolução do encoder "high" (`initEncoder`), só `fps`/`bitrateBps`
+  // mais baixos (perfil fixo, ver SIMULCAST_LOW_* em types/stream.ts). `codec` TEM que ser o
+  // mesmo já resolvido pro "high" (`getActiveCodec()`), não faz sentido codec diferente por tier.
+  initEncoderLow(fps: number, bitrateBps: number, codec?: "h264" | "hevc" | "av1"): boolean;
   // true quando NVENC não inicializou e caiu pro fallback de software (Media Foundation, ver
   // SoftwareEncoderCore.cpp) — bem mais pesado em CPU, o host quer saber pra avisar o usuário.
+  // Reflete só o encoder "high" (o "low" segue a mesma cascata, mas não tem HUD próprio ainda).
   isUsingSoftwareEncoder(): boolean;
-  getActiveCodec(): "h264" | "hevc";
+  getActiveCodec(): "h264" | "hevc" | "av1";
   destroyEncoder(): void;
+  destroyEncoderLow(): void;
   encodeCurrentFrame(): Buffer[];
-  forceKeyframe(): void;
+  encodeCurrentFrameLow(): Buffer[];
+  // `tier` (opcional, padrão "high") — qual dos dois encoders forçar keyframe.
+  forceKeyframe(tier?: "high" | "low"): void;
   // `forceKeyframe` (opcional, padrão true) — passar `false` no ajuste automático de
   // congestionamento (AIMD): forçar keyframe bem na hora que já tá represado piora em vez de
-  // ajudar (bug real medido — ver docs/NATIVE_CAPTURE.md Fase 4 "Congestion control").
-  setEncoderBitrate(bitrateBps: number, forceKeyframe?: boolean): boolean;
+  // ajudar (bug real medido — ver docs/NATIVE_CAPTURE.md Fase 4 "Congestion control"). `tier`
+  // (opcional, padrão "high") — cada tier tem seu próprio AIMD independente agora.
+  setEncoderBitrate(bitrateBps: number, forceKeyframe?: boolean, tier?: "high" | "low"): boolean;
   // Transporte nativo (libdatachannel, Fase 4) — mesclado neste mesmo addon, ver addon.cpp. 1
   // sessão POR ESPECTADOR (`viewerId`, gerado pelo backend na conexão WS — ver
-  // backend/src/services/nativeWsRelay.ts) — é o "SFU" do projeto: mesmo frame codificado
-  // (`transportSendVideoFrame`, sem viewerId) é mandado pra TODAS as sessões ativas de uma vez,
-  // fan-out direto em C++.
+  // backend/src/services/nativeWsRelay.ts) — é o "SFU" do projeto: cada sessão tem um TIER
+  // ("high"/"low", Sprint 27/simulcast) e só recebe o frame codificado daquele tier
+  // (`transportSendVideoFrame`), fan-out direto em C++.
   // `codec` TEM que ser o codec REALMENTE ativo do encoder (getActiveCodec()), não o pedido —
-  // usado pra detectar keyframe certo no bitstream (ver TransportCore.cpp).
-  transportCreateSession(viewerId: string, stunUrls: string[], codec?: "h264" | "hevc"): boolean;
+  // usado pra detectar keyframe certo no bitstream (ver TransportCore.cpp). `tier` (opcional,
+  // padrão "high") — todo espectador novo entra em alta qualidade, troca depois via
+  // `transportSetViewerTier` (ver "set-quality" no handler de mensagens WS abaixo).
+  transportCreateSession(viewerId: string, stunUrls: string[], codec?: "h264" | "hevc" | "av1", tier?: "high" | "low"): boolean;
+  // Troca o tier de uma sessão JÁ ATIVA (não recria a conexão WebRTC) — força keyframe no encoder
+  // do tier novo pra essa sessão não ficar sem decodificar até o próximo GOP.
+  transportSetViewerTier(viewerId: string, tier: "high" | "low"): boolean;
   // Fecha só a sessão desse espectador — os outros continuam recebendo o stream.
   transportCloseSession(viewerId: string): void;
   // Fecha TODAS as sessões — usado só ao parar a transmissão inteira, não no ciclo normal de um
@@ -468,32 +500,22 @@ interface NativeCaptureAddon {
   transportSetRemoteDescription(viewerId: string, sdp: string, type: string): boolean;
   transportAddRemoteCandidate(viewerId: string, candidate: string, mid: string): boolean;
   transportIsConnected(viewerId: string): boolean;
-  // Quantos espectadores estão com sessão conectada agora — usado pro contador no LiveCard.
+  // Quantos espectadores estão com sessão conectada agora (todos os tiers somados) — usado pro
+  // contador no LiveCard.
   transportConnectedCount(): number;
   // Maior `bufferedAmount()` (bytes represados esperando a rede escoar) entre as sessões
-  // conectadas — sinal de congestionamento pro bitrate adaptativo (ver docs/NATIVE_CAPTURE.md
-  // Fase 4 "Congestion control"). 0 = ninguém conectado ou tudo escoando bem.
-  transportMaxBufferedAmount(): number;
-  transportSendVideoFrame(data: Buffer, timestampUs: number): boolean;
+  // conectadas de UM tier (`tier`, opcional, padrão "high") — sinal de congestionamento pro
+  // bitrate adaptativo DAQUELE tier (ver docs/NATIVE_CAPTURE.md Fase 4 "Congestion control"/
+  // "Simulcast" — cada tier tem AIMD independente agora). 0 = ninguém conectado nesse tier ou tudo
+  // escoando bem.
+  transportMaxBufferedAmount(tier?: "high" | "low"): number;
+  // `tier` diz de qual encoder veio esse frame — só é mandado pras sessões daquele tier.
+  transportSendVideoFrame(tier: "high" | "low", data: Buffer, timestampUs: number): boolean;
   // Callbacks GLOBAIS (registrados 1x, não por sessão) — `viewerId` sempre vem primeiro, pra
   // saber de qual espectador é a mensagem (ver addon.cpp, `g_on*Tsfn`).
   transportOnLocalDescription(callback: (viewerId: string, sdp: string, type: string) => void): void;
   transportOnLocalCandidate(callback: (viewerId: string, candidate: string, mid: string) => void): void;
   transportOnStateChange(callback: (viewerId: string, state: string) => void): void;
-  // Loop de captura+encode+envio numa thread nativa própria — ver StreamWorker.h/.cpp.
-  startStream(monitorIndex: number, targetFps: number): boolean;
-  stopStream(): void;
-  getStreamStats(): {
-    running: boolean;
-    ended?: boolean;
-    acquired?: number;
-    timeouts?: number;
-    encodedPackets?: number;
-    emptyEncodeCalls?: number;
-    sendOk?: number;
-    sendFail?: number;
-    bytes?: number;
-  };
 }
 
 let nativeCapture: NativeCaptureAddon | null = null;
@@ -632,14 +654,14 @@ ipcMain.on("native-capture:stop", () => stopNativeCapture());
 // produção: `qualityLimitationReason: "cpu"` sob carga de jogo). V1 = 1 espectador (sem SFU
 // próprio ainda — `TransportCore` já modela 1 sessão por espectador, mas só uma é usada aqui).
 //
-// Mesclado no MESMO addon que a captura/encoder (era `transport-core` separado) — o motivo é
-// StreamWorker (C++) poder chamar `TransportCore::SendVideoFrame` DIRETO, sem cruzar N-API por
-// frame. Medido em produção: rodando o loop via `setImmediate`/N-API por chamada (como era antes),
-// a cadência de captura caía de ~165/s pra ~50/s sob movimento de tela real (scroll contínuo) —
-// cada chamada N-API síncrona bloqueava a thread principal do Electron, e sob carga (frames
-// maiores) isso serializava o processo inteiro. Agora captura+encode+envio rodam inteiramente
-// numa thread nativa própria (StreamWorker) — só sinalização (SDP/ICE, baixa frequência) ainda
-// cruza pra JS.
+// Mesclado no MESMO addon que a captura/encoder (era `transport-core` separado) — motivo
+// histórico: uma tentativa de rodar captura+encode+envio inteiros numa thread nativa própria
+// (StreamWorker) precisava chamar `TransportCore::SendVideoFrame` direto em C++, sem cruzar N-API
+// por frame. Essa thread nunca virou o caminho de produção de verdade (o stutter que motivou ela
+// era outro bug, já corrigido — ver docs/NATIVE_CAPTURE.md) e foi removida (Sprint 30), mas o
+// addon continua mesclado (1 `.node` só) — sem motivo pra desfazer isso agora. O loop de
+// captura+encode+envio roda mesmo é em JS (`runNativeTransportLoop` abaixo, via `setImmediate`),
+// só a sinalização (SDP/ICE) cruza pra JS via `ThreadSafeFunction`.
 
 interface NativeTransportStartArgs {
   roomId: string;
@@ -651,7 +673,7 @@ interface NativeTransportStartArgs {
   showCursor: boolean;
   // Opcional (padrão "h264") — PEDIDO, não garantia (ver `getActiveCodec()`/cascata de fallback
   // em EncoderCore::Initialize, docs/NATIVE_CAPTURE.md Fase 3 "HEVC").
-  codec?: "h264" | "hevc";
+  codec?: "h264" | "hevc" | "av1";
 }
 
 ipcMain.handle("native-transport:available", () => !!nativeCapture);
@@ -677,7 +699,7 @@ let ntBitrateBps = 0;
 // Codec ATIVO agora (pode ter degradado de HEVC pra H.264 em qualquer momento — cascata de
 // fallback do encoder, ou fallback por decode do primeiro viewer). Toda sessão NOVA usa esse
 // valor. Só tenta o fallback HEVC→H.264 UMA vez por transmissão.
-let ntActiveCodec: "h264" | "hevc" = "h264";
+let ntActiveCodec: "h264" | "hevc" | "av1" = "h264";
 let ntCodecFallbackDone = false;
 
 function stopNativeTransport(): void {
@@ -688,6 +710,7 @@ function stopNativeTransport(): void {
   ntStatsInterval = null;
   nativeCapture?.transportCloseAllSessions();
   nativeCapture?.destroyEncoder();
+  nativeCapture?.destroyEncoderLow();
   nativeCapture?.stop();
   ntRoomId = null;
   ntBackendUrl = null;
@@ -705,9 +728,9 @@ function sendWhenOpen(ws: WebSocket, payload: Record<string, unknown>): void {
 // que o backend avisa `{type:"viewer-joined"}` (espectador novo entrando OU um já conectado antes
 // que precisa negociar de novo com um host reconectado). Diferente do V1 (1 sessão global), isso
 // nunca derruba os outros espectadores — cada um vive/morre independente.
-function createViewerSession(viewerId: string): boolean {
+function createViewerSession(viewerId: string, tier: "high" | "low" = "high"): boolean {
   if (!nativeCapture) return false;
-  if (!nativeCapture.transportCreateSession(viewerId, ntStunUrls, ntActiveCodec)) return false;
+  if (!nativeCapture.transportCreateSession(viewerId, ntStunUrls, ntActiveCodec, tier)) return false;
   if (!nativeCapture.transportAddVideoChannel(viewerId)) return false;
   if (!nativeCapture.transportCreateOffer(viewerId)) return false;
   return true;
@@ -743,6 +766,18 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // docs/NATIVE_CAPTURE.md Fase 3 "Fallback de encoder por software"/"HEVC").
   win.webContents.send("native-transport:encoder", { software: nativeCapture.isUsingSoftwareEncoder(), codec: ntActiveCodec });
 
+  // Encoder do tier "low" (Sprint 27/simulcast, ver docs/NATIVE_CAPTURE.md Fase 4 "Simulcast") —
+  // MESMO codec já resolvido pro "high" (nunca teve chance de degradar diferente, mesma
+  // GPU/driver), perfil fixo bem mais baixo (`SIMULCAST_LOW_*`, valor espelhado de
+  // `renderer/src/types/stream.ts` — main não pode importar de lá, tsconfig.node.json não inclui
+  // `src/renderer`). Falha em silêncio (best-effort): sem tier "low", só o "high" funciona, não
+  // vale derrubar a transmissão inteira por causa de um tier secundário.
+  const SIMULCAST_LOW_BITRATE_BPS = 800_000;
+  const SIMULCAST_LOW_FPS = 15;
+  if (!nativeCapture.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, ntActiveCodec)) {
+    console.warn("[native-transport] falha ao inicializar encoder do tier 'low' — simulcast fica só com 'high'.");
+  }
+
   // Callbacks GLOBAIS de sinalização (1x, não por sessão) — `viewerId` vem sempre primeiro (ver
   // addon.cpp, `g_on*Tsfn`). Precisam existir ANTES de qualquer `transportCreateSession`.
   nativeCapture.transportOnStateChange((viewerId, state) => {
@@ -774,7 +809,15 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
 
   ws.on("message", (data) => {
     if (!ntActive) return;
-    let msg: { type?: string; viewerId?: string; sdp?: string; decoderOk?: boolean; candidate?: string; mid?: string };
+    let msg: {
+      type?: string;
+      viewerId?: string;
+      sdp?: string;
+      decoderOk?: boolean;
+      candidate?: string;
+      mid?: string;
+      tier?: "high" | "low";
+    };
     try {
       msg = JSON.parse(data.toString());
     } catch {
@@ -783,9 +826,17 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
     if (!msg.viewerId) return;
 
     if (msg.type === "viewer-joined") {
-      if (!createViewerSession(msg.viewerId)) {
+      // Todo espectador novo entra em "high" — troca depois manualmente (seletor de qualidade no
+      // player, ver useNativeStream.ts) via "set-quality" abaixo. Ver docs/NATIVE_CAPTURE.md
+      // Fase 4 "Simulcast".
+      if (!createViewerSession(msg.viewerId, "high")) {
         console.error(`[native-transport] falha ao criar sessão pro espectador ${msg.viewerId}`);
       }
+    } else if (msg.type === "set-quality" && (msg.tier === "high" || msg.tier === "low")) {
+      // Espectador trocou de qualidade manualmente (Sprint 27/simulcast) — não recria a conexão
+      // WebRTC, só religa qual encoder essa sessão passa a receber (força keyframe sozinho, ver
+      // TransportSetViewerTier em addon.cpp).
+      nativeCapture?.transportSetViewerTier(msg.viewerId, msg.tier);
     } else if (msg.type === "viewer-left") {
       nativeCapture?.transportCloseSession(msg.viewerId);
     } else if (msg.type === "answer" && msg.sdp) {
@@ -797,11 +848,11 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // HEVC (senão quebraria quem já tá funcionando). Se já tiver, esse espectador específico
       // fica sem vídeo — limitação conhecida do encoder único (SVC/encode duplo resolveria, fora
       // de escopo agora).
-      if (ntActiveCodec === "hevc" && msg.decoderOk === false && !ntCodecFallbackDone) {
+      if (ntActiveCodec !== "h264" && msg.decoderOk === false && !ntCodecFallbackDone) {
         const connectedCount = nativeCapture?.transportConnectedCount() ?? 0;
         if (connectedCount === 0) {
           ntCodecFallbackDone = true;
-          console.warn("[native-transport] viewer não decodifica HEVC — reiniciando encoder em H.264.");
+          console.warn(`[native-transport] viewer não decodifica ${ntActiveCodec.toUpperCase()} — reiniciando encoder em H.264.`);
           nativeCapture?.transportCloseSession(msg.viewerId);
           nativeCapture?.destroyEncoder();
           nativeCapture?.initEncoder(ntTargetFps, ntBitrateBps, "h264");
@@ -814,7 +865,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
           return;
         }
         console.warn(
-          `[native-transport] viewer ${msg.viewerId} não decodifica HEVC, mas já tem espectador(es) recebendo HEVC — não dá pra trocar o codec agora.`,
+          `[native-transport] viewer ${msg.viewerId} não decodifica ${ntActiveCodec.toUpperCase()}, mas já tem espectador(es) recebendo ${ntActiveCodec.toUpperCase()} — não dá pra trocar o codec agora.`,
         );
         nativeCapture?.transportCloseSession(msg.viewerId);
         return;
@@ -852,28 +903,62 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
 
   // Controle de congestionamento (AIMD) — sem RTP/REMB nesse caminho (vídeo vai por DataChannel,
   // não media track), o sinal disponível é o `bufferedAmount()` do canal SCTP: cresce quando a
-  // rede não escoa os frames na velocidade que o encoder produz. Encode é COMPARTILHADO entre
-  // todos os espectadores (1 bitrate só), então adapta pro PIOR conectado
-  // (`transportMaxBufferedAmount()` já retorna o máximo entre as sessões). `bitrateBps` (do
-  // settings) é o TETO — nunca sobe além do que o usuário pediu, só desce sob congestionamento e
-  // recupera de volta até esse teto quando a rede folga de novo.
-  let ntCurrentBitrateBps = bitrateBps;
-  let ntLowBufferStreak = 0;
+  // rede não escoa os frames na velocidade que o encoder produz. Sprint 27/simulcast: CADA TIER
+  // tem seu próprio AIMD independente agora (`AimdState` por tier — antes era 1 estado global,
+  // fazia sentido só com 1 encoder compartilhado). `ceilingBps` de cada tier é o TETO — nunca sobe
+  // além do que foi pedido, só desce sob congestionamento e recupera até o teto quando a rede
+  // folga de novo. `transportMaxBufferedAmount(tier)` já filtra só as sessões DAQUELE tier.
+  interface AimdState {
+    currentBitrateBps: number;
+    lowStreak: number;
+    highStreak: number;
+  }
+  const CONGESTION_MIN_BITRATE_BPS = 500_000;
+  const CONGESTION_DECREASE_FACTOR = 0.7;
   // Exige 2 ticks ALTOS seguidos (não 1 só) antes de baixar — um pico isolado de bufferedAmount
   // (rajada normal de encode, não congestionamento de verdade) não deve disparar queda de bitrate
   // + keyframe à toa. Ver bug real corrigido: mesmo em loopback local sem congestionamento
   // nenhum, 1 tick alto isolado já disparava reação.
-  let ntHighBufferStreak = 0;
-  const CONGESTION_MIN_BITRATE_BPS = 500_000;
-  const CONGESTION_DECREASE_FACTOR = 0.7;
   const CONGESTION_HIGH_STREAK_REQUIRED = 2;
-  // Igual ao VBV do EncoderCore (~3 frames de orçamento) — folga generosa antes de considerar
-  // "represado de verdade" (jitter normal de rede não deve disparar queda de qualidade à toa).
-  const congestionHighWatermarkBytes = () => (ntCurrentBitrateBps / 8 / targetFps) * 3;
   // Exige alguns ticks seguidos de buffer baixo (não só 1) antes de subir — evita ficar
   // oscilando bitrate pra cima e pra baixo repetidamente com jitter momentâneo.
   const CONGESTION_LOW_STREAK_REQUIRED = 5;
-  const CONGESTION_INCREASE_STEP_BPS = Math.round(bitrateBps * 0.1);
+
+  const ntAimdHigh: AimdState = { currentBitrateBps: bitrateBps, lowStreak: 0, highStreak: 0 };
+  const ntAimdLow: AimdState = { currentBitrateBps: SIMULCAST_LOW_BITRATE_BPS, lowStreak: 0, highStreak: 0 };
+
+  // `fps` aqui é o fps de PACING do tier (targetFps pro high, SIMULCAST_LOW_FPS pro low) — usado
+  // só pra calcular o watermark (~3 frames de orçamento, igual o VBV do EncoderCore).
+  function tickAimd(state: AimdState, tier: "high" | "low", ceilingBps: number, fps: number): void {
+    if (!nativeCapture) return;
+    const maxBuffered = nativeCapture.transportMaxBufferedAmount(tier);
+    const highWatermarkBytes = (state.currentBitrateBps / 8 / Math.max(1, fps)) * 3;
+    const isHigh = maxBuffered > highWatermarkBytes;
+    state.highStreak = isHigh ? state.highStreak + 1 : 0;
+
+    if (isHigh) {
+      state.lowStreak = 0;
+      if (state.highStreak >= CONGESTION_HIGH_STREAK_REQUIRED) {
+        const next = Math.max(CONGESTION_MIN_BITRATE_BPS, Math.round(state.currentBitrateBps * CONGESTION_DECREASE_FACTOR));
+        if (next < state.currentBitrateBps) {
+          state.currentBitrateBps = next;
+          // `false` — forçar keyframe (bem maior que delta frame) exatamente quando já tá
+          // represado piora em vez de ajudar (bug real corrigido — ver docs/NATIVE_CAPTURE.md
+          // Fase 4 "Congestion control").
+          nativeCapture.setEncoderBitrate(state.currentBitrateBps, false, tier);
+          console.warn(`[native-transport:${tier}] congestionamento detectado (buffer=${maxBuffered}B) — bitrate reduzido pra ${state.currentBitrateBps}bps.`);
+        }
+      }
+    } else if (state.currentBitrateBps < ceilingBps) {
+      state.lowStreak++;
+      if (state.lowStreak >= CONGESTION_LOW_STREAK_REQUIRED) {
+        state.lowStreak = 0;
+        state.currentBitrateBps = Math.min(ceilingBps, state.currentBitrateBps + Math.round(ceilingBps * 0.1));
+        nativeCapture.setEncoderBitrate(state.currentBitrateBps, true, tier);
+        console.log(`[native-transport:${tier}] rede recuperada — bitrate subindo pra ${state.currentBitrateBps}bps.`);
+      }
+    }
+  }
 
   // DEBUG temporário — grava o bitstream H.264 cru (mesmos bytes que vão pro DataChannel) num
   // arquivo, pra validar com ffprobe/ffplay FORA do WebCodecs inteiro. Isola se a corrupção
@@ -907,18 +992,25 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       }
     } else if (frame) {
       dbgAcquired++;
-      const packets = nativeCapture.encodeCurrentFrame();
-      if (packets.length === 0) dbgEncodedEmptyCalls++;
+      // Simulcast (Sprint 27) — codifica os DOIS tiers a partir do MESMO frame capturado, cada
+      // encoder pacia sozinho pro seu próprio fps (o "low" naturalmente descarta a maioria das
+      // chamadas, já que foi inicializado com SIMULCAST_LOW_FPS bem menor que targetFps).
+      const packetsHigh = nativeCapture.encodeCurrentFrame();
+      const packetsLow = nativeCapture.encodeCurrentFrameLow();
+      if (packetsHigh.length === 0) dbgEncodedEmptyCalls++;
       // Microssegundos reais desde o início (relógio real, não passo fixo por frame) — vídeo vai
       // por DataChannel agora, não RTP, então não precisa de unidade de clock 90kHz.
       const timestampUs = (Date.now() - startTime) * 1000;
-      for (const packet of packets) {
+      for (const packet of packetsHigh) {
         dbgEncodedPackets++;
         dbgBytes += packet.length;
-        dumpStream.write(packet);
-        const ok = nativeCapture.transportSendVideoFrame(packet, timestampUs);
+        dumpStream.write(packet); // dump de debug só do tier "high" (investigação de aberração cromática já em andamento)
+        const ok = nativeCapture.transportSendVideoFrame("high", packet, timestampUs);
         if (ok) dbgSendOk++;
         else dbgSendFail++;
+      }
+      for (const packet of packetsLow) {
+        nativeCapture.transportSendVideoFrame("low", packet, timestampUs);
       }
     } else {
       dbgTimeouts++;
@@ -926,40 +1018,18 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
 
     const now = Date.now();
     if (now - dbgLastLog >= 1000) {
-      const maxBuffered = nativeCapture.transportMaxBufferedAmount();
+      const maxBufferedHigh = nativeCapture.transportMaxBufferedAmount("high");
       console.log(
-        `[native-transport] acquired=${dbgAcquired} timeouts=${dbgTimeouts} encodedPackets=${dbgEncodedPackets} emptyEncodeCalls=${dbgEncodedEmptyCalls} sendOk=${dbgSendOk} sendFail=${dbgSendFail} bytes=${dbgBytes} viewersConnected=${nativeCapture.transportConnectedCount()} bitrateBps=${ntCurrentBitrateBps} maxBuffered=${maxBuffered}`,
+        `[native-transport] acquired=${dbgAcquired} timeouts=${dbgTimeouts} encodedPackets=${dbgEncodedPackets} emptyEncodeCalls=${dbgEncodedEmptyCalls} sendOk=${dbgSendOk} sendFail=${dbgSendFail} bytes=${dbgBytes} viewersConnected=${nativeCapture.transportConnectedCount()} bitrateHighBps=${ntAimdHigh.currentBitrateBps} bitrateLowBps=${ntAimdLow.currentBitrateBps} maxBufferedHigh=${maxBufferedHigh}`,
       );
       dbgAcquired = dbgTimeouts = dbgEncodedPackets = dbgEncodedEmptyCalls = dbgSendOk = dbgSendFail = dbgBytes = 0;
       dbgLastLog = now;
 
       // AIMD: decréscimo multiplicativo rápido sob congestionamento, recuperação aditiva lenta —
-      // mesmo espírito de TCP/qualquer congestion control clássico (cai rápido quando dói, sobe
-      // devagar pra não estourar de novo na hora). `false` no forceKeyframe: forçar keyframe (bem
-      // maior que delta frame) exatamente quando já tá represado piora em vez de ajudar (bug real
-      // corrigido — ver docs/NATIVE_CAPTURE.md Fase 4 "Congestion control").
-      const isHigh = maxBuffered > congestionHighWatermarkBytes();
-      ntHighBufferStreak = isHigh ? ntHighBufferStreak + 1 : 0;
-
-      if (isHigh) {
-        ntLowBufferStreak = 0;
-        if (ntHighBufferStreak >= CONGESTION_HIGH_STREAK_REQUIRED) {
-          const next = Math.max(CONGESTION_MIN_BITRATE_BPS, Math.round(ntCurrentBitrateBps * CONGESTION_DECREASE_FACTOR));
-          if (next < ntCurrentBitrateBps) {
-            ntCurrentBitrateBps = next;
-            nativeCapture.setEncoderBitrate(ntCurrentBitrateBps, false);
-            console.warn(`[native-transport] congestionamento detectado (buffer=${maxBuffered}B) — bitrate reduzido pra ${ntCurrentBitrateBps}bps.`);
-          }
-        }
-      } else if (ntCurrentBitrateBps < bitrateBps) {
-        ntLowBufferStreak++;
-        if (ntLowBufferStreak >= CONGESTION_LOW_STREAK_REQUIRED) {
-          ntLowBufferStreak = 0;
-          ntCurrentBitrateBps = Math.min(bitrateBps, ntCurrentBitrateBps + CONGESTION_INCREASE_STEP_BPS);
-          nativeCapture.setEncoderBitrate(ntCurrentBitrateBps);
-          console.log(`[native-transport] rede recuperada — bitrate subindo pra ${ntCurrentBitrateBps}bps.`);
-        }
-      }
+      // mesmo espírito de TCP/qualquer congestion control clássico. Cada tier roda o SEU (Sprint
+      // 27/simulcast) — `tickAimd` já lê `transportMaxBufferedAmount` do tier certo por dentro.
+      tickAimd(ntAimdHigh, "high", bitrateBps, targetFps);
+      tickAimd(ntAimdLow, "low", SIMULCAST_LOW_BITRATE_BPS, SIMULCAST_LOW_FPS);
     }
 
     setImmediate(runNativeTransportLoop);

@@ -38,8 +38,8 @@ export interface NativeTransportStartArgs {
   stunUrls: string[];
   showCursor: boolean;
   // Opcional (padrão "h264") — PEDIDO, não garantia (cascata de fallback interna pode degradar
-  // pra H.264, e o viewer pode não conseguir decodificar HEVC — ver `onEncoderInfo`).
-  codec?: "h264" | "hevc";
+  // pra H.264, e o viewer pode não conseguir decodificar HEVC/AV1 — ver `onEncoderInfo`).
+  codec?: "h264" | "hevc" | "av1";
 }
 
 export interface NativeCaptureStats {
@@ -146,8 +146,8 @@ const api = {
     // e/ou o codec ativo (pode ter degradado de HEVC pra H.264, ver docs/NATIVE_CAPTURE.md Fase 3
     // "Fallback de encoder por software"/"HEVC"). Dispara de novo se reiniciar em H.264 porque o
     // viewer não conseguiu decodificar HEVC.
-    onEncoderInfo: (callback: (info: { software: boolean; codec: "h264" | "hevc" }) => void) => {
-      const listener = (_event: IpcRendererEvent, info: { software: boolean; codec: "h264" | "hevc" }) =>
+    onEncoderInfo: (callback: (info: { software: boolean; codec: "h264" | "hevc" | "av1" }) => void) => {
+      const listener = (_event: IpcRendererEvent, info: { software: boolean; codec: "h264" | "hevc" | "av1" }) =>
         callback(info);
       ipcRenderer.on("native-transport:encoder", listener);
       return () => ipcRenderer.removeListener("native-transport:encoder", listener);

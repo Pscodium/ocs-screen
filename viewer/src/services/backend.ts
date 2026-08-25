@@ -58,7 +58,7 @@ export async function fetchRoomInfo(roomId: string): Promise<RoomInfo> {
 // 4 e backend/src/services/nativeWsRelay.ts) — substitui o REST+polling anterior. Backend só faz
 // relay puro; o protocolo (mensagens JSON `{type: "offer"|"answer"|"ice", ...}`) é decidido e lido
 // direto em useNativeStream.ts, aqui só abre a conexão.
-export type NativeVideoCodec = "h264" | "hevc";
+export type NativeVideoCodec = "h264" | "hevc" | "av1";
 
 export function openNativeSignalingSocket(roomId: string): WebSocket {
   const wsUrl = `${backendUrl.replace(/^http/, "ws")}/rooms/${roomId}/native/ws?role=viewer`;

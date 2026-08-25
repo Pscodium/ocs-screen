@@ -129,6 +129,49 @@ bool TransportCore::AddRemoteCandidate(const std::string& candidate, const std::
 // `isHevc` muda como o tipo de NAL é lido: H.264 tem cabeçalho de NAL de 1 byte (tipo nos 5 bits
 // baixos, IDR = tipo 5); HEVC tem cabeçalho de 2 bytes (tipo nos bits 1-6 do PRIMEIRO byte, faixa
 // IRAP/keyframe = tipos 16 a 23 — BLA/IDR/CRA e reservados IRAP).
+// AV1 não usa NAL/start-codes como H.264/HEVC — o bitstream é uma sequência de OBUs (Open
+// Bitstream Units) concatenados direto ("low overhead format", `outputAnnexBFormat=0` em
+// EncoderCore.cpp). Cada OBU tem um header de 1-2 bytes seguido de um tamanho leb128 — precisa
+// andar OBU por OBU pra saber onde cada um termina (não dá pra procurar um marcador fixo tipo o
+// start-code do H.264). `repeatSeqHdr=1` (EncoderCore.cpp) garante que o Sequence Header (tipo 1)
+// só aparece de novo em cada keyframe — a mesma lógica que repeatSPSPPS já usa pra H.264/HEVC.
+static bool ReadObuLeb128(const uint8_t* data, size_t size, size_t pos, uint64_t& value, size_t& bytesRead) {
+    value = 0;
+    bytesRead = 0;
+    for (int i = 0; i < 8; i++) {
+        if (pos + i >= size) return false;
+        const uint8_t b = data[pos + i];
+        value |= static_cast<uint64_t>(b & 0x7F) << (i * 7);
+        bytesRead++;
+        if ((b & 0x80) == 0) return true;
+    }
+    return false; // leb128 mal formado/truncado — desiste, mais seguro que ler lixo
+}
+
+static bool ContainsKeyframeObu(const uint8_t* data, size_t size) {
+    size_t pos = 0;
+    while (pos < size) {
+        const uint8_t header = data[pos];
+        if ((header & 0x80) != 0) return false; // forbidden_bit deveria ser sempre 0 — bitstream inesperado, desiste
+        const uint8_t obuType = (header >> 3) & 0x0F;
+        const bool hasExtension = (header >> 2) & 0x01;
+        const bool hasSizeField = (header >> 1) & 0x01;
+
+        size_t headerLen = 1 + (hasExtension ? 1 : 0);
+        if (pos + headerLen > size) return false;
+
+        if (obuType == 1 /* OBU_SEQUENCE_HEADER */) return true;
+
+        if (!hasSizeField) return false; // sem tamanho inline não dá pra pular pro próximo OBU com segurança
+        uint64_t obuSize = 0;
+        size_t leb128Len = 0;
+        if (!ReadObuLeb128(data, size, pos + headerLen, obuSize, leb128Len)) return false;
+
+        pos += headerLen + leb128Len + static_cast<size_t>(obuSize);
+    }
+    return false;
+}
+
 static bool ContainsKeyframeNal(const uint8_t* data, size_t size, bool isHevc) {
     for (size_t i = 0; i + 3 < size; i++) {
         if (data[i] != 0 || data[i + 1] != 0) continue;
@@ -160,7 +203,9 @@ bool TransportCore::SendVideoFrame(const uint8_t* data, size_t size, uint64_t ti
     if (!videoChannel_ || !videoChannel_->isOpen()) return false;
 
     try {
-        const bool isKeyframe = ContainsKeyframeNal(data, size, codec_ == VideoCodecType::HEVC);
+        const bool isKeyframe = codec_ == VideoCodecType::AV1
+            ? ContainsKeyframeObu(data, size)
+            : ContainsKeyframeNal(data, size, codec_ == VideoCodecType::HEVC);
 
         rtc::binary message(9 + size);
         message[0] = static_cast<std::byte>(isKeyframe ? 0 : 1);

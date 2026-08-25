@@ -32,6 +32,15 @@ export interface StreamSettings {
   // dispositivo) → host detecta e reinicia em H.264 sozinho. Ver docs/NATIVE_CAPTURE.md Fase 3
   // "HEVC".
   preferHevc: boolean;
+  // Opt-in, só tem efeito com `nativeTransport` ligado — mesmo espírito de `preferHevc` acima, mas
+  // pra AV1 (CLAUDE.md §Codecs lista AV1 como prioridade 3, adiado por bom tempo porque encoder de
+  // HARDWARE é raro — só GPUs Ada Lovelace/RTX 40+ têm NVENC AV1, diferente de HEVC que qualquer
+  // NVENC recente suporta). Mesma cascata de 4 níveis que HEVC já usa (ver EncoderCore::Initialize):
+  // NVENC AV1 pedido → NVENC H.264 (sem GPU RTX 40+) → software AV1 (MF, `MFVideoFormat_AV1` — sem
+  // garantia nenhuma de existir embutido no Windows, ao contrário do MFT de H.264, que sempre
+  // existe) → software H.264. Viewer decodifica via `VideoDecoder.isConfigSupported()` igual HEVC
+  // (`av01.*`) antes de aceitar o offer.
+  preferAv1: boolean;
 }
 
 export interface ResolutionConstraint {
@@ -47,6 +56,16 @@ export const RESOLUTION_CONSTRAINTS: Record<Exclude<Resolution, "auto">, Resolut
   "2160p": { width: 3840, height: 2160 },
 };
 
+// Perfil FIXO do tier "low" do simulcast (Sprint 27, ver docs/NATIVE_CAPTURE.md Fase 4
+// "Simulcast") — CLAUDE.md §Bitrate: nunca espalhar valor rígido pelo código, centralizado aqui
+// igual o resto dos perfis. Decisão consciente de escopo: MESMA resolução do tier "high" (sem
+// downscale de GPU, que exigiria um componente D3D11 Video Processor novo) — só bitrate/fps mais
+// baixos, o suficiente pra dar uma opção real de "qualidade baixa" pro espectador com rede ruim
+// sem precisar de scaler nenhum (o `EncoderCore` já pacia sozinho pro fps que for inicializado
+// com, então o fps mais baixo aqui já derruba a taxa de frame de graça).
+export const SIMULCAST_LOW_BITRATE_BPS = 800_000;
+export const SIMULCAST_LOW_FPS = 15;
+
 // 120 só faz sentido com monitor de alto refresh (144Hz+) e GPU/encoder de sobra — sem garantia
 // nenhuma, igual todo o resto de captura (CLAUDE.md §Captura de tela): o pedido é best-effort.
 export const FPS_OPTIONS: Fps[] = ["auto", 30, 60, 120];
@@ -61,6 +80,7 @@ export const defaultStreamSettings: StreamSettings = {
   showCursor: true,
   nativeTransport: false,
   preferHevc: false,
+  preferAv1: false,
 };
 
 // Multiplicador aplicado ao bitrate base conforme o nível de qualidade escolhido.

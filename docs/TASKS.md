@@ -1,5 +1,75 @@
 # Roadmap execução
 
+## Pendências abertas (atualizado ao fim do Sprint 30) — começar a próxima sessão por aqui
+
+Em ordem sugerida (mas qualquer uma pode ser escolhida direto):
+
+1. **Aberração cromática H.264** (`docs/NATIVE_CAPTURE.md` "Em aberto") — suspeita forte é
+   contenção de GPU no DECODE por software (H.264 sozinho ainda mostra o artefato, HEVC quase
+   elimina — decodifica por hardware). Próximo passo: testar decode num dispositivo separado de
+   verdade (não host+viewer na mesma máquina) — travou por isolamento de AP do roteador na última
+   tentativa, retomar só depois de resolver isso ou achar rede sem isolamento.
+2. **Validar fix de FPS do Sprint 25** — `SetBitrate` ganhou `forceKeyframe` opcional pra não
+   forçar keyframe em todo ajuste do AIMD (causava queda de 60→48-55fps). Corrigido e recompilado,
+   usuário ainda não confirmou que os 60fps cravados voltaram de verdade em teste real.
+3. **AV1 em hardware real** (Sprint 27) — implementado e compilando limpo, mas nunca testado numa
+   GPU RTX 40+ de verdade (só a cascata de fallback foi validada, cai pra H.264 sem GPU AV1).
+4. **Device-lost recovery** (`docs/NATIVE_CAPTURE.md` Fase 4) — hoje um TDR do driver (comum sob
+   GPU muito sobrecarregada, jogo 3D pesado + captura/encode brigando) só para a transmissão com
+   segurança; recriar o pipeline inteiro (device D3D11 → duplication → encoders high/low) sozinho
+   pra retomar automaticamente, sem derrubar as sessões `TransportCore` já conectadas (essas não
+   dependem do device, só recebem bytes), fica pra depois — avaliado como baixa prioridade (TDR é
+   raro).
+5. **Firewall/rede diferente do host** (Sprint 26, PARADO) — app fecha sozinho quando um segundo
+   dispositivo tenta conectar em rede diferente (cabo→WiFi). Já descartado: firewall do Windows
+   (regra allow já existe) e isolamento de rede (sinalização TCP chega certinho). Achado: processo
+   nunca abre socket UDP nesse caso, fecha limpo (sem crash nativo, sem dump). Handler de
+   `process.on("uncaughtException")` já foi adicionado (grava em
+   `{userData}/uncaught-exception.log`) mas ainda não foi reproduzido com esse log novo — próximo
+   passo é ler esse arquivo depois de reproduzir de novo.
+
+## Próxima fase — além da captura nativa
+
+A captura nativa (`docs/NATIVE_CAPTURE.md` Fases 1-4) atingiu os objetivos dela — ver seção
+"Status" nesse arquivo. O que sobra é exatamente o que o Capture Core sempre disse que NÃO era
+trabalho dele (§Não Objetivos): a lista abaixo é essa lista, com o estado real de cada item hoje
+(nem tudo é "zero" — algumas dessas coisas já existem no caminho LiveKit e precisam só chegar no
+caminho nativo, outras não existem em lugar nenhum ainda).
+
+- **Interface gráfica** — funcional, mas nível "dev": HUD de debug (codec/fps/stats) exposto
+  direto na UI principal em vez de escondido atrás de um modo desenvolvedor, sem passe de
+  polimento visual dedicado desde o Sprint 2. CLAUDE.md pede minimalismo (não é pra virar Discord),
+  mas dá pra melhorar hierarquia/acabamento sem inchar escopo.
+- **WebRTC** — a base (ICE/DTLS-SRTP via libdatachannel) já é o que existe hoje no pipeline
+  nativo; o que falta pra "completo" nesse sentido é infraestrutura de produção: **TURN** nunca foi
+  plugado (só STUN público do Google, usado só pra validar — CLAUDE.md §Infraestrutura já previa
+  isso desde o início), e reconexão/resiliência de sinalização além do que já existe (backoff
+  exponencial no polling antigo virou WS no Sprint 24, mas reconexão de WS caído não foi testada a
+  fundo).
+- **Áudio** — caminho LiveKit já tem ("Compartilhar áudio do sistema", Sprint 1) mas é loopback do
+  sistema INTEIRO, sem seleção por app. O caminho nativo (DXGI→NVENC→libdatachannel) **não publica
+  áudio nenhum** ainda (documentado como fora de escopo desde a Fase 2). Pedido específico do
+  usuário — **escolher uma faixa/app de áudio pra NUNCA ser capturado** (ex.: Discord deixa excluir
+  um app específico do compartilhamento) — precisa de pesquisa: Windows tem uma API de captura de
+  loopback por PROCESSO desde o 10 2004 (`ActivateAudioInterfaceAsync` +
+  `AUDIOCLIENT_ACTIVATION_PARAMS` com modo de inclusão/exclusão por árvore de processo), diferente
+  do loopback de dispositivo inteiro que qualquer um dos dois caminhos usaria hoje — não validado
+  ainda se dá pra fazer "excluir 1 app" (em vez de "incluir só 1 app") com essa API sem capturar
+  tudo e filtrar depois.
+- **Controle de salas** — existe e funciona (`backend/src/routes/rooms.ts`, criação/token/TTL),
+  mas ganhou vários remendos específicos do modo nativo ao longo do caminho (Sprint 23: sala nativa
+  não tinha rede de segurança nenhuma do lado do backend, precisou de `isOrphan` pular salas
+  nativas + `before-quit` deletando a sala ao fechar o app) — funcional, não robusto/testado sob
+  cenários adversos (múltiplos hosts na mesma sala, sala travada, etc.).
+- **Sinalização de conexão** — caminho nativo tem WS dedicado (`nativeWsRelay.ts`, Sprint 24,
+  relay puro sem storage), caminho LiveKit usa a sinalização própria do LiveKit. Os dois funcionam,
+  nenhum foi estressado sob reconexão de rede ruim de propósito.
+- **Lógica de usuários** — **não existe nada aqui ainda**. `CLAUDE.md` §Segurança lista
+  autenticação do host, autorização de espectadores, rate limiting, validação de entrada — hoje só
+  existe token de sala com TTL (`ROOM_TOKEN_TTL_SECONDS`), sem conceito de usuário/conta/permissão
+  nenhum. Maior lacuna real da lista inteira, se o produto for além de "link temporário entre
+  conhecidos".
+
 ## Sprint 1 — Mudanças sistemicas
 - [x] app tauri não fecha ao clicar no botão de fechar, aliás, não funciona nem minimizar ou maximizar — faltavam permissões `core:window:allow-close/minimize/maximize/unmaximize/toggle-maximize` no capabilities (só tínhamos `core:default`, que não inclui essas)
 - [x] falta o recurso de compartilhar tela com audio — checkbox "Compartilhar áudio do sistema" no desktop e no viewer, publica track de áudio (`Track.Source.ScreenShareAudio`) junto do vídeo
@@ -295,3 +365,177 @@ propósito, um pendente de firewall que só dá pra validar com build de produç
   AIMD passa `false`. Também endurecido o gatilho de queda pra exigir 2 ticks ALTOS seguidos (não
   reage a 1 pico isolado de rajada normal de encode) — só a subida já exigia 5 ticks baixos.
   Recompilado — usuário ainda vai revalidar que os 60fps cravados voltaram.
+
+## Sprint 27 — AV1 opt-in (mesmo padrão de fallback do HEVC)
+
+- [x] **AV1 como terceiro codec opt-in** (toggle "Usar AV1 (beta)" no `SettingsForm`, mutuamente
+  exclusivo com "Usar HEVC (beta)") — reaproveita a MESMA cascata de 4 níveis que HEVC já usa
+  (`EncoderCore::Initialize`): NVENC AV1 pedido → NVENC H.264 → software AV1 (Media Foundation,
+  `MFVideoFormat_AV1` — SEM garantia de existir embutido no Windows, só se a máquina tiver MFT de
+  terceiro registrado) → software H.264. `NV_ENC_CODEC_AV1_GUID` já existe no SDK vendorizado
+  (13.1.15); hardware de verdade só em GPUs Ada Lovelace/RTX 40+ (CLAUDE.md §Codecs já avisava disso
+  — motivo do adiamento original).
+- [x] **Detecção de keyframe pro AV1 no `TransportCore`** — AV1 não usa NAL/start-code como
+  H.264/HEVC (`ContainsKeyframeNal` não serve). Bitstream é uma sequência de OBUs (Open Bitstream
+  Units) sem marcador fixo — implementado `ContainsKeyframeObu` andando OBU por OBU via leb128 (tamanho
+  inline de cada um, `repeatSeqHdr=1` no encoder garante que o Sequence Header OBU só reaparece em
+  keyframe, mesmo papel que repeatSPSPPS já cumpre pra H.264/HEVC). `outputAnnexBFormat=0` no NVENC
+  (formato "low overhead", OBUs crus concatenados) — Annex B do AV1 é um container totalmente
+  diferente (temporal/frame unit com leb128 no topo), não vale a complexidade e o WebCodecs do
+  viewer não precisa disso mesmo.
+- [x] **Viewer decodifica AV1** — `VideoDecoder.configure({codec: "av01.0.04M.08", ...})` (sem
+  sub-objeto `{format:...}`, diferente de avc/hevc — WebCodecs só conhece o formato low-overhead pro
+  AV1) + `isConfigSupported()` ANTES de responder o offer, mesmo protocolo de negociação
+  (`decoderOk`) que HEVC já usa — generalizado no host (`ntActiveCodec !== "h264"`, antes só
+  verificava `=== "hevc"`) pra cobrir os dois codecs com o mesmo código.
+- [x] **Bug real achado e corrigido durante a implementação (não relacionado a AV1, bloqueava
+  QUALQUER build)**: `addon.cpp`/`StreamWorker.cpp` incluíam `<windows.h>` sem `NOMINMAX` — as
+  macros `min`/`max` que o header define quebravam `std::max()`/`std::min()` mais abaixo
+  (`TransportMaxBufferedAmount`, Sprint 25; `StreamWorker`, código órfão) com erro de sintaxe
+  C2589/C2059 do MSVC. Não pegava nas sessões anteriores porque aparentemente ninguém tinha rodado
+  um rebuild limpo do zero desde que esse código foi escrito (só incremental, que não reprocessa
+  headers já compilados). `#define NOMINMAX` adicionado ANTES de qualquer include em ambos os
+  arquivos (definir só antes do `#include <windows.h>` direto não bastava no `StreamWorker.cpp` —
+  os headers do projeto incluídos antes dele já puxam `windows.h` transitivamente via `d3d11.h`, e
+  o include guard rejeita a segunda inclusão silenciosamente).
+- [x] Validado: addon compila limpo (`node-gyp rebuild` direto + rebuild via `electron-builder`
+  pro ABI certo do Electron), `tsc --noEmit` limpo em `desktop` e `viewer`, `npm run dist` gera
+  instalador de produção sem erro.
+- [ ] **Não testado com hardware real** (sem GPU RTX 40+ disponível nessa sessão pra confirmar
+  NVENC AV1 de verdade — só compilação/negociação de codec validadas). Mesma categoria de pendente
+  que HEVC teve inicialmente (Sprint 24 já validou HEVC em produção depois).
+
+## Sprint 28 — Simulcast v1 (2 tiers, mesma resolução)
+
+**Decisões de escopo consultadas com o usuário antes de implementar**: (1) 2 níveis fixos
+("high"/"low"), não 3 — menor risco de estourar limite de sessões NVENC simultâneas numa GPU de
+consumidor; (2) diferenciação só por bitrate/fps, MESMA resolução nos dois tiers — downscale de
+resolução de verdade exigiria um componente D3D11 Video Processor novo (blit GPU), não testado
+nesse projeto, risco maior numa área (GPU/decode) que já causou bug sério antes (aberração
+cromática, crash de device-lost); (3) seleção de qualidade MANUAL pelo espectador (seletor no
+player), não automática por medição de rede — fecha menos escopo de uma vez, sem depender de heurística de adaptação ainda não validada.
+
+- [x] **Encoder duplo** — `EncoderCore` não mudou nada (reaproveitado como está pros dois tiers).
+  `addon.cpp` ganhou `g_encoderLow` ao lado do `g_encoder` existente (renomeado conceitualmente pra
+  "high"), com funções espelhadas (`initEncoderLow`/`destroyEncoderLow`/`encodeCurrentFrameLow`).
+  Tier "low" roda com um `fps` bem mais baixo (`SIMULCAST_LOW_FPS=15`) — o pacing de grade fixa que
+  o `EncoderCore` já tinha (Sprint 17/25) cuida sozinho do frame-skip, sem lógica nova nenhuma.
+- [x] **Sessão por espectador ganhou TIER** — `g_transportSessions` (mapa por `viewerId`) trocou de
+  `unique_ptr<TransportCore>` puro pra uma struct `ViewerSession{transport, tier}`. Todo espectador
+  novo entra em "high" por padrão (`transportCreateSession(..., tier)`); troca depois em sessão viva
+  via `transportSetViewerTier(viewerId, tier)` — NÃO recria a conexão WebRTC, só troca de qual
+  encoder aquela sessão passa a receber frame, com keyframe forçado no tier novo pra sincronizar o
+  decoder do espectador (mesmo raciocínio do `OnChannelOpen` que já existia).
+- [x] **Fan-out por tier** — `TransportSendVideoFrame`/`TransportMaxBufferedAmount` ganharam
+  parâmetro `tier`: o primeiro só manda pras sessões DAQUELE tier (antes do simulcast ia pra
+  todas), o segundo só considera o buffer das sessões DAQUELE tier — necessário pro AIMD de cada
+  tier reagir à rede dos SEUS espectadores, não à média/pior de todo mundo misturado.
+- [x] **AIMD por tier** — `main/index.ts` trocou o estado global único (`ntCurrentBitrateBps` e
+  companhia) por um `AimdState` independente por tier (`ntAimdHigh`/`ntAimdLow`), cada um com seu
+  próprio teto (`bitrateBps` do usuário pro high, `SIMULCAST_LOW_BITRATE_BPS` fixo pro low) e
+  streaks de subida/descida próprios — mesma lógica AIMD do Sprint 25 (decréscimo multiplicativo,
+  recuperação aditiva, `forceKeyframe:false` no ajuste automático), só parametrizada.
+- [x] **Loop de captura codifica os dois tiers a cada frame** — `encodeCurrentFrame()` (high) +
+  `encodeCurrentFrameLow()` (low) chamados toda volta do `runNativeTransportLoop`, cada um manda
+  pro `transportSendVideoFrame` do seu próprio tier. Dump de debug (investigação de aberração
+  cromática, Sprint anterior) continua só no tier "high".
+- [x] **Sinalização "set-quality"** — backend (`nativeWsRelay.ts`) não precisou de NENHUMA
+  mudança (relay puro, já repassa qualquer JSON e estampa `viewerId` sozinho). Viewer manda
+  `{type:"set-quality", tier}` quando o usuário troca no seletor; host reage no handler de
+  mensagens WS já existente chamando `transportSetViewerTier`.
+- [x] **UI do viewer** — `VideoPlayer.tsx` ganhou um botão de qualidade (⚡ alta / 🐢 baixa) na
+  barra de controles, só aparece no caminho nativo (`quality`/`onQualityChange` opcionais,
+  ausentes no caminho LiveKit). `useNativeStream.ts` expõe `quality`/`setQuality`.
+- [x] **Bug real achado e corrigido durante a implementação (não relacionado ao simulcast em si)**:
+  depois de editar `addon.cpp`, o link falhou com `LNK1103: depurando informação corrompida` mesmo
+  recompilando o `.obj` afetado sozinho — o `.pdb` compartilhado (`vc143.pdb`, todos os `.cpp` do
+  addon escrevem nele via `/Z7`) ficou com estado inconsistente entre objetos novos e antigos.
+  Resolvido com rebuild limpo completo (apagar `build/Release/` inteiro) — recompilação
+  incremental parcial não é confiável depois de uma interrupção de link anterior (arquivo `.node`
+  travado pelo app aberto, ver pendência de firewall do Sprint 26).
+- [x] Validado: `tsc --noEmit` limpo em desktop (main+web) e viewer, addon nativo compila+linka
+  limpo do zero, `npm run dist` gera instalador de produção sem erro.
+- [x] **Validado em produção pelo usuário**: 2 espectadores simultâneos, cada um num tier
+  diferente ("high"/"low") — funcionou de primeira, fan-out por tier e troca de qualidade sem
+  travar o vídeo de ninguém.
+
+## Sprint 29 — Latência adaptativa (buffer de jitter no viewer nativo)
+
+**Escopo consultado com o usuário**: entre "buffer adaptativo no viewer" e "bitrate reagindo a
+RTT medido", escolhido o primeiro — o bitrate adaptativo (AIMD) já existe desde o Sprint 25;
+o que faltava de verdade era o slider de "suavização" no player, que existe na UI mas era
+**no-op no caminho nativo** (só funcionava no LiveKit via `RTCRtpReceiver.playoutDelayHint`,
+que não existe no caminho DataChannel+WebCodecs).
+
+- [x] **Buffer de jitter implementado do zero** (`viewer/src/hooks/useNativeStream.ts`) — sem
+  RTP nesse caminho, não tem jitter buffer nativo do navegador pra reaproveitar. Âncora
+  stream-time↔local-time no primeiro chunk recebido (`anchorLocalMs`/`anchorStreamUs`); todo chunk
+  seguinte compara "quando deveria ter chegado" com "quando chegou de verdade" — a diferença é
+  jitter de rede cru, suavizado com EWMA (mesmo peso `1/16` que RFC 3550 usa pra estimar jitter
+  RTP, só aplicado sobre o timestamp de aplicação em vez de RTP timestamp).
+- [x] **`decoder.output` agora agenda a escrita** (`setTimeout`) pro momento calculado
+  (`ancora + tempo-de-stream-do-frame + delay-efetivo`) em vez de escrever no `writer` direto —
+  isso que efetivamente segura o frame o tempo do buffer adaptativo.
+- [x] **Slider vira PISO, não substituído** — `applyPlayoutDelay` (já existia, era no-op no
+  nativo) agora atualiza um `userFloorMsRef`; o delay efetivo aplicado é
+  `Math.max(pisoDoUsuário, autoDelayCalculado)` — o usuário pode pedir mais suavização manual, o
+  automático ainda pode subir mais sozinho se a rede piorar.
+- [x] **UI reaproveitada sem mudança nenhuma** — `stats.latencyMs` (rótulo "buffer" já existente
+  no painel 📊 do `VideoPlayer`) agora reflete o delay efetivo real de verdade, em vez do `0`
+  hardcoded que tinha antes.
+- **Risco aceito conscientemente**: `PLAYOUT_DELAY_MAX_MS` (1000ms, valor pré-existente do
+  caminho LiveKit) permite, em teoria, até ~60 `VideoFrame` decodificados simultâneos represados
+  em 60fps no pico do buffer — mesma ordem de grandeza que o slider manual do LiveKit já permitia
+  antes sem problema reportado; normalmente o valor calculado fica bem abaixo disso (jitter real
+  de rede estável é de poucos ms), só chega perto do teto sob rede muito ruim.
+- [x] Validado: `tsc -b` limpo no viewer, `npm run build` gera bundle sem erro. Não mexeu em nada
+  do desktop/C++ (mudança 100% no viewer) — não precisou rebuild de addon nativo nem do `.exe`.
+- [x] **Validado em produção pelo usuário**: buffer de jitter adaptativo funcionando.
+
+## Sprint 30 — Remoção do StreamWorker (código morto)
+
+**Decisão consultada com o usuário**: remover em vez de só documentar melhor — o simulcast
+(Sprint 28, 2 encoders simultâneos) já tornaria reativar o StreamWorker mais trabalho do que
+valeria (ele só modelava 1 encoder/1 sessão, precisaria reescrever pra suportar tier), e menos
+código morto pra manter.
+
+- [x] `native/capture-core/src/StreamWorker.cpp`/`.h` deletados — thread nativa própria pra
+  captura+encode+envio, tentativa (documentada na sessão de 2026-08-24) de eliminar um stutter que
+  na real era outro bug (`PacingHandler` invertido, já corrigido há muito). Nunca foi o caminho de
+  produção: `StartStream()` sempre retornava `false` de propósito desde antes do multi-espectador.
+- [x] Removido de `addon.cpp`: `g_worker`, `StartStream`/`StopStream`/`GetStreamStats` e seus
+  exports, uso de `g_worker` em `TransportCloseAllSessions`. Removido de `main/index.ts`: os 3
+  métodos mortos na interface `NativeCaptureAddon` (nunca eram chamados, só declarados). Removido
+  de `binding.gyp`: entrada `src/StreamWorker.cpp`. Comentários que citavam StreamWorker como
+  caminho ativo corrigidos pra refletir a realidade (loop roda em JS via `setImmediate`).
+- [x] Validado: rebuild LIMPO do addon (obrigatório depois de deletar fonte — incremental não
+  detecta arquivo removido do binding.gyp de forma confiável, mesmo aprendizado do Sprint 28)
+  compila+linka sem erro, `tsc --noEmit` limpo, `npm run dist` gera instalador sem erro.
+- [ ] Downscale de resolução de verdade (D3D11 Video Processor), seleção automática por medição de
+  rede do espectador, e mais de 2 tiers continuam fora de escopo (decisão consciente, ver acima).
+
+## Sprint 26 — Investigação firewall/rede diferente (PARADO, dor de cabeça, retomar depois)
+
+- [x] **Bug real de build corrigido**: `electron-builder.yml` só empacotava `capture_core.node`,
+  esquecendo as DLLs de runtime do transporte (`datachannel.dll`, `juice.dll`,
+  `libcrypto-3-x64.dll`, `libssl-3-x64.dll`, `srtp2.dll`) — todo build de produção até agora tinha
+  o pipeline nativo quebrado silenciosamente (caía sempre pro fallback). `files`/`asarUnpack`
+  corrigidos, validado que os 6 arquivos ficam em `app.asar.unpacked/native/...` no `.exe` final.
+- [x] **Descartado como causa**: firewall do Windows no host — já existia regra Allow
+  (Inbound, Any protocol, Public profile) pra `Screen Share.exe`, confirmado via
+  `Get-NetFirewallRule`. Sinalização WS (TCP 4000) do celular chega certinho no PC (conexões
+  vistas via `Get-NetTCPConnection`), então também não é isolamento de rede/AP do roteador —
+  pacote atravessa a rede sem problema.
+- [x] **Achado real**: processo `Screen Share.exe` nunca abre socket UDP nenhum quando o segundo
+  dispositivo tenta conectar — e nesse ponto o app fecha sozinho (sem crash nativo: sem dump em
+  `Crashpad`, sem evento no Windows Event Viewer, sem stack no terminal). Aponta pra exceção JS não
+  tratada no processo main (Node mata processo limpo por padrão, sem gerar rastro nenhum).
+- [x] Adicionado `process.on("uncaughtException")` em `main/index.ts` — grava stack em
+  `{userData}/uncaught-exception.log` antes de `app.exit(1)`, pra próxima reprodução mostrar o erro
+  real (crashReporter/Crashpad só cobre crash nativo, não exceção JS).
+- [ ] **PENDENTE — não reproduzido com o log novo ainda**: usuário decidiu pausar essa
+  investigação por ora (fica pra depois, não é bloqueio imediato). Próximo passo quando retomar:
+  reproduzir o crash com o build que já tem o handler novo, ler
+  `{userData}/uncaught-exception.log` (userData real = ver `app.getPath("userData")`, variou entre
+  `com.ocsscreen.app`/`OCS`/nome do `package.json` nessa sessão — checar qual path o app realmente
+  usa) pra ver o stack trace de verdade.

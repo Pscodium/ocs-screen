@@ -134,7 +134,27 @@ export function SettingsForm({ settings, onChange }: SettingsFormProps) {
             <input
               type="checkbox"
               checked={settings.preferHevc}
-              onChange={(e) => onChange({ ...settings, preferHevc: e.target.checked })}
+              onChange={(e) => onChange({ ...settings, preferHevc: e.target.checked, preferAv1: false })}
+            />
+            <span className="toggle-slider" />
+          </span>
+        </label>
+      )}
+
+      {settings.nativeTransport && (
+        <label className="toggle-row">
+          <span className="toggle-row-label">
+            Usar AV1 (beta)
+            <span className="toggle-row-hint">
+              Só com pipeline nativo. Precisa de GPU NVIDIA RTX 40+ pra encoder por hardware (raro) —
+              cai pra H.264 sozinho se a GPU/navegador do espectador não suportar
+            </span>
+          </span>
+          <span className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={settings.preferAv1}
+              onChange={(e) => onChange({ ...settings, preferAv1: e.target.checked, preferHevc: false })}
             />
             <span className="toggle-slider" />
           </span>
