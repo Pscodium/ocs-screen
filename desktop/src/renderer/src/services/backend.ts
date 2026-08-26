@@ -1,19 +1,20 @@
 import type { StreamSettings } from "../types/stream";
 
-const backendUrl = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:4000";
+export const backendUrl = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:4000";
 
 export interface CreateRoomResponse {
   roomId: string;
   hostToken: string;
   livekitUrl: string;
   viewerUrl: string;
+  nativeMode: boolean;
 }
 
-export async function createRoom(settings: StreamSettings, slug?: string): Promise<CreateRoomResponse> {
+export async function createRoom(settings: StreamSettings, slug?: string, nativeMode?: boolean): Promise<CreateRoomResponse> {
   const res = await fetch(`${backendUrl}/rooms`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ settings, slug: slug || undefined }),
+    body: JSON.stringify({ settings, slug: slug || undefined, nativeMode }),
   });
   if (!res.ok) {
     if (res.status === 409) throw new Error("Esse nome de sala já está em uso.");

@@ -34,6 +34,37 @@ services:
       - "50000-50100:50000-50100/udp" # faixa de portas RTC (mídia WebRTC em si)
     restart: unless-stopped
 
+  # TURN pro pipeline NATIVO (libdatachannel, ver docs/NATIVE_CAPTURE.md Fase 4) — separado do TURN
+  # embutido do LiveKit acima (`turn.enabled` no livekit.yaml gerado), que só serve o caminho
+  # LiveKit. Porta 3479 (NÃO 3478) de propósito — o LiveKit já publica 3478/udp nesta mesma VPS,
+  # os dois processos não podem escutar a mesma porta no host. `TURN_SECRET` aqui TEM que ser
+  # exatamente o mesmo valor da env `TURN_SECRET` do serviço `backend` abaixo (services/turn.ts
+  # gera a credencial com esse segredo, coturn valida com o mesmo).
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    environment:
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_REALM: ${TURN_REALM:-ocs-screen}
+    command: >
+      -n
+      --listening-port=3479
+      --min-port=49160
+      --max-port=49560
+      --use-auth-secret
+      --static-auth-secret=${TURN_SECRET}
+      --realm=${TURN_REALM:-ocs-screen}
+      ${TURN_EXTERNAL_IP:+--external-ip=${TURN_EXTERNAL_IP}}
+      --no-cli
+      --no-multicast-peers
+      --log-file=stdout
+    # Protocolo cru (TCP/UDP, não HTTP) — não passa pelo proxy do EasyPanel, precisa de porta
+    # real publicada no host (mesmo padrão do bloco de TURN/RTC do LiveKit acima).
+    ports:
+      - "3479:3479/udp"
+      - "3479:3479/tcp"
+      - "49160-49560:49160-49560/udp"
+
   backend:
     build:
       context: ./backend
@@ -45,11 +76,15 @@ services:
       LIVEKIT_URL: ${LIVEKIT_URL}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      TURN_SECRET: ${TURN_SECRET}
+      TURN_REALM: ${TURN_REALM:-ocs-screen}
+      TURN_URLS: ${TURN_URLS}
     # API é só HTTP — proxy do EasyPanel alcança pela rede interna; mapeie o domínio pra porta 4000 na UI.
     expose:
       - "4000"
     depends_on:
       - livekit
+      - coturn
     restart: unless-stopped
 
   viewer:

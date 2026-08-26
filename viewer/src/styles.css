@@ -219,6 +219,30 @@ body {
   flex-shrink: 0;
 }
 
+/* Seletor de qualidade do simulcast (Sprint 27) — dois botões pequenos dentro do mesmo flyout
+   pattern que o resto da barra já usa (playout delay, volume). */
+.pill-flyout-option {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  cursor: pointer;
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.pill-flyout-option:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
+.pill-flyout-option-active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* Detalhes de estatísticas — flyout acima da pill, some sozinho ao clicar de novo. */
 .stats-flyout {
   position: absolute;

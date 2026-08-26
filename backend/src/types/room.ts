@@ -13,11 +13,16 @@ export interface Room {
   hostIdentity: string;
   createdAt: number;
   settings: RoomSettings;
+  // Transporte nativo (libdatachannel, ver docs/NATIVE_CAPTURE.md Fase 4) em vez de LiveKit pro
+  // vídeo — decidido pelo host na criação da sala (settings.nativeTransport no desktop). O viewer
+  // usa isso pra escolher entre useRoomStream (LiveKit) e useNativeStream (RTCPeerConnection cru).
+  nativeMode: boolean;
 }
 
 export interface CreateRoomRequest {
   settings?: Partial<RoomSettings>;
   slug?: string;
+  nativeMode?: boolean;
 }
 
 export interface CreateRoomResponse {
@@ -25,6 +30,7 @@ export interface CreateRoomResponse {
   hostToken: string;
   livekitUrl: string;
   viewerUrl: string;
+  nativeMode: boolean;
 }
 
 export interface ViewerTokenResponse {

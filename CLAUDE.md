@@ -684,23 +684,27 @@ O projeto deve evitar complexidade prematura.
 
 Implementar primeiro o caminho mínimo funcional e posteriormente adicionar recursos avançados.
 
-## Regra importante sobre WebRTC
+## Regra sobre WebRTC (revisada — pipeline nativo próprio)
 
-Não implementar um SFU próprio.
-
-Não implementar manualmente:
-
-* congestion control
-* retransmission
-* NAT traversal
-* simulcast
-* gerenciamento de peers
-* signaling complexo
-* adaptação de bitrate
-
-Quando possível, utilizar LiveKit e as APIs WebRTC existentes.
-
-O objetivo do projeto é construir um produto de compartilhamento de tela, não reinventar a infraestrutura WebRTC.
+> **Nota de arquitetura (revisão 2):** a regra original desta seção proibia reimplementar SFU/WebRTC
+> própria e mandava usar LiveKit sempre que possível. **Decisão consciente do usuário, ciente do
+> escopo e do risco**: o app desktop está migrando pra um pipeline 100% nativo em C++ —
+> captura (DXGI, já implementado, ver `docs/NATIVE_CAPTURE.md`) → encode (NVENC) → transporte
+> WebRTC próprio → SFU próprio — com o objetivo de igualar a qualidade/latência do compartilhamento
+> de tela do Discord (que também roda pipeline nativo próprio, não um SFU de terceiros). O viewer
+> web e o backend (criação de sala/token) continuam existindo; o que muda é que o app desktop deixa
+> de depender do LiveKit como motor de transporte.
+>
+> Reimplementar ICE/DTLS-SRTP à mão, sem nenhuma lib, não é viável com segurança (código
+> criptográfico crítico) — a camada baixa de WebRTC (ICE, DTLS-SRTP, RTP/RTCP, data channel) usa
+> **libdatachannel** (C++, leve, sem SFU embutido) como fundação. Tudo que fica ACIMA dessa camada
+> — SFU (distribuição pra múltiplos espectadores), sinalização, gerenciamento de sessão/sala,
+> congestion control/adaptação de bitrate, simulcast — é construído sob controle do projeto, ver
+> `docs/NATIVE_CAPTURE.md` Fases 3/4.
+>
+> Isso é uma mudança de arquitetura grande (meses de trabalho, substitui uma peça madura testada em
+> produção por uma construída do zero) — tratar com o devido cuidado de engenharia (testes de
+> carga, fallback, monitoramento), não como troca cosmética.
 
 ## Resultado final esperado
 

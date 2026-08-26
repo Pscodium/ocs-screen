@@ -1,11 +1,15 @@
 import { AUTO_FPS_TARGET, RESOLUTION_CONSTRAINTS, type StreamSettings } from "../types/stream";
-import type { CaptureSource } from "../../../preload/index";
+import type { CaptureSource, NativeCaptureStats } from "../../../preload/index";
+import { captureNative } from "./nativeCapture";
 
 export interface CaptureResult {
   stream: MediaStream;
   settings: MediaTrackSettings;
   hasAudio: boolean;
   stopAll: () => void;
+  // Só existe (não-undefined) quando a captura veio do caminho nativo — `desktopCapturer` não tem
+  // fps de captura separado do fps que o LiveKit já reporta.
+  onCaptureStats?: (callback: (stats: NativeCaptureStats) => void) => () => void;
 }
 
 // Constraints com `mandatory`/`chromeMediaSource` são uma extensão proprietária do Chromium/
@@ -47,7 +51,48 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promi
 
 // `onSourceEnded` dispara quando a track para inesperadamente (ex.: usuário fecha a janela
 // compartilhada). Sem diálogo nativo aqui — a fonte já foi escolhida via SourcePicker.
+//
+// Dispatcher: fontes de monitor tagueadas pelo SourcePicker com `nativeMonitorIndex` usam a
+// captura nativa (DXGI Desktop Duplication, ver services/nativeCapture.ts) — medida em produção
+// como visivelmente mais estável sob carga de jogo (~40-45fps sem stutter) que o
+// desktopCapturer/WGC padrão (oscilava 20-55fps com frame drop sob a mesma carga). Janela nunca
+// tem esse índice (DXGI não captura janela isolada), então sempre cai no caminho antigo.
 export async function captureScreen(
+  settings: StreamSettings,
+  source: CaptureSource,
+  onSourceEnded?: () => void,
+): Promise<CaptureResult> {
+  if (source.nativeMonitorIndex !== undefined) {
+    return captureScreenNative(settings, source.nativeMonitorIndex, onSourceEnded);
+  }
+  return captureScreenViaDesktopCapturer(settings, source, onSourceEnded);
+}
+
+// Áudio não faz parte do Capture Core nativo por design (docs/NATIVE_CAPTURE.md §Não Objetivos) —
+// sem faixa de áudio por enquanto nesse caminho. Testado em produção: pedir `getUserMedia` com
+// `chromeMediaSource: "desktop"` no áudio, MESMO com `video: false`, ainda dispara um capturer de
+// vídeo (WGC) internamente no Chromium pra validar a fonte "desktop" — e esse capturer falha e
+// derruba o renderer inteiro (`Terminating renderer for bad IPC message`) bem no meio da captura
+// nativa. Evitar essa chamada por completo é o que evita o crash.
+async function captureScreenNative(
+  settings: StreamSettings,
+  monitorIndex: number,
+  onSourceEnded?: () => void,
+): Promise<CaptureResult> {
+  const native = await captureNative(monitorIndex, settings);
+  const [videoTrack] = native.stream.getVideoTracks();
+  if (onSourceEnded) videoTrack.onended = onSourceEnded;
+
+  return {
+    stream: native.stream,
+    settings: native.settings,
+    hasAudio: false,
+    stopAll: native.stopAll,
+    onCaptureStats: native.onCaptureStats,
+  };
+}
+
+async function captureScreenViaDesktopCapturer(
   settings: StreamSettings,
   source: CaptureSource,
   onSourceEnded?: () => void,

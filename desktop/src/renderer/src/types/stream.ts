@@ -12,6 +12,38 @@ export interface StreamSettings {
   // sofre estouro de QP/frame drop com bitrate fixo — testado em produção, ver
   // docs/INSIGHTS-ENCODER.md #1). Por isso não é padrão — o usuário escolhe por sessão.
   sharpText: boolean;
+  // Só se aplica à captura nativa (DXGI Desktop Duplication não desenha cursor por padrão, ver
+  // services/nativeCapture.ts e docs/NATIVE_CAPTURE.md) — desktopCapturer/WGC já inclui o cursor
+  // por conta própria, então esse toggle é ignorado (sem efeito, não é erro) fora do caminho
+  // nativo.
+  showCursor: boolean;
+  // Pipeline nativo de ponta a ponta (captura DXGI/monitor ou WGC/janela → encode NVENC →
+  // transporte libdatachannel, ver docs/NATIVE_CAPTURE.md Fase 3/4) em vez de LiveKit pro vídeo —
+  // evita o encoder por software do Chromium (gargalo medido em produção: cai pro caminho antigo
+  // silenciosamente se o pipeline nativo falhar, sem avisar o usuário — ver `useBroadcast.ts`).
+  // Padrão TRUE (pedido do usuário, 2026-08-25 — testou o caminho antigo achando que era o
+  // nativo, por causa da falta de aviso quando o toggle tava desligado) — só os addons
+  // `capture_core`/`transport_core` não carregarem (fora do Windows, ou build sem C++ toolchain)
+  // desliga sozinho o caminho nativo, sem quebrar nada.
+  nativeTransport: boolean;
+  // Opt-in, só tem efeito com `nativeTransport` ligado — pede HEVC ao encoder em vez de H.264
+  // (CLAUDE.md §Codecs prioriza H.264 por garantia de hardware, esse toggle é uma EXCEÇÃO
+  // deliberada do usuário pra quem quer testar/aproveitar HEVC). Cascata de fallback automática
+  // do lado nativo se HEVC não der: GPU/driver sem suporte → NVENC H.264; nenhum encoder MF de
+  // HEVC na máquina → software H.264; viewer sem decode de HEVC (Chrome depende de hardware do
+  // dispositivo) → host detecta e reinicia em H.264 sozinho. Ver docs/NATIVE_CAPTURE.md Fase 3
+  // "HEVC". Padrão TRUE junto com `nativeTransport` (pedido do usuário, 2026-08-25) — a cascata de
+  // fallback automática já cobre qualquer GPU/driver/viewer sem suporte.
+  preferHevc: boolean;
+  // Opt-in, só tem efeito com `nativeTransport` ligado — mesmo espírito de `preferHevc` acima, mas
+  // pra AV1 (CLAUDE.md §Codecs lista AV1 como prioridade 3, adiado por bom tempo porque encoder de
+  // HARDWARE é raro — só GPUs Ada Lovelace/RTX 40+ têm NVENC AV1, diferente de HEVC que qualquer
+  // NVENC recente suporta). Mesma cascata de 4 níveis que HEVC já usa (ver EncoderCore::Initialize):
+  // NVENC AV1 pedido → NVENC H.264 (sem GPU RTX 40+) → software AV1 (MF, `MFVideoFormat_AV1` — sem
+  // garantia nenhuma de existir embutido no Windows, ao contrário do MFT de H.264, que sempre
+  // existe) → software H.264. Viewer decodifica via `VideoDecoder.isConfigSupported()` igual HEVC
+  // (`av01.*`) antes de aceitar o offer.
+  preferAv1: boolean;
 }
 
 export interface ResolutionConstraint {
@@ -27,6 +59,16 @@ export const RESOLUTION_CONSTRAINTS: Record<Exclude<Resolution, "auto">, Resolut
   "2160p": { width: 3840, height: 2160 },
 };
 
+// Perfil FIXO do tier "low" do simulcast (Sprint 27, ver docs/NATIVE_CAPTURE.md Fase 4
+// "Simulcast") — CLAUDE.md §Bitrate: nunca espalhar valor rígido pelo código, centralizado aqui
+// igual o resto dos perfis. Decisão consciente de escopo: MESMA resolução do tier "high" (sem
+// downscale de GPU, que exigiria um componente D3D11 Video Processor novo) — só bitrate/fps mais
+// baixos, o suficiente pra dar uma opção real de "qualidade baixa" pro espectador com rede ruim
+// sem precisar de scaler nenhum (o `EncoderCore` já pacia sozinho pro fps que for inicializado
+// com, então o fps mais baixo aqui já derruba a taxa de frame de graça).
+export const SIMULCAST_LOW_BITRATE_BPS = 800_000;
+export const SIMULCAST_LOW_FPS = 15;
+
 // 120 só faz sentido com monitor de alto refresh (144Hz+) e GPU/encoder de sobra — sem garantia
 // nenhuma, igual todo o resto de captura (CLAUDE.md §Captura de tela): o pedido é best-effort.
 export const FPS_OPTIONS: Fps[] = ["auto", 30, 60, 120];
@@ -38,6 +80,10 @@ export const defaultStreamSettings: StreamSettings = {
   fps: 60,
   quality: "high",
   sharpText: false,
+  showCursor: true,
+  nativeTransport: true,
+  preferHevc: true,
+  preferAv1: false,
 };
 
 // Multiplicador aplicado ao bitrate base conforme o nível de qualidade escolhido.

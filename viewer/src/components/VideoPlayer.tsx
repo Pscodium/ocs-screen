@@ -8,11 +8,24 @@ interface VideoPlayerProps {
   hasAudio: boolean;
   playoutDelayMs: number;
   onPlayoutDelayChange: (ms: number) => void;
+  // Simulcast (Sprint 27, ver docs/NATIVE_CAPTURE.md Fase 4 "Simulcast") — só existe no caminho
+  // nativo (`useNativeStream`), LiveKit não passa esses props (seletor de qualidade fica ausente
+  // nesse caminho, não é um erro). Seleção manual nessa v1, sem medição automática de rede.
+  quality?: "high" | "low";
+  onQualityChange?: (tier: "high" | "low") => void;
 }
 
 const HIDE_DELAY_MS = 2200;
 
-export function VideoPlayer({ videoRef, stats, hasAudio, playoutDelayMs, onPlayoutDelayChange }: VideoPlayerProps) {
+export function VideoPlayer({
+  videoRef,
+  stats,
+  hasAudio,
+  playoutDelayMs,
+  onPlayoutDelayChange,
+  quality,
+  onQualityChange,
+}: VideoPlayerProps) {
   const [containerRef, setContainerRef] = useState<HTMLDivElement | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [volume, setVolume] = useState(0);
@@ -138,6 +151,31 @@ export function VideoPlayer({ videoRef, stats, hasAudio, playoutDelayMs, onPlayo
             />
           </div>
         </div>
+
+        {onQualityChange && (
+          <>
+            <div className="pill-divider" />
+            <div className="pill-popover-group" title="Qualidade da transmissão">
+              <button className="pill-btn" aria-label="Qualidade">
+                {quality === "low" ? "🐢" : "⚡"}
+              </button>
+              <div className="pill-flyout">
+                <button
+                  className={`pill-flyout-option ${quality === "high" ? "pill-flyout-option-active" : ""}`}
+                  onClick={() => onQualityChange("high")}
+                >
+                  Alta
+                </button>
+                <button
+                  className={`pill-flyout-option ${quality === "low" ? "pill-flyout-option-active" : ""}`}
+                  onClick={() => onQualityChange("low")}
+                >
+                  Baixa
+                </button>
+              </div>
+            </div>
+          </>
+        )}
 
         <div className="pill-divider" />
 
