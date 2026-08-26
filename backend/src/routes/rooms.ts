@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { createHostToken, createViewerToken, getLiveRoomIds } from "../services/livekit.js";
 import { cancelRoomCleanup, createRoom, deleteRoom, getRoom, listRooms, SlugTakenError } from "../services/rooms.js";
 import { registerHostSocket, registerViewerSocket } from "../services/nativeWsRelay.js";
+import { getIceServers } from "../services/turn.js";
 import { generateIdentity, isValidSlug, normalizeSlug } from "../utils/ids.js";
 import type {
   CreateRoomRequest,
@@ -96,6 +97,13 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       roomId: room.id,
     };
     return reply.send(response);
+  });
+
+  // ICE servers (STUN + TURN, ver services/turn.ts) — não é específico de sala nenhuma
+  // (credencial TURN é curta, sem vínculo com o ID da sala), mas host e viewer só pedem isso
+  // quando já estão prestes a negociar uma conexão de verdade (native transport), não antes.
+  app.get("/ice-servers", async (_request, reply) => {
+    return reply.send({ iceServers: getIceServers() });
   });
 
   app.delete<{ Params: { id: string } }>("/rooms/:id", async (request, reply) => {

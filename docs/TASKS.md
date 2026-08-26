@@ -1,5 +1,67 @@
 # Roadmap execução
 
+## ✅ Item 3/3 da entrega concluído: WebRTC (TURN + resiliência)
+
+Último item da "Escopo da próxima entrega" (ver seção mais abaixo) — Interface gráfica e Áudio já
+fechados antes deste.
+
+- [x] **TURN de verdade provisionado** — `docker-compose.yml` ganhou serviço `coturn`
+  (`coturn/coturn`, `network_mode: host` — precisa ver o IP de origem real dos pacotes UDP pra
+  relay funcionar, bridge do Docker mascara isso). Credencial por REST API do coturn
+  (`--use-auth-secret`/`--static-auth-secret`): `backend/src/services/turn.ts` gera
+  username=`"<expiry-unix>:ocs-screen"` / password=`base64(HMAC-SHA1(secret, username))` por
+  requisição — nunca usuário/senha fixos, expira sozinho (`TURN_CREDENTIAL_TTL_SECONDS`, padrão
+  1h), mesmo princípio de token de sala que já existia (CLAUDE.md §Segurança). Nova rota
+  `GET /ice-servers` (`routes/rooms.ts`) devolve STUN público + TURN (só se `TURN_SECRET`
+  configurado — sem TURN configurado, comportamento continua idêntico a antes, só STUN).
+- [x] **Desktop (host) usa o TURN de verdade** — `nativeTransport.ts` busca `/ice-servers` antes
+  de iniciar a transmissão nativa e converte pro formato de URL única que o libdatachannel entende
+  (`turn:user:pass@host:port` — `TransportCore.cpp`/`rtc::IceServer` só aceita esse formato pro
+  construtor de string, diferente do `{urls,username,credential}` estruturado do navegador).
+  **Bug relevante evitado**: o username do coturn tem um `:` literal dentro (formato REST API,
+  `"<expiry>:id"`) — sem `encodeURIComponent`, o parser de URL do libdatachannel quebraria ali
+  pensando que é o separador user:pass; corrigido codificando username/password antes de montar a
+  URL (o `url_decode` do libdatachannel do outro lado desfaz certinho).
+- [x] **Viewer usa o TURN de verdade** — `useNativeStream.ts` cria o `RTCPeerConnection` com STUN
+  síncrono (navegador não aceita config assíncrona no construtor) e troca pro TURN/STUN reais via
+  `setConfiguration()` assim que o fetch de `/ice-servers` resolve (rápido o bastante pra sempre
+  correr antes da negociação de verdade começar, na prática).
+- [x] **Resiliência de sinalização (WS)** — antes, se o WS de sinalização do HOST caísse (backend
+  reiniciou, blip de rede), a transmissão continuava "ativa" mas surda: nenhum espectador NOVO
+  conseguia entrar, nenhum ICE candidate/SDP saía mais — e não existia NENHUM handler de
+  reconexão. Espectadores JÁ conectados não eram afetados (DataChannel de mídia é independente do
+  WS). `main/index.ts`: reconecta sozinho com backoff exponencial (1s→2s→4s→8s, teto 10s) enquanto
+  a transmissão continuar ativa — o backend já sabia lidar com host reconectando
+  (`registerHostSocket` substitui o socket antigo e reenvia `viewer-joined` de cada espectador
+  ainda conectado, `nativeWsRelay.ts`), só faltava o host tentar de novo.
+- [x] **Resiliência do lado do viewer** — reconecta com o mesmo backoff, mas só ENQUANTO a
+  negociação inicial não terminou (`everConnected` ainda `false`) — é a janela real de risco (rede
+  ruim bem no início). Depois de conectado, não tenta reagir a uma renegociação do host (ex.: host
+  caiu e voltou) — isso continua exigindo remontar o player, mesma limitação de sempre (documentada
+  desde o Sprint 23), só a fase de handshake inicial ficou resiliente. Melhorar isso mais (aceitar
+  um offer novo pós-conexão) fica pra outra entrega — mudança de comportamento maior, risco maior.
+- `tsc --noEmit`/`tsc -b` limpo em backend, desktop (main+web) e viewer.
+- [x] **Validado com coturn real rodando** (`docker compose up -d coturn`, imagem
+  `coturn/coturn`) — **bug real de configuração encontrado e corrigido**: o `TURN_SECRET` só
+  existia no `.env.example`/placeholder, nunca foi configurado de verdade nos `.env` reais
+  (raiz e `backend/.env`) nem batia entre backend e coturn. Primeiro teste do usuário
+  ("transmiti e assisti, foi de boa") **não validava TURN nenhum** — `/ice-servers` só devolvia
+  STUN (sem `TURN_SECRET`, o backend nunca oferece TURN, por design) e mesma rede local usa
+  candidato direto de qualquer jeito, funcionaria idêntico com ou sem TURN configurado. Corrigido:
+  gerado um secret de verdade (`openssl`-equivalente, `crypto.randomBytes`), colocado igual nos
+  dois `.env` (raiz, usado pelo `docker compose`; `backend/.env`, lido pelo processo Node — TEM que
+  bater), coturn e backend reiniciados pra pegar o valor novo.
+- [x] **Autenticação TURN confirmada de ponta a ponta com `turnutils_uclient`** (ferramenta de
+  teste que já vem na imagem oficial do coturn) — credencial gerada por `services/turn.ts` de
+  verdade: `allocate` → `success`, endereço de relay devolvido. Controle negativo: credencial
+  errada nunca autentica (fica em loop de `allocate` sem sucesso, sem vazar diferença de erro que
+  ajudasse a adivinhar a senha). Confirma que o HMAC-SHA1 compartilhado entre backend e coturn
+  bate certinho na prática, não só na conta manual.
+- **Ainda não testado**: cliente atrás de NAT simétrico de verdade (só a autenticação/alocação foi
+  validada, não uma sessão relay completa host↔espectador em rede restritiva real) — precisa de 2
+  redes diferentes de verdade pra confirmar; e forçar queda do WS matando o processo do backend no
+  meio de uma transmissão ativa, pra confirmar a reconexão automática (host e viewer) na prática.
+
 ## 🚧 Em andamento (2026-08-26): Áudio nativo (exclusão de app) — passo 1 de 3
 
 Escopo desta entrega (ver "Escopo da próxima entrega" mais abaixo): 1) Interface gráfica (✅ feito

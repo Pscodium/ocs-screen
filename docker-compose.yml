@@ -9,3 +9,35 @@ services:
     volumes:
       - ./infra/livekit/livekit.yaml:/etc/livekit.yaml
     restart: unless-stopped
+
+  # TURN (CLAUDE.md §Infraestrutura já previa isso desde o início — só STUN público (Google) era
+  # usado até aqui, "só pra validar"). Necessário pro pipeline nativo (libdatachannel, sem SFU
+  # de terceiro por baixo) alcançar espectadores atrás de NAT simétrico/firewall restritivo, onde
+  # STUN sozinho não é suficiente (o candidato "srflx" nunca chega a bater com o do outro lado).
+  # `TURN_SECRET` (env, mesmo valor que o backend usa em services/turn.ts) gera credenciais de
+  # curta duração — nunca usuário/senha fixos gravados em lugar nenhum. Validado de ponta a ponta
+  # com `turnutils_uclient` (autenticação real aceita/rejeita certo, ver docs/TASKS.md).
+  #
+  # `EXTERNAL_IP` (opcional) — só necessário se o host de prod estiver atrás de NAT de nuvem sem IP
+  # público direto na interface (comum em VPS/cloud com IP elástico separado): formato
+  # "<publico>/<privado>" (ex.: "203.0.113.10/10.0.0.5"). Sem NAT na frente (IP público direto na
+  # máquina), deixa vazio — coturn detecta sozinho.
+  coturn:
+    image: coturn/coturn:latest
+    restart: unless-stopped
+    network_mode: host # coturn precisa ver o IP de origem real dos pacotes UDP pra relay funcionar corretamente atrás de NAT — bridge network do Docker mascara isso.
+    environment:
+      - TURN_SECRET=${TURN_SECRET:-changeme-generate-a-real-secret}
+      - TURN_REALM=${TURN_REALM:-ocs-screen}
+    command: >
+      -n
+      --listening-port=3478
+      --min-port=49160
+      --max-port=49560
+      --use-auth-secret
+      --static-auth-secret=${TURN_SECRET:-changeme-generate-a-real-secret}
+      --realm=${TURN_REALM:-ocs-screen}
+      ${TURN_EXTERNAL_IP:+--external-ip=${TURN_EXTERNAL_IP}}
+      --no-cli
+      --no-multicast-peers
+      --log-file=stdout

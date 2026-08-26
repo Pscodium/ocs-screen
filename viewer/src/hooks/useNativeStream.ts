@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState } from "livekit-client";
-import { openNativeSignalingSocket, type NativeVideoCodec } from "../services/backend";
+import { fetchIceServers, openNativeSignalingSocket, type NativeVideoCodec } from "../services/backend";
 import type { ConnectionPhase, StreamStats } from "./useRoomStream";
 import { PLAYOUT_DELAY_MAX_MS, PLAYOUT_DELAY_DEFAULT_MS } from "./useRoomStream";
 
@@ -73,14 +73,34 @@ export function useNativeStream(roomId: string) {
     const JITTER_EWMA_ALPHA = 1 / 16; // mesmo peso que RFC 3550 usa pra estimativa de jitter RTP
     const JITTER_SAFETY_MULTIPLIER = 4; // margem de segurança sobre o jitter médio medido
 
+    // STUN público como chute inicial síncrono (RTCPeerConnection não aceita config assíncrona no
+    // construtor) — `fetchIceServers()` abaixo troca pro TURN/STUN de infra própria (se
+    // configurado, ver backend `services/turn.ts`) assim que resolver, via `setConfiguration()`
+    // (aplica na PRÓXIMA gathering de ICE; como o fetch é rápido — mesma rede local do backend —
+    // isso sempre corre antes da negociação de verdade começar na prática).
     const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+    fetchIceServers().then((iceServers) => {
+      if (!cancelled) pc.setConfiguration({ iceServers });
+    });
     // Setado ANTES do canal de vídeo abrir de verdade (só abre depois do SDP fechar) — o handler
     // de `ondatachannel` mais abaixo lê essa variável já com o valor certo.
     let negotiatedCodec: NativeVideoCodec = "h264";
 
     // WS de sinalização (ver backend/src/services/nativeWsRelay.ts e desktop/src/main/index.ts,
     // lado espelhado do host) — substitui o REST+polling anterior.
-    const ws = openNativeSignalingSocket(roomId);
+    //
+    // Resiliência (item pendente do CLAUDE.md §Infraestrutura) — reconecta com backoff só ENQUANTO
+    // a negociação inicial ainda não terminou (`everConnected` continua `false`): é a janela real
+    // de risco (rede flakey bem no início). Depois de conectado, o DataChannel de mídia é
+    // independente do WS — perder a sinalização não derruba o vídeo/áudio já fluindo. Não tenta
+    // reagir a uma renegociação do host DEPOIS de já conectado (ex.: host caiu e voltou) — isso
+    // continua exigindo remontar o player (mesma limitação documentada desde o Sprint 23), só a
+    // fase de handshake inicial ficou resiliente.
+    let ws = openNativeSignalingSocket(roomId);
+    let everConnected = false;
+    let wsReconnectAttempt = 0;
+    let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
     const sendWhenOpen = (payload: Record<string, unknown>): void => {
       const json = JSON.stringify(payload);
       if (ws.readyState === WebSocket.OPEN) ws.send(json);
@@ -88,7 +108,31 @@ export function useNativeStream(roomId: string) {
     };
     sendMessageRef.current = sendWhenOpen;
 
+    function attachWsHandlers(socket: WebSocket): void {
+      socket.onopen = () => {
+        wsReconnectAttempt = 0;
+      };
+      socket.onmessage = handleWsMessage;
+      socket.onerror = () => {
+        if (cancelled) return;
+        setError("Erro na sinalização com o host.");
+        setPhase("error");
+      };
+      socket.onclose = () => {
+        if (cancelled || everConnected || wsReconnectTimer) return;
+        const delayMs = Math.min(10_000, 1000 * 2 ** wsReconnectAttempt);
+        wsReconnectAttempt++;
+        wsReconnectTimer = setTimeout(() => {
+          wsReconnectTimer = null;
+          if (cancelled || everConnected) return;
+          ws = openNativeSignalingSocket(roomId);
+          attachWsHandlers(ws);
+        }, delayMs);
+      };
+    }
+
     pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "connected") everConnected = true;
       const map: Record<RTCPeerConnectionState, ConnectionState> = {
         new: ConnectionState.Connecting,
         connecting: ConnectionState.Connecting,
@@ -297,7 +341,7 @@ export function useNativeStream(roomId: string) {
     // reage a um offer novo sozinho; o componente que monta o player precisa remontar.
     let gotOffer = false;
 
-    ws.onmessage = (event) => {
+    function handleWsMessage(event: MessageEvent): void {
       if (cancelled) return;
       let msg: { type?: string; sdp?: string; codec?: NativeVideoCodec; candidate?: string; mid?: string };
       try {
@@ -336,17 +380,14 @@ export function useNativeStream(roomId: string) {
       } else if (msg.type === "ice" && msg.candidate) {
         pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.mid ?? "0" }).catch(() => {});
       }
-    };
+    }
 
-    ws.onerror = () => {
-      if (cancelled) return;
-      setError("Erro na sinalização com o host.");
-      setPhase("error");
-    };
+    attachWsHandlers(ws);
 
     return () => {
       cancelled = true;
       sendMessageRef.current = null;
+      if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
       ws.close();
       if (statsInterval) clearInterval(statsInterval);
       pc.close();

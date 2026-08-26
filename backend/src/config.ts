@@ -28,4 +28,19 @@ export const config = {
     tokenTtlSeconds: Number(process.env.ROOM_TOKEN_TTL_SECONDS ?? 60 * 60 * 6),
     emptyRoomTtlSeconds: Number(process.env.ROOM_EMPTY_TTL_SECONDS ?? 60 * 5),
   },
+  // TURN (CLAUDE.md §Infraestrutura já previa isso desde o início — só STUN público era usado até
+  // aqui, "só pra validar"). `secret`/`realm` batem com um coturn configurado com
+  // `use-auth-secret`/`static-auth-secret` (ver infra/docker/docker-compose.yml) — credenciais são
+  // geradas por requisição (`services/turn.ts`), nunca fixas, e expiram sozinhas (mesmo espírito
+  // de "tokens temporários" que o resto do projeto já segue pra sala/LiveKit). Sem `TURN_SECRET`
+  // configurado, o servidor simplesmente não oferece TURN (STUN público continua funcionando
+  // sozinho, mesmo fallback de sempre) — nunca trava o boot do backend por isso.
+  turn: {
+    secret: process.env.TURN_SECRET ?? null,
+    // Host(s) que os clientes usam pra alcançar o coturn — pode ser IP público ou domínio, não o
+    // hostname interno do container. Múltiplos separados por vírgula (ex.: TCP e UDP em portas
+    // diferentes, ou vários pontos de entrada).
+    urls: (process.env.TURN_URLS ?? "turn:localhost:3478").split(",").map((u) => u.trim()),
+    ttlSeconds: Number(process.env.TURN_CREDENTIAL_TTL_SECONDS ?? 60 * 60), // 1h
+  },
 } as const;

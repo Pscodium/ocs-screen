@@ -6,9 +6,46 @@ import { listNativeMonitors } from "./nativeCapture";
 // LiveKit inteiro pro vídeo (captura → NVENC → RTP acontece 100% no processo main, em C++). Ver
 // ipcMain.handle("native-transport:*") em main/index.ts.
 
-// STUN público só pra validar o pipeline (mesmo usado nos testes isolados da Fase 4) — TURN e o
-// STUN de infra própria do projeto ainda não plugados aqui (CLAUDE.md §Infraestrutura).
-const DEFAULT_STUN_URLS = ["stun:stun.l.google.com:19302"];
+// Fallback se o backend não responder (offline, versão antiga sem a rota) — mesmo STUN público
+// que era hardcoded antes do TURN existir.
+const FALLBACK_STUN_URLS = ["stun:stun.l.google.com:19302"];
+
+interface IceServerDescriptor {
+  urls: string;
+  username?: string;
+  credential?: string;
+}
+
+// libdatachannel entende URL única no formato "turn:user:pass@host:port" (constructor de string
+// do `rtc::IceServer`, ver TransportCore.cpp) — diferente do formato estruturado
+// `{urls, username, credential}` que `RTCPeerConnection` do navegador usa (viewer, ver
+// services/backend.ts). O USERNAME gerado pelo backend (`services/turn.ts`) tem um ':' literal
+// dentro dele (formato REST API do coturn, "<timestamp>:id") — sem escapar, o parser de URL do
+// libdatachannel quebraria ali pensando que é o separador user:pass. `encodeURIComponent` (e o
+// `url_decode` correspondente do lado do libdatachannel) resolve isso.
+function toLibdatachannelUrl(server: IceServerDescriptor): string {
+  if (!server.username || !server.credential) return server.urls;
+  const match = server.urls.match(/^(turns?):(.+)$/);
+  if (!match) return server.urls;
+  const [, scheme, rest] = match;
+  return `${scheme}:${encodeURIComponent(server.username)}:${encodeURIComponent(server.credential)}@${rest}`;
+}
+
+// Busca STUN+TURN de verdade (infra própria, ver docker-compose.yml/backend `services/turn.ts`)
+// — cai pro STUN público se o backend não tiver TURN configurado ou estiver inacessível (nunca
+// bloqueia o início da transmissão por causa disso, mesmo espírito de qualquer outro fallback
+// deste projeto).
+async function fetchIceServerUrls(backendUrl: string): Promise<string[]> {
+  try {
+    const res = await fetch(`${backendUrl}/ice-servers`);
+    if (!res.ok) return FALLBACK_STUN_URLS;
+    const data = (await res.json()) as { iceServers: IceServerDescriptor[] };
+    if (!data.iceServers?.length) return FALLBACK_STUN_URLS;
+    return data.iceServers.map(toLibdatachannelUrl);
+  } catch {
+    return FALLBACK_STUN_URLS;
+  }
+}
 
 export async function isNativeTransportAvailable(): Promise<boolean> {
   return window.screenshare.nativeTransport.isAvailable();
@@ -39,6 +76,7 @@ export async function startNativeTransport(
     }
   }
   const bitrateBps = getMaxBitrate(width, height, settings);
+  const stunUrls = await fetchIceServerUrls(backendUrl);
 
   const args: NativeTransportStartArgs = {
     roomId,
@@ -47,7 +85,7 @@ export async function startNativeTransport(
     hwnd: source.hwnd,
     targetFps,
     bitrateBps,
-    stunUrls: DEFAULT_STUN_URLS,
+    stunUrls,
     showCursor: settings.showCursor,
     codec: settings.preferAv1 ? "av1" : settings.preferHevc ? "hevc" : "h264",
   };

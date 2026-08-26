@@ -949,10 +949,51 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
 
   // WS de sinalização — UMA conexão pra transmissão inteira, multiplexada por `viewerId` (ver
   // backend/src/services/nativeWsRelay.ts). Substitui o REST+polling antigo por completo.
+  //
+  // Resiliência (item pendente do CLAUDE.md §Infraestrutura — "reconexão de sinalização além do
+  // que já existia") — antes, se essa conexão caísse (backend reiniciou, blip de rede), a
+  // transmissão continuava "ativa" mas surda: `ntWs` ficava com um socket morto, nenhum espectador
+  // NOVO conseguia entrar (sem `viewer-joined` chegando) e nenhum ICE candidate/SDP saía mais.
+  // Espectadores JÁ conectados não eram afetados (o DataChannel de mídia é independente do WS,
+  // continua recebendo bytes sem ele) — só a sinalização morria, silenciosamente. Agora reconecta
+  // sozinho com backoff exponencial (1s→2s→4s→8s, teto 10s) enquanto a transmissão continuar ativa
+  // (`ntActive`); o backend já sabia lidar com host reconectando (`registerHostSocket` substitui o
+  // socket antigo e reenvia `viewer-joined` de cada espectador ainda conectado, ver
+  // nativeWsRelay.ts) — só faltava o lado do host tentar de novo.
   const wsUrl = `${backendUrl.replace(/^http/, "ws")}/rooms/${roomId}/native/ws?role=host`;
-  const ws = new WebSocket(wsUrl);
-  ntWs = ws;
+  // `win` narrowado (não-nulo) pelo guard no topo do handler não atravessa pra dentro de uma
+  // `function` nomeada aninhada (limitação de narrowing do TS, só funciona em closures inline) —
+  // `activeWin` capta o valor já narrowado antes de declarar essas funções.
+  const activeWin = win;
+  let wsReconnectAttempt = 0;
+  let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+  function connectNativeWs(): void {
+    const ws = new WebSocket(wsUrl);
+    ntWs = ws;
+    attachNativeWsHandlers(ws);
+  }
+
+  function scheduleNativeWsReconnect(): void {
+    if (!ntActive || wsReconnectTimer) return; // transmissão encerrada de propósito, ou já tem retry agendado
+    const delayMs = Math.min(10_000, 1000 * 2 ** wsReconnectAttempt);
+    wsReconnectAttempt++;
+    console.warn(`[native-transport] WS de sinalização caiu — reconectando em ${delayMs}ms.`);
+    wsReconnectTimer = setTimeout(() => {
+      wsReconnectTimer = null;
+      if (ntActive) connectNativeWs();
+    }, delayMs);
+  }
+
+  function attachNativeWsHandlers(ws: WebSocket): void {
+    ws.on("open", () => {
+      wsReconnectAttempt = 0; // conexão de verdade estabeleceu — reseta o backoff pra próxima queda
+    });
+    ws.on("close", scheduleNativeWsReconnect);
+    attachNativeWsMessageAndErrorHandlers(ws);
+  }
+
+  function attachNativeWsMessageAndErrorHandlers(ws: WebSocket): void {
   ws.on("message", (data) => {
     if (!ntActive) return;
     let msg: {
@@ -1003,7 +1044,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
           nativeCapture?.destroyEncoder();
           nativeCapture?.initEncoder(ntTargetFps, ntBitrateBps, "h264");
           ntActiveCodec = nativeCapture?.getActiveCodec() ?? "h264";
-          win.webContents.send("native-transport:encoder", {
+          activeWin.webContents.send("native-transport:encoder", {
             software: nativeCapture?.isUsingSoftwareEncoder() ?? false,
             codec: ntActiveCodec,
           });
@@ -1025,7 +1066,9 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   ws.on("error", (err) => {
     console.error("[native-transport] erro no WebSocket de sinalização:", err);
   });
+  }
 
+  connectNativeWs();
   ntActive = true;
 
   // Loop em JS (setImmediate reagendado a cada volta) em vez de StreamWorker (thread nativa) —
@@ -1034,7 +1077,6 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // relógio real) — revertido temporariamente enquanto a causa raiz (provável contenção com
   // threads internas do libdatachannel) não é investigada mais a fundo. Mantém os fixes que JÁ
   // se mostraram corretos independente do loop: pacing 8x, VBV, NonBlockingCall no PLI/state.
-  const activeWin = win;
   const timeoutMs = Math.max(1, Math.round(1000 / Math.max(1, targetFps)));
   const startTime = Date.now();
 
