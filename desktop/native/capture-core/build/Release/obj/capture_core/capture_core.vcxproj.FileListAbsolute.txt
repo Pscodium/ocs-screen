@@ -1,0 +1,7 @@
+E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\capture_.7527BDB0.Up2Date
+E:\dev\ocs-screen\desktop\native\capture-core\build\Release\datachannel.dll
+E:\dev\ocs-screen\desktop\native\capture-core\build\Release\srtp2.dll
+E:\dev\ocs-screen\desktop\native\capture-core\build\Release\libssl-3-x64.dll
+E:\dev\ocs-screen\desktop\native\capture-core\build\Release\libcrypto-3-x64.dll
+E:\dev\ocs-screen\desktop\native\capture-core\build\Release\juice.dll
+E:\dev\ocs-screen\desktop\native\capture-core\build\Release\opus.dll

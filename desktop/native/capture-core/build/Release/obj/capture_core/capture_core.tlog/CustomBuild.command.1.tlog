@@ -1,0 +1,18 @@
+^C:\VCPKG\INSTALLED\X64-WINDOWS\BIN\DATACHANNEL.DLL
+call mkdir "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\" 2>nul & set ERRORLEVEL=0 & copy /Y "C:\vcpkg\installed\x64-windows\bin\datachannel.dll" "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\datachannel.dll"
+if %errorlevel% neq 0 exit /b %errorlevel%
+^C:\VCPKG\INSTALLED\X64-WINDOWS\BIN\JUICE.DLL
+call mkdir "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\" 2>nul & set ERRORLEVEL=0 & copy /Y "C:\vcpkg\installed\x64-windows\bin\juice.dll" "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\juice.dll"
+if %errorlevel% neq 0 exit /b %errorlevel%
+^C:\VCPKG\INSTALLED\X64-WINDOWS\BIN\SRTP2.DLL
+call mkdir "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\" 2>nul & set ERRORLEVEL=0 & copy /Y "C:\vcpkg\installed\x64-windows\bin\srtp2.dll" "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\srtp2.dll"
+if %errorlevel% neq 0 exit /b %errorlevel%
+^C:\VCPKG\INSTALLED\X64-WINDOWS\BIN\LIBCRYPTO-3-X64.DLL
+call mkdir "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\" 2>nul & set ERRORLEVEL=0 & copy /Y "C:\vcpkg\installed\x64-windows\bin\libcrypto-3-x64.dll" "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\libcrypto-3-x64.dll"
+if %errorlevel% neq 0 exit /b %errorlevel%
+^C:\VCPKG\INSTALLED\X64-WINDOWS\BIN\LIBSSL-3-X64.DLL
+call mkdir "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\" 2>nul & set ERRORLEVEL=0 & copy /Y "C:\vcpkg\installed\x64-windows\bin\libssl-3-x64.dll" "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\libssl-3-x64.dll"
+if %errorlevel% neq 0 exit /b %errorlevel%
+^C:\VCPKG\INSTALLED\X64-WINDOWS\BIN\OPUS.DLL
+call mkdir "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\" 2>nul & set ERRORLEVEL=0 & copy /Y "C:\vcpkg\installed\x64-windows\bin\opus.dll" "E:\dev\ocs-screen\desktop\native\capture-core\build\Release\opus.dll"
+if %errorlevel% neq 0 exit /b %errorlevel%

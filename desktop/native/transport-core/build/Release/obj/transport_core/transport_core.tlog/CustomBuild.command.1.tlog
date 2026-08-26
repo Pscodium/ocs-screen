@@ -1,0 +1,3 @@
+^C:\VCPKG\INSTALLED\X64-WINDOWS\BIN\DATACHANNEL.DLL
+call mkdir "E:\dev\ocs-screen\desktop\native\transport-core\build\Release\" 2>nul & set ERRORLEVEL=0 & copy /Y "C:\vcpkg\installed\x64-windows\bin\datachannel.dll" "E:\dev\ocs-screen\desktop\native\transport-core\build\Release\datachannel.dll"
+if %errorlevel% neq 0 exit /b %errorlevel%

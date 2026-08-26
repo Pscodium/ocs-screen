@@ -1,0 +1,11 @@
+E:\dev\ocs-screen\desktop\native\capture-core\src\addon.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\src\addon.obj
+E:\dev\ocs-screen\desktop\native\capture-core\src\CaptureCore.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\src\CaptureCore.obj
+E:\dev\ocs-screen\desktop\native\capture-core\src\WindowCaptureCore.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\src\WindowCaptureCore.obj
+E:\dev\ocs-screen\desktop\native\capture-core\src\EncoderCore.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\src\EncoderCore.obj
+E:\dev\ocs-screen\desktop\native\capture-core\src\SoftwareEncoderCore.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\src\SoftwareEncoderCore.obj
+E:\dev\ocs-screen\desktop\native\capture-core\src\CodecApiHelper.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\src\CodecApiHelper.obj
+E:\dev\ocs-screen\desktop\native\capture-core\src\AudioCaptureCore.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\src\AudioCaptureCore.obj
+E:\dev\ocs-screen\desktop\native\capture-core\vendor\nvenc\NvEncoder.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\vendor\nvenc\NvEncoder.obj
+E:\dev\ocs-screen\desktop\native\capture-core\vendor\nvenc\NvEncoderD3D11.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\vendor\nvenc\NvEncoderD3D11.obj
+E:\dev\ocs-screen\desktop\native\transport-core\src\TransportCore.cpp;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\transport-core\src\TransportCore.obj
+E:\dev\ocs-screen\desktop\node_modules\@electron\node-gyp\src\win_delay_load_hook.cc;E:\dev\ocs-screen\desktop\native\capture-core\build\Release\obj\capture_core\win_delay_load_hook.obj

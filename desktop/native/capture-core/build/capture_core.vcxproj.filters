@@ -1,0 +1,250 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\vendor">
+      <UniqueIdentifier>{DB63429E-9D27-F281-39C4-285ED58EA02F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\vendor\nvenc">
+      <UniqueIdentifier>{C2A90FB9-1E76-3B6A-5E55-424729B95BA0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\vendor">
+      <UniqueIdentifier>{DB63429E-9D27-F281-39C4-285ED58EA02F}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\vendor\nvenc">
+      <UniqueIdentifier>{C2A90FB9-1E76-3B6A-5E55-424729B95BA0}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\..\transport-core">
+      <UniqueIdentifier>{B6D38993-027E-DA46-BE5A-C8ED255D83C7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..\..\transport-core\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="E:">
+      <UniqueIdentifier>{5B7DBE12-B2C6-AFA4-ACF8-17495B3FA076}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="E:\dev">
+      <UniqueIdentifier>{51D92A3A-C0F8-78D6-DFF5-4F152A3AB774}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="E:\dev\ocs-screen">
+      <UniqueIdentifier>{E4F5CF4B-4C11-D401-D0CE-6BCB85D494DD}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="E:\dev\ocs-screen\desktop">
+      <UniqueIdentifier>{FC4CCBFB-F86E-DBC0-093A-D8F87293D843}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="E:\dev\ocs-screen\desktop\node_modules">
+      <UniqueIdentifier>{56DF7A98-063D-FB9D-485C-089023B4C16A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="E:\dev\ocs-screen\desktop\node_modules\@electron">
+      <UniqueIdentifier>{6FD122B1-87CE-5BE7-127F-692B6E499EA3}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="E:\dev\ocs-screen\desktop\node_modules\@electron\node-gyp">
+      <UniqueIdentifier>{77348C0E-2034-7791-74D5-63C077DF5A3B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="E:\dev\ocs-screen\desktop\node_modules\@electron\node-gyp\src">
+      <UniqueIdentifier>{8CDEE807-BC53-E450-C8B8-4DEBB66742D4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="..">
+      <UniqueIdentifier>{739DB09A-CC57-A953-A6CF-F64FA08E4FA7}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:">
+      <UniqueIdentifier>{7B735499-E5DD-1C2B-6C26-70023832A1CF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg">
+      <UniqueIdentifier>{46A30E32-0D78-4EEC-D522-2D47C076C494}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed">
+      <UniqueIdentifier>{5189EE7B-8B5C-9147-204D-F23E40128174}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows">
+      <UniqueIdentifier>{B59F3CD5-5876-9A4C-B19B-6B1C512D934D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows\bin">
+      <UniqueIdentifier>{11CC0371-6539-7E04-3B24-030E187A74AC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:">
+      <UniqueIdentifier>{7B735499-E5DD-1C2B-6C26-70023832A1CF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg">
+      <UniqueIdentifier>{46A30E32-0D78-4EEC-D522-2D47C076C494}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed">
+      <UniqueIdentifier>{5189EE7B-8B5C-9147-204D-F23E40128174}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows">
+      <UniqueIdentifier>{B59F3CD5-5876-9A4C-B19B-6B1C512D934D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows\bin">
+      <UniqueIdentifier>{11CC0371-6539-7E04-3B24-030E187A74AC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:">
+      <UniqueIdentifier>{7B735499-E5DD-1C2B-6C26-70023832A1CF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg">
+      <UniqueIdentifier>{46A30E32-0D78-4EEC-D522-2D47C076C494}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed">
+      <UniqueIdentifier>{5189EE7B-8B5C-9147-204D-F23E40128174}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows">
+      <UniqueIdentifier>{B59F3CD5-5876-9A4C-B19B-6B1C512D934D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows\bin">
+      <UniqueIdentifier>{11CC0371-6539-7E04-3B24-030E187A74AC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:">
+      <UniqueIdentifier>{7B735499-E5DD-1C2B-6C26-70023832A1CF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg">
+      <UniqueIdentifier>{46A30E32-0D78-4EEC-D522-2D47C076C494}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed">
+      <UniqueIdentifier>{5189EE7B-8B5C-9147-204D-F23E40128174}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows">
+      <UniqueIdentifier>{B59F3CD5-5876-9A4C-B19B-6B1C512D934D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows\bin">
+      <UniqueIdentifier>{11CC0371-6539-7E04-3B24-030E187A74AC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:">
+      <UniqueIdentifier>{7B735499-E5DD-1C2B-6C26-70023832A1CF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg">
+      <UniqueIdentifier>{46A30E32-0D78-4EEC-D522-2D47C076C494}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed">
+      <UniqueIdentifier>{5189EE7B-8B5C-9147-204D-F23E40128174}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows">
+      <UniqueIdentifier>{B59F3CD5-5876-9A4C-B19B-6B1C512D934D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows\bin">
+      <UniqueIdentifier>{11CC0371-6539-7E04-3B24-030E187A74AC}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:">
+      <UniqueIdentifier>{7B735499-E5DD-1C2B-6C26-70023832A1CF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg">
+      <UniqueIdentifier>{46A30E32-0D78-4EEC-D522-2D47C076C494}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed">
+      <UniqueIdentifier>{5189EE7B-8B5C-9147-204D-F23E40128174}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows">
+      <UniqueIdentifier>{B59F3CD5-5876-9A4C-B19B-6B1C512D934D}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="C:\vcpkg\installed\x64-windows\bin">
+      <UniqueIdentifier>{11CC0371-6539-7E04-3B24-030E187A74AC}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\addon.cpp">
+      <Filter>..\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\CaptureCore.cpp">
+      <Filter>..\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\WindowCaptureCore.cpp">
+      <Filter>..\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\EncoderCore.cpp">
+      <Filter>..\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\SoftwareEncoderCore.cpp">
+      <Filter>..\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\CodecApiHelper.cpp">
+      <Filter>..\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\AudioCaptureCore.cpp">
+      <Filter>..\src</Filter>
+    </ClCompile>
+    <ClCompile Include="..\vendor\nvenc\NvEncoder.cpp">
+      <Filter>..\vendor\nvenc</Filter>
+    </ClCompile>
+    <ClCompile Include="..\vendor\nvenc\NvEncoderD3D11.cpp">
+      <Filter>..\vendor\nvenc</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\transport-core\src\TransportCore.cpp">
+      <Filter>..\..\transport-core\src</Filter>
+    </ClCompile>
+    <ClCompile Include="E:\dev\ocs-screen\desktop\node_modules\@electron\node-gyp\src\win_delay_load_hook.cc">
+      <Filter>E:\dev\ocs-screen\desktop\node_modules\@electron\node-gyp\src</Filter>
+    </ClCompile>
+    <None Include="..\binding.gyp">
+      <Filter>..</Filter>
+    </None>
+    <None Include="C:\vcpkg\installed\x64-windows\bin\datachannel.dll">
+      <Filter>C:\vcpkg\installed\x64-windows\bin</Filter>
+    </None>
+    <None Include="C:\vcpkg\installed\x64-windows\bin\juice.dll">
+      <Filter>C:\vcpkg\installed\x64-windows\bin</Filter>
+    </None>
+    <None Include="C:\vcpkg\installed\x64-windows\bin\srtp2.dll">
+      <Filter>C:\vcpkg\installed\x64-windows\bin</Filter>
+    </None>
+    <None Include="C:\vcpkg\installed\x64-windows\bin\libcrypto-3-x64.dll">
+      <Filter>C:\vcpkg\installed\x64-windows\bin</Filter>
+    </None>
+    <None Include="C:\vcpkg\installed\x64-windows\bin\libssl-3-x64.dll">
+      <Filter>C:\vcpkg\installed\x64-windows\bin</Filter>
+    </None>
+    <None Include="C:\vcpkg\installed\x64-windows\bin\opus.dll">
+      <Filter>C:\vcpkg\installed\x64-windows\bin</Filter>
+    </None>
+  </ItemGroup>
+</Project>

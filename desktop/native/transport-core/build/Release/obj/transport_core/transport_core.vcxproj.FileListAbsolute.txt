@@ -1,0 +1,6 @@
+E:\dev\ocs-screen\desktop\native\transport-core\build\Release\obj\transport_core\transpor.7563C392.Up2Date
+E:\dev\ocs-screen\desktop\native\transport-core\build\Release\datachannel.dll
+E:\dev\ocs-screen\desktop\native\transport-core\build\Release\srtp2.dll
+E:\dev\ocs-screen\desktop\native\transport-core\build\Release\libssl-3-x64.dll
+E:\dev\ocs-screen\desktop\native\transport-core\build\Release\libcrypto-3-x64.dll
+E:\dev\ocs-screen\desktop\native\transport-core\build\Release\juice.dll
