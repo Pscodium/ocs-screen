@@ -12,6 +12,7 @@ interface LiveCardProps {
   onSwapSource: (source: CaptureSource) => void;
   onOptimizeCodec: () => void;
   optimizingCodec: boolean;
+  onToggleCursor: () => void;
 }
 
 // Codecs pesados de codificar por software (AV1/VP9 usam libaom/libvpx, muito mais caros em CPU
@@ -44,7 +45,15 @@ const connectionLabel: Record<ConnectionState, string> = {
   [ConnectionState.SignalReconnecting]: "Reconectando...",
 };
 
-export function LiveCard({ info, swapping, onStop, onSwapSource, onOptimizeCodec, optimizingCodec }: LiveCardProps) {
+export function LiveCard({
+  info,
+  swapping,
+  onStop,
+  onSwapSource,
+  onOptimizeCodec,
+  optimizingCodec,
+  onToggleCursor,
+}: LiveCardProps) {
   const [copied, setCopied] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const isLive = info.connectionState === ConnectionState.Connected;
@@ -70,6 +79,26 @@ export function LiveCard({ info, swapping, onStop, onSwapSource, onOptimizeCodec
           </span>
         </div>
         <div className="live-top-actions">
+          {info.nativeMode && (
+            <button
+              className={`live-swap-btn ${info.cursorEnabled ? "" : "live-swap-btn-off"}`}
+              onClick={onToggleCursor}
+              title={info.cursorEnabled ? "Esconder cursor" : "Mostrar cursor"}
+              aria-label={info.cursorEnabled ? "Esconder cursor" : "Mostrar cursor"}
+            >
+              {/* Ícone reflete o ESTADO atual (cursor normal = visível, cursor riscado = escondido)
+                  — mesmo padrão de botão de mudo (alto-falante vs alto-falante riscado), em vez de
+                  só mudar a cor (confuso: não dava pra saber o que o botão representava de fato). */}
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true">
+                <path d="M4.04 4.69a.5.5 0 0 1 .65-.65l16 6.5a.5.5 0 0 1-.06.95l-6.12 1.58a2 2 0 0 0-1.44 1.44l-1.58 6.12a.5.5 0 0 1-.95.06z" />
+                {/* Diagonal OPOSTA à da seta (que já vai de ~4,4 a ~19,19) — na mesma direção a
+                    risca ficava paralela ao ícone, quase some por cima dele. */}
+                {!info.cursorEnabled && (
+                  <line x1="21" y1="3" x2="3" y2="21" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+                )}
+              </svg>
+            </button>
+          )}
           <button
             className={`live-swap-btn ${swapping ? "live-swap-btn-spinning" : ""}`}
             onClick={() => setPickerOpen(true)}
@@ -105,6 +134,11 @@ export function LiveCard({ info, swapping, onStop, onSwapSource, onOptimizeCodec
           {info.bitrateKbps > 0 ? `${(info.bitrateKbps / 1000).toFixed(1)} Mbps` : "—"}
         </span>
         <span className="live-stats-icons">
+          {info.nativeFallbackReason && (
+            <span className="live-stats-badge live-stats-badge-warning" title={info.nativeFallbackReason}>
+              🐌
+            </span>
+          )}
           {(isSoftwareEncoder(info.encoderImplementation) || info.hasSoftwareLayer) && (
             <span
               className="live-stats-badge live-stats-badge-warning"

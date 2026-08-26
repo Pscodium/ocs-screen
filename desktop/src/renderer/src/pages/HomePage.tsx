@@ -19,7 +19,8 @@ export function HomePage({ broadcast }: HomePageProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("share");
   const [watchingRoomId, setWatchingRoomId] = useState<string | null>(null);
-  const { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec } = broadcast;
+  const { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec, toggleCursor } =
+    broadcast;
 
   if (state === "live" && info) {
     return (
@@ -30,6 +31,7 @@ export function HomePage({ broadcast }: HomePageProps) {
         onSwapSource={swapSource}
         onOptimizeCodec={optimizeCodec}
         optimizingCodec={optimizingCodec}
+        onToggleCursor={toggleCursor}
       />
     );
   }

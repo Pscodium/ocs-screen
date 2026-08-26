@@ -458,12 +458,28 @@ interface NativeCaptureAddon {
   initialize(): boolean;
   listMonitors(): NativeMonitor[];
   start(monitorIndex: number): boolean;
+  // Backend WGC (Windows.Graphics.Capture) — captura UMA janela específica em vez do monitor
+  // inteiro (DXGI Desktop Duplication, usado por `start()`, não consegue isolar janela). `hwnd`
+  // é o handle da janela (extraído do id do desktopCapturer — ver `extractHwndFromSourceId`
+  // abaixo). Ver docs/NATIVE_CAPTURE.md §Backend Abstrato / WindowCaptureCore.h.
+  startWindow(hwnd: number): boolean;
   stop(): void;
   acquireFrame(timeoutMs: number): NativeFrame | null;
   // Mesma captura, sem o readback GPU→CPU (Map+memcpy de um frame inteiro) — usado pelo loop do
   // transporte nativo, que só precisa da textura composta (encodeCurrentFrame lê ela direto da
-  // GPU). Sem width/height/buffer, só accessLost/deviceLost/ok.
-  acquireFrameGpuOnly(timeoutMs: number): { ok?: boolean; accessLost?: boolean; deviceLost?: boolean } | null;
+  // GPU). Sem width/height/buffer, só accessLost/deviceLost/windowClosed/ok.
+  acquireFrameGpuOnly(timeoutMs: number): {
+    ok?: boolean;
+    accessLost?: boolean;
+    deviceLost?: boolean;
+    windowClosed?: boolean;
+    // Só no caminho de janela (WGC) — janela redimensionou desde o frame anterior. `width`/
+    // `height` vêm junto quando `true`. Quem recebe precisa reiniciar o(s) encoder(es) NVENC (não
+    // aceitam mudar resolução em sessão) — ver runNativeTransportLoop.
+    resized?: boolean;
+    width?: number;
+    height?: number;
+  } | null;
   setCursorEnabled(enabled: boolean): void;
   // Encoder NVENC (Fase 3) — opera sobre a captura já em andamento (mesmo device/dimensões do
   // CaptureCore). Ver addon.cpp: InitEncoder/EncodeCurrentFrame/ForceKeyframe/SetEncoderBitrate.
@@ -681,7 +697,11 @@ ipcMain.on("native-capture:stop", () => stopNativeCapture());
 interface NativeTransportStartArgs {
   roomId: string;
   backendUrl: string;
-  monitorIndex: number;
+  // Exatamente UM dos dois — monitor inteiro (DXGI) ou janela específica (WGC). O renderer decide
+  // qual mandar (`nativeMonitorIndex` só existe em fontes tipo "screen", `hwnd` só em "window" —
+  // ver SourcePicker.tsx/capture.ts).
+  monitorIndex?: number;
+  hwnd?: number;
   targetFps: number;
   bitrateBps: number;
   stunUrls: string[];
@@ -711,6 +731,27 @@ let ntStunUrls: string[] = [];
 // valores — ver o fallback de "viewer não decodifica HEVC" no handler de mensagens do WS abaixo.
 let ntTargetFps = 30;
 let ntBitrateBps = 0;
+// Perfil FIXO do tier "low" do simulcast — hoisted pro escopo do módulo (era `const` local dentro
+// do handler "native-transport:start") porque o handler novo de troca de fonte ao vivo
+// ("native-transport:swap-source") também precisa reinicializar o encoder "low" e vive fora
+// daquele closure.
+const SIMULCAST_LOW_BITRATE_BPS = 800_000;
+const SIMULCAST_LOW_FPS = 15;
+// Guardado só pra poder re-Start() a mesma fonte depois de um `accessLost` (DXGI) — ver
+// `runNativeTransportLoop`. Exatamente um dos dois é não-nulo por vez (mesma regra de
+// `NativeTransportStartArgs`). Captura de janela nunca dá `accessLost` (só `windowClosed`,
+// tratado como erro definitivo), então esse restart só se aplica quando `ntMonitorIndex` !== null.
+let ntMonitorIndex: number | null = null;
+let ntHwnd: number | null = null;
+
+// `monitorIndex` OU `hwnd` (nunca os dois) — decide o backend nativo certo (DXGI/monitor vs
+// WGC/janela, ver addon.cpp `Start`/`StartWindow`).
+function startNativeCaptureSource(monitorIndex?: number, hwnd?: number): boolean {
+  if (!nativeCapture) return false;
+  if (hwnd !== undefined) return nativeCapture.startWindow(hwnd);
+  if (monitorIndex !== undefined) return nativeCapture.start(monitorIndex);
+  return false;
+}
 // Codec ATIVO agora (pode ter degradado de HEVC pra H.264 em qualquer momento — cascata de
 // fallback do encoder, ou fallback por decode do primeiro viewer). Toda sessão NOVA usa esse
 // valor. Só tenta o fallback HEVC→H.264 UMA vez por transmissão.
@@ -759,15 +800,17 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   stopNativeTransport();
   stopNativeCapture(); // caminho antigo (raw frame → LiveKit) e o nativo não rodam ao mesmo tempo — os dois disputam o mesmo CaptureCore singleton.
 
-  const { roomId, backendUrl, monitorIndex, targetFps, bitrateBps, stunUrls, showCursor, codec } = args;
+  const { roomId, backendUrl, monitorIndex, hwnd, targetFps, bitrateBps, stunUrls, showCursor, codec } = args;
   ntRoomId = roomId;
   ntBackendUrl = backendUrl;
   ntTargetFps = targetFps;
   ntBitrateBps = bitrateBps;
   ntStunUrls = stunUrls;
   ntCodecFallbackDone = false;
+  ntMonitorIndex = monitorIndex ?? null;
+  ntHwnd = hwnd ?? null;
 
-  if (!nativeCapture.start(monitorIndex)) return false;
+  if (!startNativeCaptureSource(monitorIndex, hwnd)) return false;
   nativeCapture.setCursorEnabled(showCursor);
   if (!nativeCapture.initEncoder(targetFps, bitrateBps, codec ?? "h264")) {
     nativeCapture.stop();
@@ -787,8 +830,6 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // `renderer/src/types/stream.ts` — main não pode importar de lá, tsconfig.node.json não inclui
   // `src/renderer`). Falha em silêncio (best-effort): sem tier "low", só o "high" funciona, não
   // vale derrubar a transmissão inteira por causa de um tier secundário.
-  const SIMULCAST_LOW_BITRATE_BPS = 800_000;
-  const SIMULCAST_LOW_FPS = 15;
   if (!nativeCapture.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, ntActiveCodec)) {
     console.warn("[native-transport] falha ao inicializar encoder do tier 'low' — simulcast fica só com 'high'.");
   }
@@ -998,9 +1039,41 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       stopNativeTransport();
       return;
     }
+    if (frame?.windowClosed) {
+      // Janela fechada pelo usuário (ou processo dono morreu) — diferente do accessLost do DXGI,
+      // não tem "recuperar sozinho" possível (a janela escolhida não existe mais).
+      console.log("[native-transport] janela capturada foi fechada — encerrando a transmissão nativa.");
+      activeWin.webContents.send("native-transport:error", "A janela compartilhada foi fechada. A transmissão precisou parar.");
+      activeWin.webContents.send("native-transport:ended");
+      stopNativeTransport();
+      return;
+    }
+    if (frame?.resized) {
+      // Janela (WGC) redimensionou — bug real reportado pelo usuário: sem reiniciar o(s)
+      // encoder(es), o NVENC continuava recebendo textura do tamanho ANTIGO (CopyResource entre
+      // tamanhos diferentes) e a transmissão travava num frame congelado. NVENC não aceita mudar
+      // resolução numa sessão já ativa — só dá pra destruir e criar de novo. As sessões
+      // `TransportCore` já conectadas continuam (não dependem do encoder, só recebem bytes) — o
+      // primeiro frame do encoder novo já sai como keyframe sozinho (sessão nova do zero).
+      console.log(`[native-transport] janela redimensionou pra ${frame.width}×${frame.height} — reiniciando encoder(es).`);
+      nativeCapture.destroyEncoder();
+      nativeCapture.destroyEncoderLow();
+      if (!nativeCapture.initEncoder(targetFps, bitrateBps, ntActiveCodec)) {
+        console.error("[native-transport] falha ao reiniciar encoder após resize — encerrando a transmissão nativa.");
+        activeWin.webContents.send("native-transport:error", "A janela mudou de tamanho e o encoder não conseguiu reiniciar. A transmissão precisou parar.");
+        activeWin.webContents.send("native-transport:ended");
+        stopNativeTransport();
+        return;
+      }
+      if (!nativeCapture.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, ntActiveCodec)) {
+        console.warn("[native-transport] falha ao reiniciar encoder do tier 'low' após resize — simulcast fica só com 'high'.");
+      }
+    }
     if (frame?.accessLost) {
+      // Só o backend de monitor (DXGI) dá accessLost — o de janela (WGC) nunca. `ntMonitorIndex`
+      // sempre não-nulo aqui.
       nativeCapture.stop();
-      if (!nativeCapture.start(monitorIndex)) {
+      if (!startNativeCaptureSource(ntMonitorIndex ?? undefined, undefined)) {
         activeWin.webContents.send("native-transport:ended");
         stopNativeTransport();
         return;
@@ -1057,3 +1130,39 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
 ipcMain.handle("native-transport:stop", async () => {
   stopNativeTransport();
 });
+
+// Liga/desliga cursor NA HORA (não só no instante em que a transmissão começou) — pedido do
+// usuário depois de notar que o toggle "Mostrar cursor" não tinha efeito nenhum durante uma
+// transmissão de janela já ativa (WGC só aplicava a preferência na criação da sessão; monitor/DXGI
+// já conseguia tecnicamente, só não tinha nenhuma UI que chamasse isso ao vivo).
+ipcMain.handle("native-transport:set-cursor", (_event, enabled: boolean) => {
+  nativeCapture?.setCursorEnabled(enabled);
+});
+
+// Troca de fonte AO VIVO no pipeline nativo (monitor↔monitor, janela↔janela, ou monitor↔janela) —
+// antes bloqueado com um aviso fixo ("ainda não é suportado"). Mesma técnica do fix de resize
+// (Sprint 33): para a captura+encoder atuais, troca pra fonte nova, reinicializa o(s) encoder(es)
+// com o tamanho da fonte nova (`ActiveWidth/Height` em addon.cpp já lê isso sozinho da fonte ATIVA
+// no momento). As sessões `TransportCore` já conectadas continuam — não dependem da captura, só
+// recebem bytes do encoder; o primeiro frame do encoder novo já sai como keyframe (sessão do zero).
+ipcMain.handle(
+  "native-transport:swap-source",
+  (_event, args: { monitorIndex?: number; hwnd?: number; showCursor: boolean }): boolean => {
+    if (!nativeCapture || !ntActive) return false;
+
+    nativeCapture.stop();
+    nativeCapture.destroyEncoder();
+    nativeCapture.destroyEncoderLow();
+
+    if (!startNativeCaptureSource(args.monitorIndex, args.hwnd)) return false;
+    nativeCapture.setCursorEnabled(args.showCursor);
+    ntMonitorIndex = args.monitorIndex ?? null;
+    ntHwnd = args.hwnd ?? null;
+
+    if (!nativeCapture.initEncoder(ntTargetFps, ntBitrateBps, ntActiveCodec)) return false;
+    if (!nativeCapture.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, ntActiveCodec)) {
+      console.warn("[native-transport] falha ao reiniciar encoder do tier 'low' após troca de fonte — simulcast fica só com 'high'.");
+    }
+    return true;
+  },
+);

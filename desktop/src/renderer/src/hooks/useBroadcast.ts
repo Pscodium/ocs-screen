@@ -18,6 +18,8 @@ import {
   onNativeTransportError,
   onNativeTransportState,
   onNativeTransportEncoderInfo,
+  setNativeCursorEnabled,
+  swapNativeTransportSource,
 } from "../services/nativeTransport";
 import type { StreamSettings } from "../types/stream";
 import type { CaptureSource } from "../../../preload/index";
@@ -43,6 +45,17 @@ export interface BroadcastInfo {
   // fps de captura nativa (medido no main process, antes do encoder) — `null` quando a fonte
   // atual não usa o caminho nativo (desktopCapturer não tem equivalente a reportar).
   captureFps: number | null;
+  // Motivo de ter caído pro caminho antigo (LiveKit/desktopCapturer) MESMO com "Pipeline nativo"
+  // ligado nas configurações — antes isso acontecia 100% em silêncio (usuário achava que tava no
+  // nativo, não estava, só descobriu comparando FPS — ver docs/TASKS.md). `null` = ou não pediu
+  // nativo, ou o nativo funcionou de verdade.
+  nativeFallbackReason: string | null;
+  // Só true quando o pipeline nativo (NVENC) tá REALMENTE ativo (não caiu pro fallback) — usado
+  // pelo LiveCard pra decidir se mostra o botão de cursor ao vivo (só o caminho nativo consegue
+  // ligar/desligar cursor DURANTE a transmissão; o caminho antigo/desktopCapturer sempre inclui o
+  // cursor por conta do próprio SO, sem toggle possível).
+  nativeMode: boolean;
+  cursorEnabled: boolean;
 }
 
 const STATS_POLL_MS = 2000;
@@ -89,15 +102,31 @@ export function useBroadcast() {
     setError(null);
     settingsRef.current = settings;
 
-    // Modo nativo (opt-in, ver services/nativeTransport.ts): capture DXGI → NVENC → RTP nativo,
-    // pula LiveKit pro vídeo inteiro. Só disponível pra monitor (não janela) com os addons
-    // carregados — fora isso, cai pro caminho normal abaixo sem erro.
-    if (settings.nativeTransport && source.nativeMonitorIndex !== undefined && (await isNativeTransportAvailable())) {
+    // Modo nativo (opt-in, ver services/nativeTransport.ts): captura (DXGI/monitor ou WGC/janela)
+    // → NVENC → RTP nativo, pula LiveKit pro vídeo inteiro.
+    const nativeSource =
+      source.nativeMonitorIndex !== undefined
+        ? { monitorIndex: source.nativeMonitorIndex }
+        : source.nativeWindowHandle !== undefined
+          ? { hwnd: source.nativeWindowHandle }
+          : null;
+    const nativeAvailable = await isNativeTransportAvailable();
+    // Preenchido só quando o usuário PEDIU nativo mas caiu pro caminho antigo mesmo assim — vira
+    // aviso visível no LiveCard (bug real relatado: usuário testou achando que tava no nativo,
+    // só percebeu que não porque comparou FPS manualmente — antes essa queda era 100% silenciosa).
+    let nativeFallbackReason: string | null = null;
+    if (settings.nativeTransport && !nativeAvailable) {
+      nativeFallbackReason = "Pipeline nativo indisponível nessa instalação — usando encoder do navegador.";
+    } else if (settings.nativeTransport && !nativeSource) {
+      nativeFallbackReason = "Essa fonte não pôde ser preparada pro pipeline nativo — usando encoder do navegador.";
+    }
+
+    if (settings.nativeTransport && nativeSource && nativeAvailable) {
       try {
         const room = await createRoom(settings, slug, true);
         roomIdRef.current = room.roomId;
 
-        const ok = await startNativeTransport(room.roomId, backendUrl, source.nativeMonitorIndex, settings);
+        const ok = await startNativeTransport(room.roomId, backendUrl, nativeSource, settings);
         if (!ok) throw new Error("Falha ao iniciar o pipeline nativo (captura ou encoder NVENC indisponível).");
 
         isNativeTransportModeRef.current = true;
@@ -142,6 +171,9 @@ export function useBroadcast() {
           avgEncodeMs: null,
           hasSoftwareLayer: false,
           captureFps: null,
+          nativeFallbackReason: null,
+          nativeMode: true,
+          cursorEnabled: settings.showCursor,
         });
         setState("live");
       } catch (err) {
@@ -194,6 +226,9 @@ export function useBroadcast() {
         avgEncodeMs: null,
         hasSoftwareLayer: false,
         captureFps: null,
+        nativeFallbackReason,
+        nativeMode: false,
+        cursorEnabled: settings.showCursor,
       });
       setState("live");
 
@@ -233,10 +268,38 @@ export function useBroadcast() {
   }, []);
 
   // Troca a fonte sem parar a transmissão — espectadores continuam conectados o tempo todo
-  // (replaceTrack não renegocia a conexão, ver services/livekit.ts).
+  // (replaceTrack não renegocia a conexão no caminho LiveKit; no pipeline nativo as sessões
+  // TransportCore também não dependem da captura, só recebem bytes do encoder — ver
+  // services/nativeTransport.ts / addon.cpp).
   const swapSource = useCallback(async (source: CaptureSource) => {
     if (isNativeTransportModeRef.current) {
-      setError("Troca de fonte ao vivo ainda não é suportada no pipeline nativo (beta).");
+      const nativeSource =
+        source.nativeMonitorIndex !== undefined
+          ? { monitorIndex: source.nativeMonitorIndex }
+          : source.nativeWindowHandle !== undefined
+            ? { hwnd: source.nativeWindowHandle }
+            : null;
+      if (!nativeSource) {
+        setError("Essa fonte não pôde ser preparada pro pipeline nativo — escolhe outra tela/janela.");
+        return;
+      }
+      setSwapping(true);
+      try {
+        const ok = await swapNativeTransportSource(nativeSource, settingsRef.current?.showCursor ?? true);
+        if (!ok) {
+          // O main process já parou a captura antiga tentando trocar (ver
+          // ipcMain.handle("native-transport:swap-source")) — não dá pra "voltar" pra fonte
+          // anterior sem replumbar tudo, então encerra a transmissão de verdade em vez de deixar
+          // a UI mostrando "ao vivo" com um pipeline morto por trás.
+          setError("Falha ao trocar de fonte no pipeline nativo — a transmissão foi encerrada.");
+          await stop();
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Erro ao trocar de fonte.");
+        await stop();
+      } finally {
+        setSwapping(false);
+      }
       return;
     }
     if (!sessionRef.current || !settingsRef.current) return;
@@ -296,6 +359,19 @@ export function useBroadcast() {
     }
   }, []);
 
+  // Liga/desliga cursor DURANTE a transmissão — só existe pro pipeline nativo (`nativeMode`).
+  // Caminho antigo (desktopCapturer) sempre inclui o cursor por conta do próprio SO/DWM, sem
+  // toggle possível ao vivo (nem antes disso, na real — só valia o instante em que compartilhava).
+  const toggleCursor = useCallback(async () => {
+    if (!isNativeTransportModeRef.current) return;
+    setInfo((prev) => {
+      if (!prev) return prev;
+      const next = !prev.cursorEnabled;
+      setNativeCursorEnabled(next).catch(() => {});
+      return { ...prev, cursorEnabled: next };
+    });
+  }, []);
+
   const stop = useCallback(async () => {
     if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
     statsIntervalRef.current = null;
@@ -333,5 +409,5 @@ export function useBroadcast() {
     };
   }, []);
 
-  return { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec };
+  return { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec, toggleCursor };
 }

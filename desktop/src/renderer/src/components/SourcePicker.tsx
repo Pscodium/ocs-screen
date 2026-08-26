@@ -4,25 +4,25 @@ import { isNativeCaptureAvailable } from "../services/nativeCapture";
 import { SettingsForm } from "./SettingsForm";
 import type { StreamSettings } from "../types/stream";
 
-interface SourcePickerProps {
+// `settings`/`slug` (+ callbacks) só existem no fluxo de "começar a compartilhar" (HomePage) — a
+// troca de fonte ao vivo (LiveCard, `onSwapSource`) reaproveita as configurações já em uso, não
+// faz sentido reconfigurar resolução/FPS/sala no meio de uma transmissão. Omitir os 4 juntos
+// esconde o rodapé de configuração inteiro (`showSettingsFooter` computado a partir disso).
+interface SourcePickerConfigurable {
   settings: StreamSettings;
   onSettingsChange: (settings: StreamSettings) => void;
   slug: string;
   onSlugChange: (slug: string) => void;
+}
+
+type SourcePickerProps = (SourcePickerConfigurable | Partial<Record<keyof SourcePickerConfigurable, undefined>>) & {
   onSelect: (source: CaptureSource) => void;
   onCancel: () => void;
-}
+};
 
 type Tab = "screen" | "window";
 
-export function SourcePicker({
-  settings,
-  onSettingsChange,
-  slug,
-  onSlugChange,
-  onSelect,
-  onCancel,
-}: SourcePickerProps) {
+export function SourcePicker({ settings, onSettingsChange, slug, onSlugChange, onSelect, onCancel }: SourcePickerProps) {
   const [sources, setSources] = useState<CaptureSource[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("screen");
@@ -47,11 +47,20 @@ export function SourcePicker({
     Promise.all([window.screenshare.capture.listSources(), isNativeCaptureAvailable()])
       .then(([list, nativeAvailable]) => {
         let screenIndex = 0;
-        const tagged = list.map((source) =>
-          source.type === "screen" && nativeAvailable
-            ? { ...source, nativeMonitorIndex: screenIndex++ }
-            : source,
-        );
+        const tagged = list.map((source) => {
+          if (source.type === "screen" && nativeAvailable) {
+            return { ...source, nativeMonitorIndex: screenIndex++ };
+          }
+          // Backend WGC (janela, ver docs/NATIVE_CAPTURE.md §Backend Abstrato) — HWND vem
+          // embutido no id do desktopCapturer, formato "window:<hwnd>:<n>" no Windows.
+          if (source.type === "window" && nativeAvailable) {
+            const match = source.id.match(/^window:(-?\d+):/);
+            if (match) {
+              return { ...source, nativeWindowHandle: Number(match[1]) };
+            }
+          }
+          return source;
+        });
         setSources(tagged);
         if (!tagged.some((s) => s.type === "screen") && tagged.some((s) => s.type === "window")) {
           setTab("window");
@@ -133,21 +142,23 @@ export function SourcePicker({
             original de CLAUDE.md (Monitor/Janela/Qualidade/FPS juntos). Evita repetir esse formulário
             numa segunda janela de tamanho fixo e diferente (era a causa do "quebra o tamanho da
             tela": HomePage cramava tudo isso numa janela 440×720 fixa e não-redimensionável). */}
-        <div className="picker-footer">
-          <SettingsForm settings={settings} onChange={onSettingsChange} compact />
+        {settings && (
+          <div className="picker-footer">
+            <SettingsForm settings={settings} onChange={onSettingsChange!} compact />
 
-          <label className="settings-field room-slug-field">
-            <span>Nome da sala (opcional)</span>
-            <input
-              className="slug-input"
-              type="text"
-              placeholder="ex.: reuniao-time"
-              value={slug}
-              onChange={(e) => onSlugChange(e.target.value)}
-              maxLength={32}
-            />
-          </label>
-        </div>
+            <label className="settings-field room-slug-field">
+              <span>Nome da sala (opcional)</span>
+              <input
+                className="slug-input"
+                type="text"
+                placeholder="ex.: reuniao-time"
+                value={slug}
+                onChange={(e) => onSlugChange!(e.target.value)}
+                maxLength={32}
+              />
+            </label>
+          </div>
+        )}
       </div>
     </div>
   );

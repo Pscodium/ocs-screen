@@ -1,6 +1,142 @@
 # Roadmap execução
 
-## Pendências abertas (atualizado ao fim do Sprint 30) — começar a próxima sessão por aqui
+## ✅ Demanda concluída (2026-08-25): captura de janela no pipeline nativo
+
+Pedido original: "encoder nativo também pra janelas, não só monitor". **Fechada** — usuário
+confirmou testando de verdade (não só compilação). Cobre Sprints 31-35 abaixo. Resumo do que foi
+entregue:
+
+- Backend WGC novo (`WindowCaptureCore.h/.cpp`) do zero, sem tocar no `CaptureCore` (DXGI/monitor).
+- 2 bugs reais de COM corrigidos (`RO_E_MUST_BE_AGILE`/`FtmBase`, janela minimizada reportando
+  tamanho de ícone).
+- Bug real de resize (travava a transmissão) — encoder reinicia sozinho no tamanho novo.
+- Cursor ao vivo (não existia nem pro monitor antes disso).
+- Troca de fonte ao vivo (janela↔janela, monitor↔monitor, monitor↔janela) — antes bloqueada.
+- Fallback silencioso corrigido (badge de aviso) + defaults (`nativeTransport`/`preferHevc` ON).
+- Ícone de cursor no LiveCard refeito (estado visual, não só cor).
+
+**Pendências opcionais, não bloqueiam nada, só pegar se for mexer na área de novo**:
+- HEVC/AV1 nunca validados isolado especificamente pelo caminho de JANELA (só H.264 testado de
+  ponta a ponta nesse caminho; a arquitetura é a mesma do monitor, risco baixo).
+- Simulcast (tier "low") nunca validado isolado pelo caminho de janela.
+- Resize/swap ao vivo nunca testado com um espectador REAL do outro lado no momento exato da
+  troca (só validado localmente — capture+encode confirmados, decode remoto não).
+
+## Sprint 35 — Polish do ícone de cursor ao vivo
+
+Usuário achou o ícone do botão de cursor (Sprint 34) feio e a referência ligado/desligado confusa
+(só mudava de cor, não de forma).
+
+- [x] Ícone trocado por uma seta de cursor moderna (mesmo tamanho de botão) — estado ligado = seta
+  limpa, desligado = seta com risco diagonal por cima (mesmo padrão de botão de mudo:
+  alto-falante vs alto-falante riscado). Reflete o ESTADO atual, não só a ação do clique.
+- [x] **Bug de design corrigido**: primeira tentativa de risco usava a mesma diagonal da própria
+  seta (paralelo, quase invisível por cima dela) — trocado pra diagonal OPOSTA, cruza a seta de
+  verdade. Confirmado com screenshot zoomado no botão (antes ficava imperceptível em screenshot
+  full-size).
+
+## Sprint 34 — Cursor ao vivo + troca de fonte ao vivo no pipeline nativo
+
+Últimos 2 gaps da captura de janela (lista do Sprint 31/33): cursor dinâmico e troca de janela ao
+vivo. Os outros 2 gaps daquela lista (minimizar/fechar janela ao vivo) o usuário já validou
+manualmente — minimizar congela e recupera ao focar de novo (esperado, WGC só entrega frame
+quando algo muda), fechar volta pro início do app (esperado).
+
+- [x] **Cursor ao vivo** — antes NENHUM caminho (nem monitor, nem janela) tinha jeito de
+  ligar/desligar cursor DURANTE uma transmissão; só valia a preferência do instante em que
+  começou. `WindowCaptureCore::SetCaptureCursor` agora aplica na hora se já tiver sessão ativa
+  (`IGraphicsCaptureSession2::put_IsCursorCaptureEnabled`), e ganhou UI de verdade: botão novo no
+  `LiveCard` (só aparece com pipeline nativo ativo — `info.nativeMode`), IPC
+  `native-transport:set-cursor` novo. Validado rodando de verdade: classe/título do botão trocam
+  (`live-swap-btn-off`/"Mostrar cursor" ↔ "Esconder cursor") confirmando que o IPC dispara.
+- [x] **Troca de fonte ao vivo** — antes bloqueada com aviso fixo pro pipeline nativo inteiro
+  (monitor OU janela). Mesma técnica do fix de resize (Sprint 33): IPC novo
+  `native-transport:swap-source` para a captura+encoders atuais, troca pra fonte nova
+  (monitor↔monitor, janela↔janela, ou monitor↔janela), reinicia os encoders (`ActiveWidth/Height`
+  já pega o tamanho da fonte nova sozinho) — sessões `TransportCore` conectadas continuam.
+  **Validado de ponta a ponta rodando de verdade** (Playwright `_electron`, Paint↔monitor): as
+  DUAS direções confirmadas — swap pra monitor (`encodedPackets` 44-60/tick fluindo) e swap de
+  volta pra janela (`encodedPackets` 56-58/tick fluindo), sem crash, "Ao vivo" continua as duas
+  vezes. Se a troca falhar, a transmissão agora encerra de verdade (`stop()`) em vez de deixar a
+  UI mostrando "ao vivo" com pipeline morto por trás.
+- `tsc --noEmit` limpo (main + renderer).
+
+## Sprint 33 — Bug real: redimensionar janela travava a transmissão
+
+Usuário reproduziu o gap #1 já sinalizado (Sprint 31): redimensionar a janela compartilhada
+DURANTE a transmissão travava num frame congelado. Causa exata: `WindowCaptureCore` já recriava o
+frame pool sozinho no tamanho novo (WGC), mas o NVENC (`EncoderCore`) continuava com a resolução
+ANTIGA — não avisava ninguém, e NVENC não aceita mudar resolução numa sessão já ativa.
+
+- [x] **Fix**: `addon.cpp` agora rastreia largura/altura do frame anterior (`g_lastWindowWidth/
+  Height`, resetados em `StartWindow`) e devolve `{ok:true, resized:true, width, height}` quando
+  muda. `main/index.ts` (`runNativeTransportLoop`) reage destruindo e recriando os dois encoders
+  (`destroyEncoder`+`initEncoder`, `destroyEncoderLow`+`initEncoderLow`) com o tamanho novo — as
+  sessões `TransportCore` já conectadas continuam (não dependem do encoder, só recebem bytes); o
+  primeiro frame do encoder novo já sai como keyframe sozinho (sessão do zero).
+- [x] **Validado de ponta a ponta de verdade**: script automatizado abriu o Paint de verdade,
+  iniciou transmissão nativa da janela dele, redimensionou via `SetWindowPos` (Win32 real) duas
+  vezes seguidas em transmissão ativa. Log confirmou "`janela redimensionou pra 886×693 —
+  reiniciando encoder(es)`" nas duas vezes, frames voltando a fluir logo em seguida
+  (`encodedPackets` positivo) — sem travar, sem crashar, "Ao vivo" continua depois.
+- `tsc --noEmit` limpo.
+- Ainda não testado: resize acontecendo com espectador REAL conectado do outro lado (o decoder
+  WebCodecs do viewer precisa aceitar a mudança de SPS/resolução inline no bitstream — deveria
+  funcionar por spec, não verificado na prática).
+
+## Sprint 32 — Aviso de fallback silencioso + defaults
+
+Usuário testou Rocket League achando que tava no pipeline nativo (HUD mostrava
+"SimulcastEncoderAdapter (MediaFoundationVideoEncodeAccelerator)" — LiveKit por software, não
+NVENC) — descobriu comparando FPS manualmente. Causa raiz: "Pipeline nativo" vinha DESLIGADO por
+padrão, e cair pro caminho antigo era 100% silencioso (nem quando o usuário liga o toggle mas a
+fonte falha em ser preparada pro nativo, nem quando o addon tá indisponível).
+
+- [x] **Bug real de UX corrigido**: `BroadcastInfo` ganhou `nativeFallbackReason: string | null` —
+  preenchido em `useBroadcast.ts` quando `settings.nativeTransport` tava ligado mas a transmissão
+  caiu pro caminho antigo mesmo assim (2 motivos possíveis: addon indisponível, ou fonte não
+  taggeada com `nativeMonitorIndex`/`nativeWindowHandle`). Aparece como badge 🐌 no `LiveCard`
+  (mesmo estilo do aviso de encoder por software), com tooltip explicando o motivo.
+- [x] **Defaults mudados** (pedido direto do usuário) — `nativeTransport: true` e `preferHevc: true`
+  em `defaultStreamSettings` (`types/stream.ts`). AV1 continua opt-in (exige RTX 40+, raro).
+  Confirmado com screenshot: abre "Avançado" já com os dois switches ligados.
+- `tsc --noEmit` limpo, build ok.
+
+## Sprint 31 — Pipeline nativo (WGC) pra captura de janela
+
+Usuário notou que "Pipeline nativo" (NVENC) só funcionava pra monitor inteiro, nunca pra janela —
+lacuna real desde o início (DXGI Desktop Duplication, usado pelo `CaptureCore`, só sabe capturar
+monitor). Implementado o "WGC Backend" que `docs/NATIVE_CAPTURE.md` §Backend Abstrato já previa
+desde o começo mas nunca tinha sido construído.
+
+- [x] **`WindowCaptureCore.h/.cpp`** (novo) — captura de UMA janela via `Windows.Graphics.Capture`,
+  COM ABI puro (`Microsoft::WRL`, sem C++/WinRT/coroutines, mesmo estilo do `CaptureCore`). Device
+  D3D11 próprio, separado do de monitor (nunca os dois ativos ao mesmo tempo). `addon.cpp` ganhou
+  `g_windowCore`/`g_usingWindow` + helpers `ActiveDevice()`/`ActiveComposeTexture()`/etc. usados
+  por `InitEncoder`/`EncodeCurrentFrame`/`AcquireFrameGpuOnly` em vez de `g_core->` direto —
+  `CaptureCore.cpp` (DXGI/monitor) não mudou nenhuma linha, por pedido explícito do usuário.
+- [x] **Bug real corrigido**: `add_FrameArrived` falhava com `RO_E_MUST_BE_AGILE` (0x8000001C) — os
+  handlers WRL precisavam de `FtmBase` (Free-Threaded Marshaler) pra serem chamáveis da thread MTA
+  interna do WGC que dispara o evento.
+- [x] **Bug real corrigido**: janela minimizada reporta tamanho de ~160×28 (ícone da barra de
+  tarefas) em vez do tamanho restaurado — capturaria vídeo minúsculo sem erro. `Start()` agora
+  recusa de cara com `IsIconic(hwnd)`.
+- [x] Fiação completa: `preload/index.ts` (`nativeWindowHandle` no `CaptureSource`,
+  `NativeTransportStartArgs.hwnd`), `SourcePicker.tsx` (extrai HWND do id do desktopCapturer,
+  formato `"window:<hwnd>:<n>"`), `useBroadcast.ts` (gate por monitor OU janela),
+  `nativeTransport.ts`/`main/index.ts` (`startNativeCaptureSource`, `startWindow` no addon).
+  `tsc --noEmit` limpo (main + renderer).
+- [x] **Validado de ponta a ponta de verdade**: script isolado (addon requerido direto, HWND real
+  via PowerShell) confirmou frames WGC chegando; depois disso, app inteiro via Playwright
+  `_electron` com "Pipeline nativo" + janela real escolhida no picker + `native-transport:start`
+  real — telemetria confirmou `acquired=57`/`encodedPackets=53` (WGC → NVENC funcionando). Só não
+  teve espectador real conectado nesse teste (mesma categoria "não validado com viewer real" que o
+  resto do pipeline nativo já tinha documentado — não é falha da captura/encode).
+- Efeito colateral bônus (achado sem querer testando "Janelas" pra esse trabalho): confirma que o
+  filtro de `thumbnail.isEmpty()` (Sprint da passada de UI polish anterior) já reduz bastante o
+  ruído de janelas sem conteúdo real na lista.
+
+## Pendências abertas (atualizado ao fim do Sprint 30) — outra frente, sem relação com a demanda de janelas acima (já concluída)
 
 Em ordem sugerida (mas qualquer uma pode ser escolhida direto):
 
@@ -127,6 +263,52 @@ caminho nativo, outras não existem em lugar nenhum ainda).
   existe token de sala com TTL (`ROOM_TOKEN_TTL_SECONDS`), sem conceito de usuário/conta/permissão
   nenhum. Maior lacuna real da lista inteira, se o produto for além de "link temporário entre
   conhecidos".
+
+### Escopo da próxima entrega (decisão do usuário, 2026-08-26)
+
+Próxima frente são os "Não Objetivos" acima (não as pendências de teste do Sprint 30) — mas
+**escopo fechado nos 3 primeiros abaixo (Interface gráfica, Áudio, WebRTC/TURN)**, pra não
+sobrecarregar uma entrega só. **Controle de salas, Sinalização de conexão e Lógica de usuários
+ficam pra depois** — usuário quer testar essa entrega com calma antes de expandir mais.
+
+Ordenados do mais fácil pro mais difícil — **exceto Áudio, que o usuário quer priorizado mesmo
+não sendo o mais fácil da lista**:
+
+1. **Interface gráfica** — mais fácil: é polish visual contido, sem tocar em C++/rede/protocolo.
+   Boa parte já avançou nas sessões anteriores (reestrutura da tela inicial, picker) — o que sobra
+   é mais fino (ex.: espaço vazio no picker com poucas fontes, já anotado acima).
+2. **Áudio** ⭐ **(prioridade do usuário, independente da posição nessa lista)** — pedido
+   específico: excluir 1 app do loopback (tipo o "excluir do compartilhamento" do Discord).
+   Pesquisa já apontada acima: API de loopback por PROCESSO do Windows
+   (`ActivateAudioInterfaceAsync`/`AUDIOCLIENT_ACTIVATION_PARAMS`), incerteza real é se ela
+   suporta modo "excluir" (em vez de só "incluir só estes") sem precisar capturar tudo e filtrar
+   depois — primeiro passo é essa pesquisa, antes de qualquer código.
+   - **Adendo do usuário (2026-08-25) — 2 fontes específicas a bloquear, motivo real por trás**:
+     objetivo é ninguém se ouvir duplicado (o usuário nem o espectador que também tá na call).
+     1. **Retorno do microfone** (o usuário ouve o próprio mic sendo capturado e retransmitido).
+     2. **Áudio do Discord** especificamente — motivo direto: o uso real dessa aplicação é
+        compartilhar tela DURANTE uma call de Discord, então o áudio do Discord (vozes da call)
+        sair pela transmissão nativa faz o espectador (que já tá na mesma call) ouvir a call
+        duas vezes.
+     Ambos são "excluir só isso", não "incluir só isso" — reforça a pesquisa acima sobre o modo
+     de exclusão da API de loopback por processo.
+   - **Nota separada (nível de dificuldade em aberto)**: em modo JANELA (WGC), o ideal seria capturar
+     só o áudio DA JANELA ATIVA (equivalente de áudio ao que a captura de vídeo já faz isolando
+     a janela) — ainda não pesquisado se o Windows expõe loopback por-janela (só por-processo é
+     conhecido até agora, ver acima) ou se isso precisa ser resolvido por outro caminho. Avaliar
+     dificuldade antes de comprometer com isso — pode não haver API que sirva.
+3. **WebRTC (TURN + resiliência)** — último item DESSA entrega. Precisa de infraestrutura nova de
+   verdade (servidor TURN provisionado, não só código) além do código de reconexão.
+
+**Adiados pra uma entrega futura** (não pegar nessa, mesmo estando prontos/elegíveis):
+
+- **Controle de salas** — código já existe e funciona; o trabalho seria hardening/teste de
+  cenários adversos (múltiplos hosts na mesma sala, sala travada) em cima do que já tá escrito.
+- **Sinalização de conexão** — mesma categoria (WS nativo + sinalização LiveKit já existem),
+  trabalho seria estressar reconexão de rede ruim de propósito.
+- **Lógica de usuários** — mais difícil e maior de longe: não existe NADA hoje (autenticação,
+  autorização, rate limiting, contas) — subsistema novo inteiro. Explicitamente **tarefa futura**,
+  não entra em nenhuma entrega próxima por enquanto.
 
 ## Sprint 1 — Mudanças sistemicas
 - [x] app tauri não fecha ao clicar no botão de fechar, aliás, não funciona nem minimizar ou maximizar — faltavam permissões `core:window:allow-close/minimize/maximize/unmaximize/toggle-maximize` no capabilities (só tínhamos `core:default`, que não inclui essas)

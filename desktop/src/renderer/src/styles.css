@@ -525,6 +525,12 @@ body {
   animation: spin 0.9s linear infinite;
 }
 
+/* Botão de cursor ao vivo (só pipeline nativo) — apagado quando o cursor tá escondido, pra
+   diferenciar visualmente do estado "ligado" sem precisar de outro ícone. */
+.live-swap-btn-off {
+  color: var(--muted);
+}
+
 .live-stop-btn {
   flex-shrink: 0;
   width: 22px;

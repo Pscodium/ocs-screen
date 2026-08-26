@@ -17,12 +17,14 @@ export interface StreamSettings {
   // por conta própria, então esse toggle é ignorado (sem efeito, não é erro) fora do caminho
   // nativo.
   showCursor: boolean;
-  // Pipeline nativo de ponta a ponta (captura DXGI → encode NVENC → transporte libdatachannel,
-  // ver docs/NATIVE_CAPTURE.md Fase 3/4) em vez de LiveKit pro vídeo — evita o encoder por
-  // software do Chromium (gargalo medido em produção: `qualityLimitationReason: "cpu"` sob carga
-  // de jogo, derrubando resolução mesmo com hardware de sobra). Opt-in e só disponível quando a
-  // fonte é um monitor (captura nativa não cobre janela) e os addons `capture_core`/
-  // `transport_core` carregaram. V1 é 1 espectador por sala (sem SFU próprio ainda).
+  // Pipeline nativo de ponta a ponta (captura DXGI/monitor ou WGC/janela → encode NVENC →
+  // transporte libdatachannel, ver docs/NATIVE_CAPTURE.md Fase 3/4) em vez de LiveKit pro vídeo —
+  // evita o encoder por software do Chromium (gargalo medido em produção: cai pro caminho antigo
+  // silenciosamente se o pipeline nativo falhar, sem avisar o usuário — ver `useBroadcast.ts`).
+  // Padrão TRUE (pedido do usuário, 2026-08-25 — testou o caminho antigo achando que era o
+  // nativo, por causa da falta de aviso quando o toggle tava desligado) — só os addons
+  // `capture_core`/`transport_core` não carregarem (fora do Windows, ou build sem C++ toolchain)
+  // desliga sozinho o caminho nativo, sem quebrar nada.
   nativeTransport: boolean;
   // Opt-in, só tem efeito com `nativeTransport` ligado — pede HEVC ao encoder em vez de H.264
   // (CLAUDE.md §Codecs prioriza H.264 por garantia de hardware, esse toggle é uma EXCEÇÃO
@@ -30,7 +32,8 @@ export interface StreamSettings {
   // do lado nativo se HEVC não der: GPU/driver sem suporte → NVENC H.264; nenhum encoder MF de
   // HEVC na máquina → software H.264; viewer sem decode de HEVC (Chrome depende de hardware do
   // dispositivo) → host detecta e reinicia em H.264 sozinho. Ver docs/NATIVE_CAPTURE.md Fase 3
-  // "HEVC".
+  // "HEVC". Padrão TRUE junto com `nativeTransport` (pedido do usuário, 2026-08-25) — a cascata de
+  // fallback automática já cobre qualquer GPU/driver/viewer sem suporte.
   preferHevc: boolean;
   // Opt-in, só tem efeito com `nativeTransport` ligado — mesmo espírito de `preferHevc` acima, mas
   // pra AV1 (CLAUDE.md §Codecs lista AV1 como prioridade 3, adiado por bom tempo porque encoder de
@@ -78,8 +81,8 @@ export const defaultStreamSettings: StreamSettings = {
   quality: "high",
   sharpText: false,
   showCursor: true,
-  nativeTransport: false,
-  preferHevc: false,
+  nativeTransport: true,
+  preferHevc: true,
   preferAv1: false,
 };
 

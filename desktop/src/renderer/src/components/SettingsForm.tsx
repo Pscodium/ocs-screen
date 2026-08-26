@@ -113,8 +113,8 @@ export function SettingsForm({ settings, onChange, compact }: SettingsFormProps)
           <span className="toggle-row-label">
             Pipeline nativo (beta)
             <span className="toggle-row-hint">
-              Encode NVENC nativo em vez do encoder por software do navegador — só monitor, sem
-              troca de fonte ao vivo ainda
+              Encode NVENC nativo em vez do encoder por software do navegador — monitor ou janela,
+              sem troca de fonte ao vivo ainda
             </span>
           </span>
           <span className="toggle-switch">

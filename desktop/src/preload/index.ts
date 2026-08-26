@@ -10,6 +10,10 @@ export interface CaptureSource {
   // nativa via DXGI (ver services/nativeCapture.ts). DXGI Desktop Duplication só captura monitor
   // inteiro, nunca janela, por isso isso nunca é setado pra type: "window".
   nativeMonitorIndex?: number;
+  // Preenchido no renderer (SourcePicker) pra fontes tipo "window" — HWND extraído do `id` do
+  // desktopCapturer (formato "window:<hwnd>:<n>" no Windows). Backend WGC (ver
+  // WindowCaptureCore.h/docs/NATIVE_CAPTURE.md §Backend Abstrato), diferente do DXGI/monitor.
+  nativeWindowHandle?: number;
 }
 
 export interface UpdateAvailableInfo {
@@ -32,7 +36,10 @@ export interface NativeMonitor {
 export interface NativeTransportStartArgs {
   roomId: string;
   backendUrl: string;
-  monitorIndex: number;
+  // Exatamente um dos dois — monitor inteiro (DXGI) ou janela específica (WGC). Ver
+  // docs/NATIVE_CAPTURE.md §Backend Abstrato / WindowCaptureCore.h.
+  monitorIndex?: number;
+  hwnd?: number;
   targetFps: number;
   bitrateBps: number;
   stunUrls: string[];
@@ -123,6 +130,16 @@ const api = {
     isAvailable: (): Promise<boolean> => ipcRenderer.invoke("native-transport:available"),
     start: (args: NativeTransportStartArgs): Promise<boolean> => ipcRenderer.invoke("native-transport:start", args),
     stop: (): Promise<void> => ipcRenderer.invoke("native-transport:stop"),
+    // Liga/desliga o cursor NA HORA, durante uma transmissão já ativa — antes não existia (o
+    // toggle "Mostrar cursor" só valia no instante em que a transmissão começava). Pra janela
+    // (WGC) precisa de `WindowCaptureCore::SetCaptureCursor` aplicando ao vivo (ver
+    // WindowCaptureCore.cpp); pra monitor (DXGI) já era possível (`CaptureCore::SetCaptureCursor`
+    // lido a cada frame), só faltava alguém chamar durante o live.
+    setCursorEnabled: (enabled: boolean): Promise<void> => ipcRenderer.invoke("native-transport:set-cursor", enabled),
+    // Troca de fonte ao vivo (monitor↔monitor, janela↔janela, monitor↔janela) — antes bloqueado
+    // com aviso fixo no pipeline nativo. Ver ipcMain.handle("native-transport:swap-source").
+    swapSource: (args: { monitorIndex?: number; hwnd?: number; showCursor: boolean }): Promise<boolean> =>
+      ipcRenderer.invoke("native-transport:swap-source", args),
     // `viewerId` identifica de qual sessão é o evento (1 por espectador, ver
     // docs/NATIVE_CAPTURE.md Fase 4 "SFU"); `connectedCount` é quantos espectadores estão
     // conectados AGORA no total — usado pro contador no LiveCard.

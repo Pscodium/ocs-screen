@@ -7,6 +7,7 @@
           "sources": [
             "src/addon.cpp",
             "src/CaptureCore.cpp",
+            "src/WindowCaptureCore.cpp",
             "src/EncoderCore.cpp",
             "src/SoftwareEncoderCore.cpp",
             "src/CodecApiHelper.cpp",
@@ -28,6 +29,7 @@
             "gdi32.lib",
             "avrt.lib",
             "ole32.lib",
+            "windowsapp.lib",
             "mfplat.lib",
             "mfuuid.lib",
             "<(module_root_dir)/vendor/nvenc/Lib/nvencodeapi.lib",

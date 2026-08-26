@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <avrt.h>
 #include "CaptureCore.h"
+#include "WindowCaptureCore.h"
 #include "EncoderCore.h"
 #include "TransportCore.h"
 #include "VideoCodecType.h"
@@ -47,6 +48,30 @@ struct ViewerSession {
 };
 
 static std::unique_ptr<CaptureCore> g_core;
+// Backend WGC (janela) — alternativa ao `g_core` (DXGI, monitor). Nunca os dois ativos ao mesmo
+// tempo (uma transmissão captura monitor OU janela); `g_usingWindow` decide qual dos dois
+// `InitEncoder`/`EncodeCurrentFrame`/`AcquireFrameGpuOnly` devem usar, via os helpers
+// `Active*()` logo abaixo — ver docs/NATIVE_CAPTURE.md §Backend Abstrato.
+static std::unique_ptr<WindowCaptureCore> g_windowCore;
+static bool g_usingWindow = false;
+// Detecta resize da janela entre um `AcquireFrameGpuOnly` e outro (ver comentário no branch de
+// janela dessa função) — 0 = "sessão nova, sem baseline ainda" (evita falso-positivo no 1º frame).
+static int g_lastWindowWidth = 0;
+static int g_lastWindowHeight = 0;
+
+static ID3D11Device* ActiveDevice() {
+    return g_usingWindow ? (g_windowCore ? g_windowCore->GetDevice() : nullptr) : (g_core ? g_core->GetDevice() : nullptr);
+}
+static ID3D11Texture2D* ActiveComposeTexture() {
+    return g_usingWindow ? (g_windowCore ? g_windowCore->GetComposeTexture() : nullptr) : (g_core ? g_core->GetComposeTexture() : nullptr);
+}
+static int ActiveWidth() {
+    return g_usingWindow ? (g_windowCore ? g_windowCore->GetWidth() : 0) : (g_core ? g_core->GetWidth() : 0);
+}
+static int ActiveHeight() {
+    return g_usingWindow ? (g_windowCore ? g_windowCore->GetHeight() : 0) : (g_core ? g_core->GetHeight() : 0);
+}
+
 static std::unique_ptr<EncoderCore> g_encoder;
 static std::unique_ptr<EncoderCore> g_encoderLow;
 static std::unordered_map<std::string, ViewerSession> g_transportSessions;
@@ -114,11 +139,39 @@ Napi::Value Start(const Napi::CallbackInfo& info) {
         return Napi::Boolean::New(env, false);
     }
     int monitorIndex = info[0].As<Napi::Number>().Int32Value();
+    g_usingWindow = false;
     return Napi::Boolean::New(env, g_core->Start(monitorIndex));
+}
+
+// `info[0]` = HWND, passado como número (o lado JS extrai o handle do id do desktopCapturer, ver
+// main/index.ts). Backend WGC (Windows.Graphics.Capture) — diferente do DXGI (`Start`, monitor
+// inteiro), esse consegue isolar UMA janela específica. Cria o `WindowCaptureCore` sob demanda
+// (só precisa existir quando alguém realmente pede captura de janela).
+Napi::Value StartWindow(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        return Napi::Boolean::New(env, false);
+    }
+    HWND hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(info[0].As<Napi::Number>().Int64Value()));
+
+    if (!g_windowCore) {
+        g_windowCore = std::make_unique<WindowCaptureCore>();
+        if (!g_windowCore->Initialize()) {
+            g_windowCore.reset();
+            return Napi::Boolean::New(env, false);
+        }
+    }
+    g_usingWindow = true;
+    bool ok = g_windowCore->Start(hwnd);
+    if (!ok) g_usingWindow = false;
+    g_lastWindowWidth = 0;
+    g_lastWindowHeight = 0;
+    return Napi::Boolean::New(env, ok);
 }
 
 Napi::Value Stop(const Napi::CallbackInfo& info) {
     if (g_core) g_core->Stop();
+    if (g_windowCore) g_windowCore->Stop();
     return info.Env().Undefined();
 }
 
@@ -169,12 +222,49 @@ Napi::Value AcquireFrame(const Napi::CallbackInfo& info) {
 // monitor sendo 120Hz+ então não é teto de hardware — era esse custo por chamada).
 Napi::Value AcquireFrameGpuOnly(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (!g_core) return env.Null();
 
     uint32_t timeoutMs = 0;
     if (info.Length() > 0 && info[0].IsNumber()) {
         timeoutMs = info[0].As<Napi::Number>().Uint32Value();
     }
+
+    if (g_usingWindow) {
+        if (!g_windowCore) return env.Null();
+        WindowAcquireResult result = g_windowCore->AcquireFrameGpuOnly(timeoutMs);
+        if (result == WindowAcquireResult::Timeout) return env.Null();
+        if (result == WindowAcquireResult::ItemClosed) {
+            // Janela fechada/processo morreu — não tem "recuperar sozinho" possível (a janela não
+            // existe mais), diferente do `accessLost` do DXGI. Quem chama (main/index.ts) trata
+            // igual a `deviceLost` (para a transmissão com aviso), só com mensagem diferente.
+            Napi::Object obj = Napi::Object::New(env);
+            obj.Set("windowClosed", true);
+            return obj;
+        }
+        if (result != WindowAcquireResult::Ok) return env.Null();
+
+        // Janela redimensionou (`WindowCaptureCore` já recriou o frame pool sozinho — ver
+        // WindowCaptureCore.cpp) — avisa o JS pra reiniciar o(s) encoder(es) com o tamanho novo.
+        // Bug real reportado pelo usuário: sem isso, o NVENC continuava recebendo textura do
+        // tamanho ANTIGO (CopyResource com tamanhos diferentes falha em silêncio) e a transmissão
+        // travava num frame congelado. `g_lastWindowWidth/Height` começam em 0 (reset em
+        // StartWindow/Stop) pra não disparar falso-positivo no primeiro frame de uma sessão nova.
+        int w = ActiveWidth();
+        int h = ActiveHeight();
+        bool resized = g_lastWindowWidth != 0 && (w != g_lastWindowWidth || h != g_lastWindowHeight);
+        g_lastWindowWidth = w;
+        g_lastWindowHeight = h;
+
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("ok", true);
+        if (resized) {
+            obj.Set("resized", true);
+            obj.Set("width", w);
+            obj.Set("height", h);
+        }
+        return obj;
+    }
+
+    if (!g_core) return env.Null();
 
     AcquireResult result = g_core->AcquireFrameGpuOnly(timeoutMs);
 
@@ -210,7 +300,7 @@ Napi::Value AcquireFrameGpuOnly(const Napi::CallbackInfo& info) {
 // `IsUsingSoftwareEncoder`/`GetActiveCodec` pra saber o resultado real depois de chamar isso.
 Napi::Value InitEncoder(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (!g_core || info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+    if (!ActiveDevice() || info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
         return Napi::Boolean::New(env, false);
     }
     int fps = info[0].As<Napi::Number>().Int32Value();
@@ -220,7 +310,7 @@ Napi::Value InitEncoder(const Napi::CallbackInfo& info) {
         : VideoCodecType::H264;
 
     g_encoder = std::make_unique<EncoderCore>();
-    bool ok = g_encoder->Initialize(g_core->GetDevice(), g_core->GetWidth(), g_core->GetHeight(), fps, bitrateBps, codec);
+    bool ok = g_encoder->Initialize(ActiveDevice(), ActiveWidth(), ActiveHeight(), fps, bitrateBps, codec);
     if (!ok) g_encoder.reset();
     return Napi::Boolean::New(env, ok);
 }
@@ -232,7 +322,7 @@ Napi::Value InitEncoder(const Napi::CallbackInfo& info) {
 // (main/index.ts) sempre passa `getActiveCodec()` do high aqui.
 Napi::Value InitEncoderLow(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (!g_core || info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+    if (!ActiveDevice() || info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
         return Napi::Boolean::New(env, false);
     }
     int fps = info[0].As<Napi::Number>().Int32Value();
@@ -242,7 +332,7 @@ Napi::Value InitEncoderLow(const Napi::CallbackInfo& info) {
         : VideoCodecType::H264;
 
     g_encoderLow = std::make_unique<EncoderCore>();
-    bool ok = g_encoderLow->Initialize(g_core->GetDevice(), g_core->GetWidth(), g_core->GetHeight(), fps, bitrateBps, codec);
+    bool ok = g_encoderLow->Initialize(ActiveDevice(), ActiveWidth(), ActiveHeight(), fps, bitrateBps, codec);
     if (!ok) g_encoderLow.reset();
     return Napi::Boolean::New(env, ok);
 }
@@ -271,9 +361,9 @@ Napi::Value DestroyEncoderLow(const Napi::CallbackInfo& info) {
 Napi::Value EncodeCurrentFrame(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
-    if (!g_encoder || !g_core) return result;
+    if (!g_encoder || !ActiveComposeTexture()) return result;
 
-    auto packets = g_encoder->EncodeFrame(g_core->GetComposeTexture());
+    auto packets = g_encoder->EncodeFrame(ActiveComposeTexture());
     result = Napi::Array::New(env, packets.size());
     for (size_t i = 0; i < packets.size(); i++) {
         result.Set(i, Napi::Buffer<uint8_t>::Copy(env, packets[i].data(), packets[i].size()));
@@ -284,9 +374,9 @@ Napi::Value EncodeCurrentFrame(const Napi::CallbackInfo& info) {
 Napi::Value EncodeCurrentFrameLow(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
-    if (!g_encoderLow || !g_core) return result;
+    if (!g_encoderLow || !ActiveComposeTexture()) return result;
 
-    auto packets = g_encoderLow->EncodeFrame(g_core->GetComposeTexture());
+    auto packets = g_encoderLow->EncodeFrame(ActiveComposeTexture());
     result = Napi::Array::New(env, packets.size());
     for (size_t i = 0; i < packets.size(); i++) {
         result.Set(i, Napi::Buffer<uint8_t>::Copy(env, packets[i].data(), packets[i].size()));
@@ -321,8 +411,12 @@ Napi::Value SetEncoderBitrate(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value SetCursorEnabled(const Napi::CallbackInfo& info) {
-    if (g_core && info.Length() > 0 && info[0].IsBoolean()) {
-        g_core->SetCaptureCursor(info[0].As<Napi::Boolean>().Value());
+    if (info.Length() > 0 && info[0].IsBoolean()) {
+        bool enabled = info[0].As<Napi::Boolean>().Value();
+        if (g_core) g_core->SetCaptureCursor(enabled);
+        // No caminho de janela isso só tem efeito na PRÓXIMA `startWindow()` (propriedade da
+        // sessão WGC, fixada na criação — ver WindowCaptureCore::SetCaptureCursor).
+        if (g_windowCore) g_windowCore->SetCaptureCursor(enabled);
     }
     return info.Env().Undefined();
 }
@@ -568,6 +662,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("initialize", Napi::Function::New(env, Initialize));
     exports.Set("listMonitors", Napi::Function::New(env, ListMonitors));
     exports.Set("start", Napi::Function::New(env, Start));
+    exports.Set("startWindow", Napi::Function::New(env, StartWindow));
     exports.Set("stop", Napi::Function::New(env, Stop));
     exports.Set("acquireFrame", Napi::Function::New(env, AcquireFrame));
     exports.Set("acquireFrameGpuOnly", Napi::Function::New(env, AcquireFrameGpuOnly));

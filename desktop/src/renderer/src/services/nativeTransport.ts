@@ -14,21 +14,37 @@ export async function isNativeTransportAvailable(): Promise<boolean> {
   return window.screenshare.nativeTransport.isAvailable();
 }
 
+// Exatamente um de `monitorIndex`/`hwnd` — monitor inteiro (DXGI) ou janela específica (WGC, ver
+// docs/NATIVE_CAPTURE.md §Backend Abstrato / WindowCaptureCore.h). `capture.ts`/`SourcePicker`
+// decidem qual mandar (`nativeMonitorIndex` só existe em fonte tipo "screen", `nativeWindowHandle`
+// só em "window").
 export async function startNativeTransport(
   roomId: string,
   backendUrl: string,
-  monitorIndex: number,
+  source: { monitorIndex?: number; hwnd?: number },
   settings: StreamSettings,
 ): Promise<boolean> {
   const targetFps = settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps;
-  const monitors = await listNativeMonitors();
-  const monitor = monitors.find((m) => m.index === monitorIndex);
-  const bitrateBps = getMaxBitrate(monitor?.width ?? 1920, monitor?.height ?? 1080, settings);
+  // Bitrate calculado pela resolução real só é possível pra monitor (dá pra listar antes de
+  // iniciar); janela não tem tamanho conhecido de antemão no lado do renderer — usa o mesmo
+  // fallback 1920×1080 que monitor não-encontrado já usava.
+  let width = 1920;
+  let height = 1080;
+  if (source.monitorIndex !== undefined) {
+    const monitors = await listNativeMonitors();
+    const monitor = monitors.find((m) => m.index === source.monitorIndex);
+    if (monitor) {
+      width = monitor.width;
+      height = monitor.height;
+    }
+  }
+  const bitrateBps = getMaxBitrate(width, height, settings);
 
   const args: NativeTransportStartArgs = {
     roomId,
     backendUrl,
-    monitorIndex,
+    monitorIndex: source.monitorIndex,
+    hwnd: source.hwnd,
     targetFps,
     bitrateBps,
     stunUrls: DEFAULT_STUN_URLS,
@@ -40,6 +56,19 @@ export async function startNativeTransport(
 
 export async function stopNativeTransport(): Promise<void> {
   await window.screenshare.nativeTransport.stop();
+}
+
+export async function setNativeCursorEnabled(enabled: boolean): Promise<void> {
+  await window.screenshare.nativeTransport.setCursorEnabled(enabled);
+}
+
+// Troca de fonte ao vivo — `source` é o mesmo formato de `startNativeTransport` (monitor OU
+// janela). `showCursor` reaplica a preferência atual (a fonte nova começa sem cursor configurado).
+export async function swapNativeTransportSource(
+  source: { monitorIndex?: number; hwnd?: number },
+  showCursor: boolean,
+): Promise<boolean> {
+  return window.screenshare.nativeTransport.swapSource({ ...source, showCursor });
 }
 
 export function onNativeTransportEnded(callback: () => void): () => void {
