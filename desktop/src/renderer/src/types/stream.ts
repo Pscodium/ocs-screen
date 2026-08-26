@@ -82,8 +82,15 @@ export const defaultStreamSettings: StreamSettings = {
   sharpText: false,
   showCursor: true,
   nativeTransport: true,
-  preferHevc: true,
-  preferAv1: false,
+  // Trocado de HEVC pra AV1 como padrão (2026-08-26, pedido do usuário após achar um bug real na
+  // renegociação de fallback de codec — ver docs/TASKS.md): decode de HEVC sem hardware é
+  // recusado de cara pelo Chrome (licenciamento), decode de AV1 tem fallback por software (dav1d)
+  // mesmo sem hardware — reduz bastante a chance de cair no caminho de fallback ainda com bug.
+  // Encode: a cascata do EncoderCore (NVENC AV1 → NVENC H.264 → software AV1 → software H.264) já
+  // prioriza H.264 por HARDWARE antes de qualquer software — hosts sem GPU RTX 40+ (a maioria)
+  // caem direto em NVENC H.264, mesmo custo de sempre, sem risco de cair em encode por software.
+  preferHevc: false,
+  preferAv1: true,
 };
 
 // Multiplicador aplicado ao bitrate base conforme o nível de qualidade escolhido.
