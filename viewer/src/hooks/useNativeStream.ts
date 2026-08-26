@@ -53,6 +53,22 @@ export function useNativeStream(roomId: string) {
     let cancelled = false;
     let statsInterval: ReturnType<typeof setInterval> | null = null;
 
+    // Bug real reportado pelo usuário: Safari (iPhone) ficava "conectando..." pra sempre, sem
+    // erro nenhum visível. Causa: esse caminho depende de APIs que só existem de verdade no
+    // Chromium — `MediaStreamTrackGenerator` (ainda sem suporte no WebKit/Safari até a versão
+    // testada) e `VideoDecoder`/`AudioDecoder` (WebCodecs, suporte parcial/inconsistente fora do
+    // Chromium). Sem essa checagem, `new MediaStreamTrackGenerator(...)` dentro do handler do
+    // canal (`handleDataChannel` abaixo) lançava um `ReferenceError` não capturado — silencioso
+    // pro usuário (só aparece no console), a UI nunca saía do estado "conectando". Falha cedo e
+    // visível em vez de travar pra sempre.
+    if (typeof MediaStreamTrackGenerator === "undefined" || typeof VideoDecoder === "undefined") {
+      setError("Este navegador não suporta os recursos necessários (WebCodecs) para assistir a essa transmissão. Tente um Chrome/Edge recente.");
+      setPhase("error");
+      return () => {
+        cancelled = true;
+      };
+    }
+
     let framesDecoded = 0;
     let bytesReceived = 0;
     let lastStatsAt = performance.now();
@@ -249,10 +265,22 @@ export function useNativeStream(roomId: string) {
       let width = 0;
       let height = 0;
 
+      // Watchdog — cobre falhas silenciosas que não passam pelo callback `error` do VideoDecoder
+      // (ex.: `decode()` engolido no catch de `channel.onmessage` sem NUNCA chamar `output`, sem
+      // nunca fechar o decoder de propósito). Sem isso, o único jeito de perceber que a tela
+      // ficou preta pra sempre era o usuário reportar depois de esperar sem saber se ia carregar.
+      const noFrameTimeout = setTimeout(() => {
+        if (!cancelled && !gotFirstFrame) {
+          setError("Não foi possível exibir o vídeo neste navegador/dispositivo. Tente um Chrome/Edge em Windows, Mac ou Android.");
+          setPhase("error");
+        }
+      }, 12000);
+
       const decoder = new VideoDecoder({
         output: (frame) => {
           if (!gotFirstFrame) {
             gotFirstFrame = true;
+            clearTimeout(noFrameTimeout);
             width = frame.displayWidth;
             height = frame.displayHeight;
             setStats({ resolution: `${width} × ${height}`, fps: 0, bitrateKbps: 0, latencyMs: 0, packetLossPercent: 0 });
@@ -276,11 +304,23 @@ export function useNativeStream(roomId: string) {
             setTimeout(() => writer.write(frame).catch(() => frame.close()), waitMs);
           }
         },
-        error: () => {
-          // Frame corrompido/decoder num estado ruim — não é fatal (próximo keyframe do host
-          // recupera sozinho, GOP de 2s), só loga.
+        error: (e) => {
+          // Bug real reportado pelo usuário: no WebCodecs, o callback `error` do VideoDecoder
+          // dispara quando o decoder entra em estado FECHADO PERMANENTEMENTE (spec: erro
+          // irrecuperável, não é "só esse frame ruim") — todo `decode()` seguinte falha em
+          // silêncio (o catch em `channel.onmessage` engolia isso sem avisar ninguém), a tela
+          // ficava preta pra sempre sem nenhum erro visível (achado testando num iPhone — a
+          // combinação de config usada aqui, "avc1.64002a"+annexb, parece não ser suportada de
+          // verdade no decoder do WebKit mesmo relatando o codec como reconhecido). Antes só
+          // logava no console; agora aparece pro usuário de verdade, com dica do motivo provável.
+          if (!cancelled) {
+            setError(
+              `Falha ao decodificar o vídeo neste navegador/dispositivo (${e instanceof Error ? e.message : String(e)}). Tente um Chrome/Edge em Windows, Mac ou Android.`,
+            );
+            setPhase("error");
+          }
           // eslint-disable-next-line no-console
-          console.error("[native-stream] erro no VideoDecoder");
+          console.error("[native-stream] erro no VideoDecoder (permanente, decoder fechado):", e);
         },
       });
       if (negotiatedCodec === "hevc") {
