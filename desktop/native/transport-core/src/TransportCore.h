@@ -45,6 +45,11 @@ public:
     // Cria o canal de dados "video" — precisa ser chamado ANTES de CreateOffer().
     bool AddVideoChannel();
 
+    // Canal de dados "audio" (Opus), mesmo raciocínio do de vídeo — SCTP confiável/ordenado,
+    // sem RTP/jitter buffer nativo. Opcional: só existe se o áudio nativo estiver ativo (ver
+    // main/index.ts) — sessão continua funcionando só com vídeo se isso nunca for chamado.
+    bool AddAudioChannel();
+
     // Inicia a negociação (host sempre oferece, espectador sempre responde — mais simples que
     // permitir os dois papéis, e o único caso de uso real aqui).
     bool CreateOffer();
@@ -56,6 +61,12 @@ public:
     // (tipo + timestamp) pro cliente reconstruir o `EncodedVideoChunk` do WebCodecs — ver
     // TransportCore.cpp. Detecta sozinho se é keyframe (procura NAL tipo 5 no bitstream).
     bool SendVideoFrame(const uint8_t* data, size_t size, uint64_t timestampUs);
+
+    // Manda um pacote Opus cru (20ms, 48kHz) — formato no canal: [8 bytes: timestamp µs][payload
+    // Opus cru]. Sem byte de tipo key/delta (Opus não tem GOP/keyframe como vídeo, todo pacote se
+    // decodifica sozinho a partir do próximo, só perde qualidade momentânea se um pacote se perder
+    // — mas SCTP já garante entrega, então isso nem chega a importar na prática).
+    bool SendAudioFrame(const uint8_t* data, size_t size, uint64_t timestampUs);
 
     bool IsConnected() const;
 
@@ -69,6 +80,7 @@ public:
 private:
     std::shared_ptr<rtc::PeerConnection> pc_;
     std::shared_ptr<rtc::DataChannel> videoChannel_;
+    std::shared_ptr<rtc::DataChannel> audioChannel_;
     std::function<void()> channelOpenCallback_;
     VideoCodecType codec_ = VideoCodecType::H264;
 };

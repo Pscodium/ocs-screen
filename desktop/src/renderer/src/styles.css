@@ -806,6 +806,14 @@ body {
   overflow-x: hidden;
   padding: 0 1.25rem 1.25rem;
   text-align: left;
+  /* Com poucas fontes (1-2 telas), o grid não preenche a `PICKER_SIZE` (720x640, dimensionada pra
+     caber telas+janelas+config juntos) — sobrava espaço vazio embaixo do grid, acima do rodapé.
+     `display:flex` + `justify-content:center` centraliza o conteúdo (grid ou skeleton ou mensagem
+     "nada encontrado") no espaço disponível em vez de empurrar tudo pro topo; quando o conteúdo já
+     preenche/excede (muitas janelas), o scroll (`overflow-y:auto`) continua funcionando normal. */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
 .picker-footer {

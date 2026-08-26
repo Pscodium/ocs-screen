@@ -15,6 +15,7 @@
 #include "EncoderCore.h"
 #include "TransportCore.h"
 #include "VideoCodecType.h"
+#include "AudioCaptureCore.h"
 
 // "h264"/"hevc"/"av1" (case-sensitive, vem sempre de string literal do lado JS) — qualquer coisa
 // que não seja "hevc"/"av1" cai em H.264, o padrão seguro.
@@ -76,6 +77,11 @@ static std::unique_ptr<EncoderCore> g_encoder;
 static std::unique_ptr<EncoderCore> g_encoderLow;
 static std::unordered_map<std::string, ViewerSession> g_transportSessions;
 static HANDLE g_mmcssHandle = nullptr;
+
+// Áudio (ver AudioCaptureCore.h) — único, compartilhado por TODOS os espectadores (não tem tier
+// "low"/"high" pra áudio, diferente do vídeo/simulcast: bitrate de áudio é baixo o bastante pra
+// não valer a complexidade de codificar duas vezes).
+static std::unique_ptr<AudioCaptureCore> g_audioCore;
 
 // `g_encoder` (high) ou `g_encoderLow` (low) — usado nos vários pontos que precisam resolver "o
 // encoder desse tier" sem duplicar o if/else toda vez.
@@ -422,6 +428,80 @@ Napi::Value SetCursorEnabled(const Napi::CallbackInfo& info) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Áudio (WASAPI process-loopback + Opus, ver AudioCaptureCore.h) — pedido do usuário: excluir o
+// Discord (já está na mesma call, ouviria a própria voz duas vezes se saísse pela transmissão
+// também) da captura de áudio de sistema do pipeline nativo.
+// ---------------------------------------------------------------------------------------------
+
+// `info[0]` (string, opcional) = nome do executável a excluir (ex.: "Discord.exe"). Resolve o PID
+// aqui mesmo (via AudioCaptureCore::FindProcessIdByName) pra não expor Win32/PID pro lado JS —
+// se o processo não estiver rodando (0 encontrado), cai pro loopback normal sem exclusão (não é
+// erro: usuário pode não estar com o app aberto ainda).
+Napi::Value InitAudioCapture(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    DWORD excludePid = 0;
+    if (info.Length() > 0 && info[0].IsString()) {
+        std::string exeNameUtf8 = info[0].As<Napi::String>().Utf8Value();
+        std::wstring exeNameW(exeNameUtf8.begin(), exeNameUtf8.end());
+        excludePid = AudioCaptureCore::FindProcessIdByName(exeNameW.c_str());
+    }
+
+    g_audioCore = std::make_unique<AudioCaptureCore>();
+    bool ok = g_audioCore->Initialize(excludePid);
+    if (!ok) g_audioCore.reset();
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("ok", ok);
+    result.Set("excludedPid", static_cast<double>(excludePid));
+    return result;
+}
+
+// Caminho de JANELA — `info[0]` = HWND (mesmo formato de `StartWindow`). INCLUDE em vez de
+// EXCLUDE: só o áudio da árvore de processos dona da janela compartilhada sai na transmissão
+// (ver AudioCaptureCore::InitializeForWindow) — resolve sozinho o pedido do usuário de isolar só
+// o app em destaque, sem precisar saber o nome dele nem excluir nada manualmente.
+Napi::Value InitAudioCaptureForWindow(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        return Napi::Object::New(env);
+    }
+    HWND hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(info[0].As<Napi::Number>().Int64Value()));
+
+    g_audioCore = std::make_unique<AudioCaptureCore>();
+    bool ok = g_audioCore->InitializeForWindow(hwnd);
+    if (!ok) g_audioCore.reset();
+
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("ok", ok);
+    return result;
+}
+
+Napi::Value DestroyAudioCapture(const Napi::CallbackInfo& info) {
+    g_audioCore.reset();
+    return info.Env().Undefined();
+}
+
+// Diagnóstico (ver AudioCaptureCore::LastRms) — não usado no caminho de produção.
+Napi::Value GetAudioRms(const Napi::CallbackInfo& info) {
+    return Napi::Number::New(info.Env(), g_audioCore ? g_audioCore->LastRms() : 0.0);
+}
+
+// Chamado do mesmo loop JS que já poll vídeo (main/index.ts) — retorna 0+ pacotes Opus prontos
+// pra mandar (o `AudioCaptureCore` já acumula PCM internamente até fechar um frame de 20ms).
+Napi::Value PollAudioPackets(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Array result = Napi::Array::New(env);
+    if (!g_audioCore) return result;
+
+    auto packets = g_audioCore->PollEncodedPackets();
+    result = Napi::Array::New(env, packets.size());
+    for (size_t i = 0; i < packets.size(); i++) {
+        result.Set(i, Napi::Buffer<uint8_t>::Copy(env, packets[i].data(), packets[i].size()));
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Transporte nativo (libdatachannel, Fase 4) — mesclado neste addon (era `transport-core`
 // separado). Sinalização (SDP/ICE, baixa frequência) exposta pra JS via ThreadSafeFunction; envio
 // de frame (`TransportSendVideoFrame`, alta frequência) é chamado do loop JS a cada frame.
@@ -547,6 +627,13 @@ Napi::Value TransportAddVideoChannel(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, it != g_transportSessions.end() && it->second.transport->AddVideoChannel());
 }
 
+Napi::Value TransportAddAudioChannel(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
+    auto it = g_transportSessions.find(info[0].As<Napi::String>().Utf8Value());
+    return Napi::Boolean::New(env, it != g_transportSessions.end() && it->second.transport->AddAudioChannel());
+}
+
 Napi::Value TransportCreateOffer(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
@@ -630,6 +717,25 @@ Napi::Value TransportSendVideoFrame(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, anyOk);
 }
 
+// Áudio não tem tier — manda pra TODAS as sessões que já abriram canal de áudio (as que não
+// abriram simplesmente ignoram, `SendAudioFrame` retorna `false` sem side-effect).
+Napi::Value TransportSendAudioFrame(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 2 || !info[0].IsBuffer() || !info[1].IsNumber()) {
+        return Napi::Boolean::New(env, false);
+    }
+    Napi::Buffer<uint8_t> buffer = info[0].As<Napi::Buffer<uint8_t>>();
+    int64_t timestampUs = info[1].As<Napi::Number>().Int64Value();
+
+    bool anyOk = false;
+    for (auto& entry : g_transportSessions) {
+        if (entry.second.transport->SendAudioFrame(buffer.Data(), buffer.Length(), static_cast<uint64_t>(timestampUs))) {
+            anyOk = true;
+        }
+    }
+    return Napi::Boolean::New(env, anyOk);
+}
+
 // Callbacks do libdatachannel disparam numa thread interna dele, não na thread do Node —
 // `NonBlockingCall` enfileira de volta pro loop de eventos do Node sem bloquear essa thread
 // (`BlockingCall` já causou um crash real aqui — ver histórico de TransportCore.cpp). Registrados
@@ -678,11 +784,18 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setEncoderBitrate", Napi::Function::New(env, SetEncoderBitrate));
     exports.Set("forceKeyframe", Napi::Function::New(env, ForceKeyframe));
 
+    exports.Set("initAudioCapture", Napi::Function::New(env, InitAudioCapture));
+    exports.Set("initAudioCaptureForWindow", Napi::Function::New(env, InitAudioCaptureForWindow));
+    exports.Set("destroyAudioCapture", Napi::Function::New(env, DestroyAudioCapture));
+    exports.Set("pollAudioPackets", Napi::Function::New(env, PollAudioPackets));
+    exports.Set("getAudioRms", Napi::Function::New(env, GetAudioRms));
+
     exports.Set("transportCreateSession", Napi::Function::New(env, TransportCreateSession));
     exports.Set("transportSetViewerTier", Napi::Function::New(env, TransportSetViewerTier));
     exports.Set("transportCloseSession", Napi::Function::New(env, TransportCloseSession));
     exports.Set("transportCloseAllSessions", Napi::Function::New(env, TransportCloseAllSessions));
     exports.Set("transportAddVideoChannel", Napi::Function::New(env, TransportAddVideoChannel));
+    exports.Set("transportAddAudioChannel", Napi::Function::New(env, TransportAddAudioChannel));
     exports.Set("transportCreateOffer", Napi::Function::New(env, TransportCreateOffer));
     exports.Set("transportSetRemoteDescription", Napi::Function::New(env, TransportSetRemoteDescription));
     exports.Set("transportAddRemoteCandidate", Napi::Function::New(env, TransportAddRemoteCandidate));
@@ -690,6 +803,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("transportConnectedCount", Napi::Function::New(env, TransportConnectedCount));
     exports.Set("transportMaxBufferedAmount", Napi::Function::New(env, TransportMaxBufferedAmount));
     exports.Set("transportSendVideoFrame", Napi::Function::New(env, TransportSendVideoFrame));
+    exports.Set("transportSendAudioFrame", Napi::Function::New(env, TransportSendAudioFrame));
     exports.Set("transportOnLocalDescription", Napi::Function::New(env, TransportOnLocalDescription));
     exports.Set("transportOnLocalCandidate", Napi::Function::New(env, TransportOnLocalCandidate));
     exports.Set("transportOnStateChange", Napi::Function::New(env, TransportOnStateChange));

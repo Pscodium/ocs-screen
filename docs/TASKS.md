@@ -1,5 +1,91 @@
 # Roadmap execução
 
+## 🚧 Em andamento (2026-08-26): Áudio nativo (exclusão de app) — passo 1 de 3
+
+Escopo desta entrega (ver "Escopo da próxima entrega" mais abaixo): 1) Interface gráfica (✅ feito
+— picker centraliza conteúdo verticalmente quando poucas fontes), 2) Áudio (⭐ prioridade,
+**em andamento**), 3) WebRTC/TURN (não iniciado).
+
+- [x] **Captura WASAPI process-loopback + exclusão por processo, validada isolada** —
+  `AudioCaptureCore.h/.cpp` (novo, `capture-core`): usa `ActivateAudioInterfaceAsync` +
+  `AUDIOCLIENT_ACTIVATION_PARAMS{ActivationType=PROCESS_LOOPBACK, ProcessLoopbackMode=
+  EXCLUDE_TARGET_PROCESS_TREE}` — a API de exclusão (pesquisa do sprint anterior) existe de
+  verdade e funciona. `FindProcessIdByName` acha a RAIZ da árvore de processos (não só o primeiro
+  PID com aquele nome) — necessário pra apps multi-processo tipo Discord/Electron, onde
+  `EXCLUDE_TARGET_PROCESS_TREE` só cobre descendentes do PID passado; se fosse um processo filho
+  qualquer, processos irmãos emitindo áudio ficariam de fora da exclusão.
+- [x] Encode Opus (libopus 1.5.2, instalado via vcpkg) — 48kHz/estéreo/20ms, 64kbps/canal.
+  Acumula PCM float32 do polling WASAPI (sem thread própria, mesmo estilo do resto do addon —
+  chamado do loop `setImmediate` existente) até fechar um frame Opus.
+- [x] Canal de dados "audio" espelhando o de vídeo em `TransportCore` (`AddAudioChannel`/
+  `SendAudioFrame`) — mesma decisão de arquitetura do vídeo (Sprint 21): vai por DataChannel/SCTP,
+  não RTP track (sem jitter buffer/NACK/PLI nativo do RTP no meio, cliente reconstrói do lado de
+  lá com WebCodecs, mesmo raciocínio documentado em `TransportCore.h`). Áudio não tem tier
+  high/low (bitrate baixo o bastante pra não valer codificar 2x) — `TransportSendAudioFrame` manda
+  pra TODAS as sessões que abriram o canal.
+- [x] **Bug real corrigido durante a validação**: `GetMixFormat()` retorna `WAVEFORMATEXTENSIBLE`
+  (maior que `WAVEFORMATEX`) — atribuir o struct direto num campo `WAVEFORMATEX` truncava os bytes
+  de extensão mas MANTINHA o `cbSize` antigo (22), fazendo `IAudioClient::Initialize` ler lixo
+  depois do fim do buffer alocado e falhar com `E_INVALIDARG` (0x80070057). Corrigido: passa o
+  ponteiro ORIGINAL (tamanho completo) pro `Initialize`, só extrai os campos escalares depois.
+- [x] **Validado com script isolado** (mesmo padrão dos Sprints 19-22 — addon requerido direto via
+  `ELECTRON_RUN_AS_NODE`, sem passar pelo app ainda): loopback normal (~150 pacotes Opus/3s,
+  ritmo de 20ms batendo certo) e loopback com exclusão real (`Discord.exe` rodando de verdade na
+  máquina, 6 processos) — ambos inicializam e produzem pacotes sem erro.
+- **Pendente (wiring real, ainda não feito)**: plugar no fluxo de produção —
+  `main/index.ts` (chamar `initAudioCapture`/`pollAudioPackets`/`transportSendAudioFrame` no
+  `runNativeTransportLoop`, `transportAddAudioChannel` quando um viewer conecta), toggle/config na
+  UI (qual app excluir — hoje só testado chamando a função direto), e o lado do VIEWER (decodificar
+  o canal "audio" — `AudioDecoder` do WebCodecs + `MediaStreamTrackGenerator({kind:"audio"})`,
+  mesmo padrão que o vídeo já usa com `VideoFrame`/`VideoDecoder`). Isso é o que falta pra ouvir
+  áudio de verdade ponta a ponta.
+- **Ainda não resolvido, categoria diferente**: "retorno do microfone" (2º pedido do usuário) —
+  loopback captura SAÍDA, mic é ENTRADA; só apareceria misturado se "Escutar este dispositivo"
+  estiver ligado no mic (config de mixer do Windows, não um processo pra excluir). Exclusão por
+  processo não resolve isso. Precisa confirmar se essa config tá ligada antes de decidir a
+  abordagem (pode não precisar de código nenhum, mesma categoria do fix do Sprint 4).
+- [x] **Loopback por-JANELA resolvido** (pedido do usuário: isolar só o som da janela em destaque
+  no compartilhamento de janela) — mesma API, modo invertido: `InitializeForWindow(hwnd)` resolve
+  o processo dono do HWND (`GetWindowThreadProcessId`), acha a raiz da árvore dele
+  (`FindProcessIdByName` reaproveitado via nome do executável resolvido) e ativa em
+  `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE` — só a árvore daquele app sai na
+  transmissão, resto do sistema (Discord incluído) fica de fora automaticamente, sem exclusão
+  manual nenhuma. `main/index.ts`: caminho de janela (`hwnd` definido) usa isso; caminho de
+  monitor continua no EXCLUDE (Discord). **Validado com script isolado** (janela do Discord
+  incluída = RMS alto/audível; janela do VS Code incluída = RMS zero mesmo com Discord+Chrome
+  tocando ao lado — as duas direções confirmadas).
+- [x] **Wiring real feito** (antes só existia o core isolado) — `main/index.ts` inicia a captura
+  certa (monitor→exclude Discord, janela→include árvore do hwnd) ao começar a transmissão, abre
+  canal "audio" por espectador, manda os pacotes Opus no loop. Viewer (`useNativeStream.ts`)
+  decodifica com `AudioDecoder` (WebCodecs) e injeta num `MediaStreamTrackGenerator` de áudio na
+  mesma `MediaStream` do vídeo — `hasAudio` reflete de verdade agora (era `false` fixo antes).
+- [x] **Diagnóstico adicionado**: `AudioCaptureCore::LastRms()` (RMS do PCM cru, exposto como
+  `getAudioRms()` no addon) — só pra validar de verdade se um modo de exclusão/inclusão tá
+  filtrando o processo certo, comparando amplitude com/sem filtro enquanto uma fonte conhecida
+  toca (não é usado no caminho de produção).
+- [x] **Causa raiz real do "Discord não bloqueia" achada com dado de verdade** (log de
+  `audioRms` por tick, comparado com o amigo falando na call): RMS ficava perto de 0 na maior
+  parte do tempo e subia (até 0.178) exatamente quando o amigo falava — a exclusão de
+  `Discord.exe` tava "ativa" (PID resolvido certo) mas não filtrava a voz da call. Causa: usuário
+  usa **NVIDIA Broadcast** como dispositivo de SAÍDA do Discord (efeitos/remoção de eco) — Discord
+  manda áudio pro dispositivo VIRTUAL do Broadcast, e é o **processo do Broadcast** quem renderiza
+  de verdade no dispositivo físico (confirmado: `NVIDIA Broadcast.exe` tem a MESMA arquitetura
+  multi-processo do Discord, com seu próprio `audio.mojom.AudioService` filho da raiz). Do ponto
+  de vista do WASAPI, quem "fala" no dispositivo padrão é o Broadcast, não o Discord — excluir
+  `Discord.exe` nunca tocava nisso.
+- [x] **Fix**: `NATIVE_AUDIO_EXCLUDE_CANDIDATES = ["NVIDIA Broadcast.exe", "Discord.exe"]` — tenta
+  cada candidato em ordem, usa o primeiro que resolver um PID de verdade (`main/index.ts`). Testado
+  isolado: `FindProcessIdByName("NVIDIA Broadcast.exe")` resolve a raiz certa (PID 20324, mesma
+  lógica de árvore que já funcionava pro Discord). **Confirmado pelo usuário em call real**: era
+  isso mesmo, exclusão do Broadcast resolve o vazamento de voz.
+- [x] Log de diagnóstico (`audioRms` no log periódico de 1s de `runNativeTransportLoop`) — foi
+  essencial pra achar essa causa (a RMS subindo em sincronia com a fala do amigo, mesmo com
+  "exclusão ativa", provou que o filtro errava o processo, não que a exclusão em si não
+  funcionasse). Mantido no código pra debug futuro.
+- **Sem UI ainda pra escolher o processo a excluir** — lista fixa de candidatos no código. Se o
+  usuário trocar de setup (outro software de efeito de áudio, ex. Voicemeeter), precisa adicionar
+  na lista manualmente por ora.
+
 ## ✅ Demanda concluída (2026-08-25): captura de janela no pipeline nativo
 
 Pedido original: "encoder nativo também pra janelas, não só monitor". **Fechada** — usuário

@@ -24,6 +24,7 @@ export function useNativeStream(roomId: string) {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.Connecting);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<StreamStats | null>(null);
+  const [hasAudio, setHasAudio] = useState(false);
   const [playoutDelayMs, setPlayoutDelayMsState] = useState(PLAYOUT_DELAY_DEFAULT_MS);
   const [quality, setQualityState] = useState<NativeQualityTier>("high");
   // `sendWhenOpen` de dentro do useEffect não é visível pro `setQuality` exposto no retorno do
@@ -107,7 +108,55 @@ export function useNativeStream(roomId: string) {
       sendWhenOpen({ type: "ice", candidate: event.candidate.candidate, mid: event.candidate.sdpMid ?? "0" });
     };
 
+    // Compartilhado entre vídeo e áudio — os dois canais podem abrir em qualquer ordem (áudio é
+    // opcional, só existe se a captura nativa do host tiver conseguido inicializar, ver
+    // AudioCaptureCore.h/main/index.ts), então nenhum dos dois branches abaixo pode assumir que é
+    // o primeiro a criar o `MediaStream` do `<video>`.
+    const mediaStream = new MediaStream();
+
     pc.ondatachannel = (event) => {
+      if (event.channel.label === "audio") {
+        const channel = event.channel;
+        channel.binaryType = "arraybuffer";
+
+        const generator = new MediaStreamTrackGenerator<AudioData>({ kind: "audio" });
+        const writer = generator.writable.getWriter();
+        mediaStream.addTrack(generator);
+        if (videoRef.current) videoRef.current.srcObject = mediaStream;
+        setHasAudio(true);
+
+        // Opus não tem conceito de keyframe/GOP como vídeo — todo pacote decodifica sozinho a
+        // partir do seguinte, por isso `type: "key"` sempre (é o único tipo que faz sentido pro
+        // WebCodecs `EncodedAudioChunk` de áudio). Sem buffer de jitter próprio aqui (diferente do
+        // vídeo) — escreve assim que decodifica; o pipeline de áudio do navegador já lida com o
+        // ritmo de reprodução a partir do timestamp de cada `AudioData`.
+        const decoder = new AudioDecoder({
+          output: (audioData) => {
+            writer.write(audioData).catch(() => audioData.close());
+          },
+          error: () => {
+            // eslint-disable-next-line no-console
+            console.error("[native-stream] erro no AudioDecoder");
+          },
+        });
+        decoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: 2 });
+
+        channel.onmessage = (event) => {
+          const buffer = event.data as ArrayBuffer;
+          if (buffer.byteLength < 8) return;
+          const view = new DataView(buffer);
+          const timestampUs = Number(view.getBigUint64(0, true));
+          const payload = new Uint8Array(buffer, 8);
+
+          try {
+            decoder.decode(new EncodedAudioChunk({ type: "key", timestamp: timestampUs, data: payload }));
+          } catch {
+            // Pacote rejeitado (raro) — o próximo já se recupera sozinho, sem GOP pra esperar.
+          }
+        };
+        return;
+      }
+
       if (event.channel.label !== "video") return;
       const channel = event.channel;
       channel.binaryType = "arraybuffer";
@@ -121,10 +170,8 @@ export function useNativeStream(roomId: string) {
       // EncoderCore.cpp sobre VBV).
       const generator = new MediaStreamTrackGenerator<VideoFrame>({ kind: "video" });
       const writer = generator.writable.getWriter();
-      if (videoRef.current) {
-        videoRef.current.srcObject = new MediaStream([generator]);
-        videoRef.current.muted = true; // sem áudio nesse caminho, mesmo motivo do CaptureCore
-      }
+      mediaStream.addTrack(generator);
+      if (videoRef.current) videoRef.current.srcObject = mediaStream;
 
       let gotFirstFrame = false;
       let width = 0;
@@ -313,7 +360,7 @@ export function useNativeStream(roomId: string) {
     connectionState,
     error,
     stats,
-    hasAudio: false,
+    hasAudio,
     playoutDelayMs,
     setPlayoutDelayMs: applyPlayoutDelay,
     quality,

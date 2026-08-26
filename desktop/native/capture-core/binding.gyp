@@ -11,6 +11,7 @@
             "src/EncoderCore.cpp",
             "src/SoftwareEncoderCore.cpp",
             "src/CodecApiHelper.cpp",
+            "src/AudioCaptureCore.cpp",
             "vendor/nvenc/NvEncoder.cpp",
             "vendor/nvenc/NvEncoderD3D11.cpp",
             "../transport-core/src/TransportCore.cpp"
@@ -20,7 +21,8 @@
             "vendor/nvenc",
             "vendor/nvenc/Interface",
             "../transport-core/src",
-            "C:/vcpkg/installed/x64-windows/include"
+            "C:/vcpkg/installed/x64-windows/include",
+            "C:/vcpkg/installed/x64-windows/include/opus"
           ],
           "libraries": [
             "d3d11.lib",
@@ -32,8 +34,11 @@
             "windowsapp.lib",
             "mfplat.lib",
             "mfuuid.lib",
+            "propsys.lib",
+            "mmdevapi.lib",
             "<(module_root_dir)/vendor/nvenc/Lib/nvencodeapi.lib",
-            "C:/vcpkg/installed/x64-windows/lib/datachannel.lib"
+            "C:/vcpkg/installed/x64-windows/lib/datachannel.lib",
+            "C:/vcpkg/installed/x64-windows/lib/opus.lib"
           ],
           "msvs_settings": {
             "VCCLCompilerTool": {
@@ -49,7 +54,8 @@
                 "C:/vcpkg/installed/x64-windows/bin/juice.dll",
                 "C:/vcpkg/installed/x64-windows/bin/srtp2.dll",
                 "C:/vcpkg/installed/x64-windows/bin/libcrypto-3-x64.dll",
-                "C:/vcpkg/installed/x64-windows/bin/libssl-3-x64.dll"
+                "C:/vcpkg/installed/x64-windows/bin/libssl-3-x64.dll",
+                "C:/vcpkg/installed/x64-windows/bin/opus.dll"
               ]
             }
           ]

@@ -91,6 +91,23 @@ bool TransportCore::AddVideoChannel() {
     }
 }
 
+// Canal separado do de vídeo — o cliente distingue os dois pelo `label()` do DataChannel
+// (`"video"`/`"audio"`) no `ondatachannel`, ver useNativeStream.ts. Opcional: só chamado quando
+// o áudio nativo está habilitado (`main/index.ts`), sessão de vídeo puro nunca chama isso.
+bool TransportCore::AddAudioChannel() {
+    if (!pc_) return false;
+
+    try {
+        audioChannel_ = pc_->createDataChannel("audio");
+        fprintf(stderr, "[TransportCore] AddAudioChannel() ok\n");
+        return true;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[TransportCore] AddAudioChannel() lançou: %s\n", e.what());
+        audioChannel_.reset();
+        return false;
+    }
+}
+
 bool TransportCore::CreateOffer() {
     if (!pc_) return false;
     try {
@@ -213,6 +230,21 @@ bool TransportCore::SendVideoFrame(const uint8_t* data, size_t size, uint64_t ti
         std::memcpy(message.data() + 9, data, size);
 
         videoChannel_->send(message);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+// Formato no DataChannel: [8 bytes: timestamp µs, little-endian][payload: pacote Opus cru].
+bool TransportCore::SendAudioFrame(const uint8_t* data, size_t size, uint64_t timestampUs) {
+    if (!audioChannel_ || !audioChannel_->isOpen()) return false;
+
+    try {
+        rtc::binary message(8 + size);
+        std::memcpy(message.data(), &timestampUs, 8);
+        std::memcpy(message.data() + 8, data, size);
+        audioChannel_->send(message);
         return true;
     } catch (const std::exception&) {
         return false;
