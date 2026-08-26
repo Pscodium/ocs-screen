@@ -57,6 +57,16 @@ fechados antes deste.
   errada nunca autentica (fica em loop de `allocate` sem sucesso, sem vazar diferença de erro que
   ajudasse a adivinhar a senha). Confirma que o HMAC-SHA1 compartilhado entre backend e coturn
   bate certinho na prática, não só na conta manual.
+- [x] **`docker-compose.prod.yml` (EasyPanel) tava sem o coturn** — só o `docker-compose.yml` de
+  dev tinha sido atualizado; o de prod é um arquivo SEPARADO (build a partir de Dockerfile,
+  `ports:` explícitos em vez de `network_mode: host`, já tinha `livekit`/`backend`/`viewer`).
+  Achado real: o LiveKit em prod **já usa a porta 3478/udp** (TURN embutido dele, `turn.enabled`
+  no `livekit.yaml` gerado inline) — nosso coturn não pode escutar a mesma porta na mesma VPS.
+  Serviço `coturn` novo adicionado escutando **3479** (não 3478), `ports:` explícitos (mesmo
+  padrão do bloco LiveKit já existente, não host networking), env `TURN_SECRET`/`TURN_REALM`
+  repassadas pro `backend` também (precisam ser o MESMO valor nos dois serviços). Validado só com
+  `docker compose -f docker-compose.prod.yml config` (parse correto, portas/comando batendo) —
+  ainda não testado rodando de verdade em prod (usuário vai subir).
 - **Ainda não testado**: cliente atrás de NAT simétrico de verdade (só a autenticação/alocação foi
   validada, não uma sessão relay completa host↔espectador em rede restritiva real) — precisa de 2
   redes diferentes de verdade pra confirmar; e forçar queda do WS matando o processo do backend no
