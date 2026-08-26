@@ -64,9 +64,18 @@ fechados antes deste.
   no `livekit.yaml` gerado inline) — nosso coturn não pode escutar a mesma porta na mesma VPS.
   Serviço `coturn` novo adicionado escutando **3479** (não 3478), `ports:` explícitos (mesmo
   padrão do bloco LiveKit já existente, não host networking), env `TURN_SECRET`/`TURN_REALM`
-  repassadas pro `backend` também (precisam ser o MESMO valor nos dois serviços). Validado só com
-  `docker compose -f docker-compose.prod.yml config` (parse correto, portas/comando batendo) —
-  ainda não testado rodando de verdade em prod (usuário vai subir).
+  repassadas pro `backend` também (precisam ser o MESMO valor nos dois serviços).
+- [x] **Validado rodando de verdade em prod, de fora (internet real, não localhost)** —
+  `turnutils_uclient` contra `turn.pscodium.dev:3479`: autenticação aceita com a credencial gerada
+  pelo `TURN_SECRET` real do usuário, `allocate` → `success`.
+- [x] **Bug real de config encontrado e corrigido**: primeira alocação devolveu `172.20.0.3` (IP
+  INTERNO do container Docker) como endereço de relay — um espectador de verdade nunca conseguiria
+  alcançar isso de fora. Causa: `TURN_EXTERNAL_IP` não estava setado no serviço `coturn` do
+  EasyPanel. Corrigido: usuário setou `TURN_EXTERNAL_IP=<IP público da VPS>` (só o IP público, sem
+  par "público/privado" — mais robusto pra esse ambiente, já que o IP interno do container muda a
+  cada redeploy no EasyPanel, quebraria a config toda vez). Revalidado depois do fix: relay
+  devolvido agora é o IP público de verdade (`72.60.245.1:<porta>`) — TURN de prod confirmado
+  funcional de ponta a ponta.
 - **Ainda não testado**: cliente atrás de NAT simétrico de verdade (só a autenticação/alocação foi
   validada, não uma sessão relay completa host↔espectador em rede restritiva real) — precisa de 2
   redes diferentes de verdade pra confirmar; e forçar queda do WS matando o processo do backend no
