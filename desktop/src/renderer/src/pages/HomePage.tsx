@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { SettingsForm } from "../components/SettingsForm";
 import { LiveCard } from "../components/LiveCard";
 import { Logo } from "../components/Logo";
 import { SourcePicker } from "../components/SourcePicker";
@@ -20,7 +19,8 @@ export function HomePage({ broadcast }: HomePageProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("share");
   const [watchingRoomId, setWatchingRoomId] = useState<string | null>(null);
-  const { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec } = broadcast;
+  const { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec, toggleCursor } =
+    broadcast;
 
   if (state === "live" && info) {
     return (
@@ -31,6 +31,7 @@ export function HomePage({ broadcast }: HomePageProps) {
         onSwapSource={swapSource}
         onOptimizeCodec={optimizeCodec}
         optimizingCodec={optimizingCodec}
+        onToggleCursor={toggleCursor}
       />
     );
   }
@@ -41,6 +42,7 @@ export function HomePage({ broadcast }: HomePageProps) {
 
   return (
     <div className="home-page">
+      <Logo size={40} />
       <h1>Screen Share</h1>
       <p className="subtitle">Compartilhe sua tela em tempo real</p>
 
@@ -55,20 +57,6 @@ export function HomePage({ broadcast }: HomePageProps) {
 
       {tab === "share" ? (
         <>
-          <SettingsForm settings={settings} onChange={setSettings} />
-
-          <label className="settings-field room-slug-field">
-            <span>Nome da sala (opcional)</span>
-            <input
-              className="slug-input"
-              type="text"
-              placeholder="ex.: reuniao-time"
-              value={slug}
-              onChange={(e) => setSlug(e.target.value)}
-              maxLength={32}
-            />
-          </label>
-
           {error && <p className="error-text">{error}</p>}
 
           <button className="btn-primary" onClick={() => setPickerOpen(true)} disabled={state === "starting"}>
@@ -81,6 +69,10 @@ export function HomePage({ broadcast }: HomePageProps) {
 
       {pickerOpen && (
         <SourcePicker
+          settings={settings}
+          onSettingsChange={setSettings}
+          slug={slug}
+          onSlugChange={setSlug}
           onCancel={() => setPickerOpen(false)}
           onSelect={(source) => {
             setPickerOpen(false);

@@ -1,6 +1,9 @@
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ConnectionState } from "livekit-client";
 import { useRoomStream } from "../hooks/useRoomStream";
+import { useNativeStream } from "../hooks/useNativeStream";
+import { fetchRoomInfo } from "../services/backend";
 import { VideoPlayer } from "../components/VideoPlayer";
 
 export function WatchPage() {
@@ -8,12 +11,83 @@ export function WatchPage() {
 
   if (!roomId) return <StatusMessage text="Link inválido." />;
 
-  return <WatchRoom roomId={roomId} />;
+  return <WatchRoomGate roomId={roomId} />;
+}
+
+// Precisa saber `nativeMode` (ver docs/NATIVE_CAPTURE.md Fase 4) ANTES de escolher entre
+// useRoomStream (LiveKit) e useNativeStream (RTCPeerConnection cru) — os dois falam protocolos de
+// sinalização diferentes, não dá pra tentar um e cair pro outro depois de já ter começado.
+function WatchRoomGate({ roomId }: { roomId: string }) {
+  const [nativeMode, setNativeMode] = useState<boolean | null>(null);
+  const [gateError, setGateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRoomInfo(roomId)
+      .then((info) => {
+        if (!cancelled) setNativeMode(info.nativeMode);
+      })
+      .catch((err) => {
+        if (!cancelled) setGateError(err instanceof Error ? err.message : "Erro ao conectar.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId]);
+
+  if (gateError) return <StatusMessage text={gateError} />;
+  if (nativeMode === null) return <StatusMessage text="Conectando à transmissão..." overlay />;
+  return nativeMode ? <NativeWatchRoom roomId={roomId} /> : <WatchRoom roomId={roomId} />;
+}
+
+function NativeWatchRoom({ roomId }: { roomId: string }) {
+  const { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs, quality, setQuality } =
+    useNativeStream(roomId);
+  return (
+    <WatchRoomView
+      phase={phase}
+      connectionState={connectionState}
+      error={error}
+      videoRef={videoRef}
+      stats={stats}
+      hasAudio={hasAudio}
+      playoutDelayMs={playoutDelayMs}
+      setPlayoutDelayMs={setPlayoutDelayMs}
+      quality={quality}
+      setQuality={setQuality}
+    />
+  );
 }
 
 function WatchRoom({ roomId }: { roomId: string }) {
   const { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs } =
     useRoomStream(roomId);
+  return (
+    <WatchRoomView
+      phase={phase}
+      connectionState={connectionState}
+      error={error}
+      videoRef={videoRef}
+      stats={stats}
+      hasAudio={hasAudio}
+      playoutDelayMs={playoutDelayMs}
+      setPlayoutDelayMs={setPlayoutDelayMs}
+    />
+  );
+}
+
+function WatchRoomView({
+  phase,
+  connectionState,
+  error,
+  videoRef,
+  stats,
+  hasAudio,
+  playoutDelayMs,
+  setPlayoutDelayMs,
+  quality,
+  setQuality,
+}: ReturnType<typeof useRoomStream> & Partial<Pick<ReturnType<typeof useNativeStream>, "quality" | "setQuality">>) {
 
   if (phase === "error") return <StatusMessage text={error ?? "Erro ao conectar."} />;
   if (phase === "ended") return <StatusMessage text="A transmissão foi encerrada." />;
@@ -31,6 +105,8 @@ function WatchRoom({ roomId }: { roomId: string }) {
         hasAudio={hasAudio}
         playoutDelayMs={playoutDelayMs}
         onPlayoutDelayChange={setPlayoutDelayMs}
+        quality={quality}
+        onQualityChange={setQuality}
       />
     </div>
   );
