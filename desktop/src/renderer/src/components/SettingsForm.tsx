@@ -3,6 +3,9 @@ import { FPS_OPTIONS, QUALITY_OPTIONS, RESOLUTION_OPTIONS, type StreamSettings }
 interface SettingsFormProps {
   settings: StreamSettings;
   onChange: (settings: StreamSettings) => void;
+  // Usado no rodapé do SourcePicker: resolução/FPS/qualidade viram uma linha de 3 colunas em vez
+  // de empilhados, já que ali disputam espaço com a grade de fontes.
+  compact?: boolean;
 }
 
 const resolutionLabels: Record<string, string> = {
@@ -21,9 +24,9 @@ const qualityLabels: Record<string, string> = {
   max: "Máxima",
 };
 
-export function SettingsForm({ settings, onChange }: SettingsFormProps) {
+export function SettingsForm({ settings, onChange, compact }: SettingsFormProps) {
   return (
-    <div className="settings-form">
+    <div className={`settings-form ${compact ? "settings-form-row" : ""}`}>
       <label className="settings-field">
         <span>Resolução</span>
         <select
@@ -103,63 +106,70 @@ export function SettingsForm({ settings, onChange }: SettingsFormProps) {
         </span>
       </label>
 
-      <label className="toggle-row">
-        <span className="toggle-row-label">
-          Pipeline nativo (beta)
-          <span className="toggle-row-hint">
-            Encode NVENC nativo em vez do encoder por software do navegador — só monitor, sem troca
-            de fonte ao vivo ainda
-          </span>
-        </span>
-        <span className="toggle-switch">
-          <input
-            type="checkbox"
-            checked={settings.nativeTransport}
-            onChange={(e) => onChange({ ...settings, nativeTransport: e.target.checked })}
-          />
-          <span className="toggle-slider" />
-        </span>
-      </label>
+      <details className="settings-advanced">
+        <summary className="settings-advanced-summary">Avançado</summary>
 
-      {settings.nativeTransport && (
         <label className="toggle-row">
           <span className="toggle-row-label">
-            Usar HEVC (beta)
+            Pipeline nativo (beta)
             <span className="toggle-row-hint">
-              Só com pipeline nativo. Cai pra H.264 sozinho se a GPU/navegador do espectador não
-              suportar
+              Encode NVENC nativo em vez do encoder por software do navegador — só monitor, sem
+              troca de fonte ao vivo ainda
             </span>
           </span>
           <span className="toggle-switch">
             <input
               type="checkbox"
-              checked={settings.preferHevc}
-              onChange={(e) => onChange({ ...settings, preferHevc: e.target.checked, preferAv1: false })}
+              checked={settings.nativeTransport}
+              onChange={(e) => onChange({ ...settings, nativeTransport: e.target.checked })}
             />
             <span className="toggle-slider" />
           </span>
         </label>
-      )}
 
-      {settings.nativeTransport && (
-        <label className="toggle-row">
-          <span className="toggle-row-label">
-            Usar AV1 (beta)
-            <span className="toggle-row-hint">
-              Só com pipeline nativo. Precisa de GPU NVIDIA RTX 40+ pra encoder por hardware (raro) —
-              cai pra H.264 sozinho se a GPU/navegador do espectador não suportar
-            </span>
-          </span>
-          <span className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={settings.preferAv1}
-              onChange={(e) => onChange({ ...settings, preferAv1: e.target.checked, preferHevc: false })}
-            />
-            <span className="toggle-slider" />
-          </span>
-        </label>
-      )}
+        {/* Sempre no DOM (não condicional) — só a altura anima via grid-template-rows (0fr↔1fr).
+            Antes essas 2 linhas entravam/saíam de repente ao ligar "Pipeline nativo", empurrando
+            o resto do formulário (e o botão "Compartilhar tela" embaixo) de golpe. */}
+        <div className={`settings-advanced-extra ${settings.nativeTransport ? "settings-advanced-extra-open" : ""}`}>
+          <div className="settings-advanced-extra-inner">
+            <label className="toggle-row">
+              <span className="toggle-row-label">
+                Usar HEVC (beta)
+                <span className="toggle-row-hint">
+                  Só com pipeline nativo. Cai pra H.264 sozinho se a GPU/navegador do espectador não
+                  suportar
+                </span>
+              </span>
+              <span className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={settings.preferHevc}
+                  onChange={(e) => onChange({ ...settings, preferHevc: e.target.checked, preferAv1: false })}
+                />
+                <span className="toggle-slider" />
+              </span>
+            </label>
+
+            <label className="toggle-row">
+              <span className="toggle-row-label">
+                Usar AV1 (beta)
+                <span className="toggle-row-hint">
+                  Só com pipeline nativo. Precisa de GPU NVIDIA RTX 40+ pra encoder por hardware
+                  (raro) — cai pra H.264 sozinho se a GPU/navegador do espectador não suportar
+                </span>
+              </span>
+              <span className="toggle-switch">
+                <input
+                  type="checkbox"
+                  checked={settings.preferAv1}
+                  onChange={(e) => onChange({ ...settings, preferAv1: e.target.checked, preferHevc: false })}
+                />
+                <span className="toggle-slider" />
+              </span>
+            </label>
+          </div>
+        </div>
+      </details>
     </div>
   );
 }

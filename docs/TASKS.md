@@ -36,10 +36,68 @@ trabalho dele (§Não Objetivos): a lista abaixo é essa lista, com o estado rea
 (nem tudo é "zero" — algumas dessas coisas já existem no caminho LiveKit e precisam só chegar no
 caminho nativo, outras não existem em lugar nenhum ainda).
 
-- **Interface gráfica** — funcional, mas nível "dev": HUD de debug (codec/fps/stats) exposto
-  direto na UI principal em vez de escondido atrás de um modo desenvolvedor, sem passe de
-  polimento visual dedicado desde o Sprint 2. CLAUDE.md pede minimalismo (não é pra virar Discord),
-  mas dá pra melhorar hierarquia/acabamento sem inchar escopo.
+- [x] **Interface gráfica (2ª passada — reestrutura da tela inicial)** — usuário reportou que a
+  pilha de selects+toggles quebrava o tamanho da janela principal (`HomePage`, 440×720 fixa,
+  não-redimensionável — `NORMAL_SIZE` em `main/index.ts`). Causa real: configs (resolução/FPS/
+  qualidade/cursor/texto/beta) e o formulário de fonte (`SourcePicker`) viviam em DUAS telas
+  separadas de tamanhos diferentes, cramando tudo numa janela pequena e fixa em vez de seguir o
+  mockup original de `CLAUDE.md` (Monitor/Janela/Qualidade/FPS numa tela só). Corrigido: `HomePage`
+  volta a ser só título/abas/botão "Compartilhar tela" (mockup original); `SettingsForm` (resolução/
+  FPS/qualidade em linha via `settings-form-row`, mais nome da sala) migrou pro rodapé do
+  `SourcePicker`, que já abre numa janela maior (720×640, `PICKER_SIZE`) com espaço de sobra. Toggle
+  "Avançado" da 1ª passada (pipeline nativo/HEVC/AV1) continua dentro desse formulário, só mudou de
+  endereço.
+- [x] **Bug real achado rodando o app de verdade** (Playwright `_electron`, não só compilação) —
+  `NORMAL_SIZE` baixado pra 400 (pedido do usuário, tela ficou bem menor sem as configs) quebrou a
+  aba "Assistir": conteúdo mede 378px contra 400 disponíveis, sobrava scrollbar visível de ~16px só
+  pro texto "Nenhuma transmissão ativa". Subido pra 420 (medido de novo, sem overflow nas duas
+  abas). Screenshots conferidos: tela inicial, aba assistir, picker (config em linha) e picker com
+  "Avançado" aberto — todos limpos.
+- Sobra menor, não corrigida: grade de fontes no `SourcePicker` deixa bastante espaço vazio entre
+  as thumbnails e o rodapé de config quando só tem 1-2 telas (a `PICKER_SIZE` de 720×640 foi
+  dimensionada pra caber telas+janelas+config todos juntos, não encolhe com poucas fontes) —
+  cosmético, não quebra nada, não bloqueou o fechamento desta passada.
+- [x] **2 bugs reais achados testando a aba "Janelas" de verdade** (pedido do usuário — 8 janelas
+  reais abertas, não só 1-2 telas):
+  1. **Grid blowout clássico do CSS Grid** — `.picker-tile-label` tem `white-space: nowrap`; um
+     nome de janela sem espaço (`RzMonitorForegroundWindow`) virava o min-content do item do grid,
+     esticando o track de 150px além do previsto e quebrando o layout de 4 colunas. Fix:
+     `min-width: 0` em `.picker-tile` (deixa o ellipsis do label cortar de verdade em vez de inflar
+     a coluna).
+  2. **Scroll horizontal fantasma** mesmo depois do fix acima (~60px de sobra) — causa é uma regra
+     da spec CSS: `overflow-y: auto` sozinho faz `overflow-x` (que tava no default `visible`)
+     virar `auto` também, e o paradoxo grid+scrollbar-vertical (a barra vertical reduz a largura
+     disponível, o grid recalcula colunas, o recálculo ainda sobra alguns px) expunha esse eixo.
+     Grid nunca devia rolar de lado (só quebra linha) — fix: `overflow-x: hidden` explícito em
+     `.picker-body`.
+  Confirmado com medição real (Playwright `_electron`, `scrollWidth`/`clientWidth` antes/depois) e
+  screenshot: 8 janelas quebram em 2 linhas limpas, só scroll vertical, sem corte lateral.
+  Testado também ligar "Pipeline nativo" com Avançado aberto (HEVC/AV1 aparecendo) — grid encolhe e
+  ganha scroll próprio quando o rodapé cresce, comportamento correto, nada quebra.
+- [x] **3 pedidos diretos do usuário depois de ver os screenshots**:
+  1. Ligar "Pipeline nativo" empurrava HEVC/AV1 de golpe (entra/sai condicional no React) — trocado
+     pra sempre no DOM, altura anima via CSS puro (`grid-template-rows: 0fr↔1fr`,
+     `settings-advanced-extra`/`-open`/`-inner` em `styles.css`) — sem JS medindo pixel, funciona
+     com qualquer altura de conteúdo.
+  2. "Janelas" tinha imagem de fallback quebrada vazando texto pra fora do card, e tinha janelas
+     sem UI real na lista (`RzMonitorForegroundWindow`, helpers do Raycast) — **sem hardcodar nome
+     de app**: filtro genérico em `capture:list-sources` (`main/index.ts`) descarta janelas cuja
+     `thumbnail.isEmpty()` (o DWM não tem conteúdo visual nenhum pra tirar miniatura dessas —
+     mesmo sinal pra qualquer app). Contagem real caiu de 8→7 janelas depois do filtro (confirmado
+     rodando). Defesa extra no `SourceTile` (`SourcePicker.tsx`): `onError` no `<img>` troca pra um
+     placeholder controlado (ícone do app ou inicial do nome) em vez do ícone de imagem quebrada
+     nativo do navegador (que ignora overflow/object-fit e desenha o `alt` por cima do card).
+  3. Botão "Voltar" (seta + texto) no header do `SourcePicker`, ao lado do X — mesmo handler
+     (`onCancel`), só mais explícito que só o X pra "sair pro menu principal".
+  `tsc --noEmit` limpo, tudo revalidado com screenshot real (Playwright `_electron`) depois dos 3
+  fixes.
+- [x] **Vazamento de texto ainda sobrava** (usuário mandou screenshot real apontando) — mesma causa
+  do grid blowout já corrigido, só um nível mais fundo: `.picker-tile-label` é item FLEX (não
+  grid) dentro de `.picker-tile` (coluna) com `white-space:nowrap` — `min-width:0` no pai não
+  cobre o próprio label, que tem seu próprio `min-width:auto` valendo como piso mesmo com
+  `align-items:stretch`. Fix: `min-width:0` + `width:100%` direto no `.picker-tile-label`. Bônus
+  pedido junto: `title={source.name}` no span — nome completo aparece em tooltip nativo no hover,
+  sem precisar caber na largura do card. Revalidado com screenshot.
 - **WebRTC** — a base (ICE/DTLS-SRTP via libdatachannel) já é o que existe hoje no pipeline
   nativo; o que falta pra "completo" nesse sentido é infraestrutura de produção: **TURN** nunca foi
   plugado (só STUN público do Google, usado só pra validar — CLAUDE.md §Infraestrutura já previa

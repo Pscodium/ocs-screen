@@ -72,7 +72,12 @@ app.commandLine.appendSwitch("disable-gpu-sandbox");
 
 const ICON_PATH = join(__dirname, "../../build/icon.png");
 
-const NORMAL_SIZE = { width: 440, height: 720 };
+// Altura baixada de 720 pra 420 — a tela inicial (`HomePage`) voltou a ser só título/abas/botão
+// (configs migraram pro rodapé do `SourcePicker`, que tem sua própria janela maior), 720 sobrava
+// bem mais que o conteúdo real precisa. 420 (não 400) porque a aba "Assistir" (`RoomsBrowser`,
+// estado vazio "Nenhuma transmissão ativa") mede 378px de conteúdo real contra 400 — medido com
+// Playwright `_electron`, sobrava scrollbar por ~16px em 400.
+const NORMAL_SIZE = { width: 440, height: 420 };
 // Em dev, o widget cresce um pouco pra caber a HUD de estatísticas sempre visível (sem hover) —
 // só existe em `import.meta.env.DEV` no renderer, então em produção o widget continua 340×140.
 const WIDGET_SIZE = app.isPackaged ? { width: 340, height: 140 } : { width: 340, height: 320 };
@@ -405,15 +410,25 @@ ipcMain.handle("capture:list-sources", async () => {
     thumbnailSize: { width: 300, height: 200 },
     fetchWindowIcons: true,
   });
-  return sources.map((source) => ({
-    id: source.id,
-    name: source.name,
-    type: source.id.startsWith("screen:") ? "screen" : ("window" as const),
-    thumbnailDataUrl: source.thumbnail.toDataURL(),
-    // Ícone do app dono da janela — só existe pra fontes do tipo "window" (fetchWindowIcons:
-    // true acima). Discord mostra isso sobre a miniatura, ajuda a reconhecer a janela mais rápido.
-    appIconDataUrl: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null,
-  }));
+  return sources
+    .filter((source) => {
+      // Janelas sem UI real (utilitários invisíveis tipo helper de tray, processo de shutdown,
+      // etc. — Raycast e alguns overlays de driver criam várias dessas) não têm conteúdo visual
+      // nenhum pro DWM tirar miniatura — thumbnail vem completamente vazia. Filtra por ISSO
+      // (genérico, qualquer app pode ter janelas assim), não por nome de app específico. Telas
+      // sempre têm thumbnail válida, não são afetadas.
+      if (source.id.startsWith("screen:")) return true;
+      return !source.thumbnail.isEmpty();
+    })
+    .map((source) => ({
+      id: source.id,
+      name: source.name,
+      type: source.id.startsWith("screen:") ? "screen" : ("window" as const),
+      thumbnailDataUrl: source.thumbnail.toDataURL(),
+      // Ícone do app dono da janela — só existe pra fontes do tipo "window" (fetchWindowIcons:
+      // true acima). Discord mostra isso sobre a miniatura, ajuda a reconhecer a janela mais rápido.
+      appIconDataUrl: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null,
+    }));
 });
 
 // Captura nativa (DXGI Desktop Duplication + Direct3D 11) — alternativa ao WGC-via-Chromium do

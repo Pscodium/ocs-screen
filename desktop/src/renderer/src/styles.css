@@ -162,6 +162,25 @@ body {
   color: var(--muted);
 }
 
+/* Rodapé compacto do SourcePicker (resolução/FPS/qualidade lado a lado em vez de empilhados) —
+   ver comentário em SourcePicker.tsx sobre por que essas configs moraram pra lá. */
+.settings-form-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0;
+}
+
+.settings-form-row > .settings-field {
+  flex: 1 1 140px;
+  gap: 0.3rem;
+}
+
+.settings-form-row .toggle-row,
+.settings-form-row .settings-advanced {
+  flex-basis: 100%;
+}
+
 .settings-field select {
   appearance: none;
   background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%238a8f98' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
@@ -270,6 +289,81 @@ body {
 .toggle-switch input:focus-visible + .toggle-slider {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+/* Configurações beta (pipeline nativo/HEVC/AV1) recolhidas por padrão — não devem competir
+   visualmente com resolução/FPS/qualidade, que são o caminho normal do usuário. */
+.settings-advanced {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.15rem 0.7rem;
+}
+
+.settings-advanced[open] {
+  padding-bottom: 0.85rem;
+}
+
+.settings-advanced[open] .settings-advanced-summary {
+  margin-bottom: 0.6rem;
+}
+
+.settings-advanced .toggle-row + .toggle-row {
+  margin-top: 0.85rem;
+}
+
+/* Trick de grid-template-rows (0fr↔1fr) — anima altura de um conteúdo de altura variável sem JS
+   medindo pixels. O wrapper externo é sempre display:grid com 1 linha/coluna implícita; o interno
+   precisa de min-height:0 (senão o item do grid não respeita o 0fr) + overflow:hidden (esconde o
+   conteúdo enquanto a linha ainda tá encolhendo). */
+.settings-advanced-extra {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease;
+}
+
+.settings-advanced-extra-open {
+  grid-template-rows: 1fr;
+}
+
+.settings-advanced-extra-inner {
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.settings-advanced-extra-open .settings-advanced-extra-inner {
+  margin-top: 0.85rem;
+}
+
+.settings-advanced-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 0.7rem 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  user-select: none;
+}
+
+.settings-advanced-summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-advanced-summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 0.9em;
+  transition: transform 0.15s ease;
+}
+
+.settings-advanced[open] .settings-advanced-summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-advanced-summary:hover {
+  color: var(--text);
 }
 
 /* Buttons */
@@ -598,15 +692,36 @@ body {
 .picker-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 0.75rem;
   padding: 1rem 1.25rem;
   flex-shrink: 0;
 }
 
 .picker-header h2 {
+  flex: 1;
   margin: 0;
   font-size: 1rem;
   font-weight: 700;
+}
+
+.picker-back {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.4rem 0.6rem 0.4rem 0.4rem;
+  border-radius: 6px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.picker-back:hover {
+  background: var(--surface-2);
+  color: var(--text);
 }
 
 .picker-close {
@@ -676,8 +791,29 @@ body {
 .picker-body {
   flex: 1;
   overflow-y: auto;
+  /* Sem isso, "overflow-x: visible" (default) computa sozinho pra "auto" só por causa do
+     overflow-y:auto (regra da spec CSS: um eixo overflow != visible força o outro a virar auto) —
+     isso expõe scroll horizontal fantasma (~60px, visto rodando com várias janelas na aba
+     "Janelas") por causa de um paradoxo grid+scrollbar (a barra vertical reduz a largura, o grid
+     recalcula colunas, e o resultado do recálculo ainda registra overflow horizontal por uns
+     pixels). O grid só devia quebrar linha, nunca rolar de lado — trava explícito. */
+  overflow-x: hidden;
   padding: 0 1.25rem 1.25rem;
   text-align: left;
+}
+
+.picker-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 0.9rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  text-align: left;
+}
+
+.picker-footer .room-slug-field {
+  max-width: 260px;
 }
 
 .picker-grid {
@@ -699,6 +835,11 @@ body {
   gap: 0.5rem;
   text-align: left;
   transition: border-color 0.08s ease, background 0.08s ease, transform 0.08s ease;
+  /* Sem isso, o item do grid herda o min-content do nome da janela (`.picker-tile-label`,
+     white-space:nowrap) como largura mínima — um nome sem espaço (ex. "RzMonitorForegroundWindow")
+     estica o track do grid além de 150px e joga a grade inteira pra scroll horizontal (grid
+     blowout). min-width:0 deixa o item encolher normalmente e o ellipsis do label fazer o trabalho. */
+  min-width: 0;
 }
 
 .picker-tile:hover {
@@ -721,6 +862,8 @@ body {
 
 .picker-thumbnail-wrap {
   position: relative;
+  overflow: hidden;
+  border-radius: 5px;
 }
 
 .picker-thumbnail {
@@ -730,6 +873,21 @@ body {
   border-radius: 5px;
   background: var(--surface-2);
   display: block;
+}
+
+.picker-thumbnail-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.picker-thumbnail-fallback-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
 }
 
 .picker-app-icon {
@@ -775,6 +933,12 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Mesma causa do grid blowout do `.picker-tile` (ver comentário lá) um nível mais fundo: como
+     item flex (coluna) com nowrap, o min-content (nome inteiro sem quebra) vira a largura mínima
+     do PRÓPRIO label mesmo esticado (align-items:stretch não anula min-width:auto) — sem isso o
+     texto vazava pra fora da caixa em vez de virar "...". */
+  min-width: 0;
+  width: 100%;
 }
 
 .picker-tile-skeleton {
@@ -829,9 +993,8 @@ body {
 }
 
 .room-slug-field {
-  /* home-page centraliza os filhos por conteúdo (align-items:center) — sem width:100% aqui, o
-     label encolhe pro tamanho do próprio conteúdo e o input fica mais estreito que os selects
-     de cima (esses vivem dentro de .settings-form, que já é width:100% explícito). */
+  /* Vive no rodapé do SourcePicker (`.picker-footer`) — sem width:100% aqui, o label encolhe pro
+     tamanho do próprio conteúdo e o input fica mais estreito que os selects de cima. */
   width: 100%;
   margin: 0 0 1.1rem;
 }
