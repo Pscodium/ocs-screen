@@ -73,18 +73,65 @@ export function useNativeStream(roomId: string) {
     const JITTER_EWMA_ALPHA = 1 / 16; // mesmo peso que RFC 3550 usa pra estimativa de jitter RTP
     const JITTER_SAFETY_MULTIPLIER = 4; // margem de segurança sobre o jitter médio medido
 
-    // STUN público como chute inicial síncrono (RTCPeerConnection não aceita config assíncrona no
-    // construtor) — `fetchIceServers()` abaixo troca pro TURN/STUN de infra própria (se
-    // configurado, ver backend `services/turn.ts`) assim que resolver, via `setConfiguration()`
-    // (aplica na PRÓXIMA gathering de ICE; como o fetch é rápido — mesma rede local do backend —
-    // isso sempre corre antes da negociação de verdade começar na prática).
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
-    fetchIceServers().then((iceServers) => {
-      if (!cancelled) pc.setConfiguration({ iceServers });
-    });
     // Setado ANTES do canal de vídeo abrir de verdade (só abre depois do SDP fechar) — o handler
     // de `ondatachannel` mais abaixo lê essa variável já com o valor certo.
     let negotiatedCodec: NativeVideoCodec = "h264";
+
+    // Compartilhado entre vídeo e áudio, e entre RECRIAÇÕES de `pc` (ver `setupPeerConnection`
+    // abaixo) — os dois canais podem abrir em qualquer ordem (áudio é opcional, só existe se a
+    // captura nativa do host tiver conseguido inicializar), então nenhum branch pode assumir que é
+    // o primeiro a criar o `MediaStream` do `<video>`. Mantém a MESMA instância entre renegociações
+    // pra não precisar reatribuir `videoRef.current.srcObject` de novo (evita um flash/reload do
+    // elemento `<video>`) — só troca as TRACKS de dentro dela.
+    const mediaStream = new MediaStream();
+    let currentVideoTrack: MediaStreamTrack | null = null;
+    let currentAudioTrack: MediaStreamTrack | null = null;
+
+    // Bug real corrigido (achado testando com um dispositivo sem decode de hardware HEVC): o host
+    // troca de codec e cria uma sessão `TransportCore` INTEIRAMENTE NOVA quando o espectador não
+    // decodifica o codec pedido (`decoderOk:false`, ver handleWsMessage abaixo e
+    // main/index.ts) — ICE ufrag/pwd e certificado DTLS ficam diferentes do offer original, não é
+    // uma renegociação de verdade da MESMA conexão. Tentar `setRemoteDescription` desse offer novo
+    // no `pc` antigo não funciona (credenciais ICE não batem). Antes disso, o hook só processava o
+    // PRIMEIRO offer e ignorava qualquer um depois — o espectador ficava "conectando..." pra
+    // sempre (o próprio bug reportado). Fix: cada offer novo recria o `RTCPeerConnection` do zero,
+    // com os MESMOS handlers religados — mesma ideia do lado do host (sessão nova por completo).
+    let pc: RTCPeerConnection | undefined;
+    let latestIceServers: RTCIceServer[] = [{ urls: "stun:stun.l.google.com:19302" }];
+    fetchIceServers().then((iceServers) => {
+      latestIceServers = iceServers;
+      if (!cancelled) pc?.setConfiguration({ iceServers });
+    });
+
+    function setupPeerConnection(): RTCPeerConnection {
+      const next = new RTCPeerConnection({ iceServers: latestIceServers });
+
+      next.onconnectionstatechange = () => {
+        if (pc !== next) return; // pc antigo sendo fechado/substituído — ignora eco tardio
+        if (next.connectionState === "connected") everConnected = true;
+        const map: Record<RTCPeerConnectionState, ConnectionState> = {
+          new: ConnectionState.Connecting,
+          connecting: ConnectionState.Connecting,
+          connected: ConnectionState.Connected,
+          disconnected: ConnectionState.Reconnecting,
+          failed: ConnectionState.Disconnected,
+          closed: ConnectionState.Disconnected,
+        };
+        setConnectionState(map[next.connectionState]);
+        if (next.connectionState === "failed" || next.connectionState === "closed") {
+          if (!cancelled) setPhase("ended");
+        }
+      };
+
+      next.onicecandidate = (event) => {
+        if (!event.candidate || pc !== next) return;
+        sendWhenOpen({ type: "ice", candidate: event.candidate.candidate, mid: event.candidate.sdpMid ?? "0" });
+      };
+
+      next.ondatachannel = handleDataChannel;
+
+      return next;
+    }
 
     // WS de sinalização (ver backend/src/services/nativeWsRelay.ts e desktop/src/main/index.ts,
     // lado espelhado do host) — substitui o REST+polling anterior.
@@ -131,40 +178,19 @@ export function useNativeStream(roomId: string) {
       };
     }
 
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "connected") everConnected = true;
-      const map: Record<RTCPeerConnectionState, ConnectionState> = {
-        new: ConnectionState.Connecting,
-        connecting: ConnectionState.Connecting,
-        connected: ConnectionState.Connected,
-        disconnected: ConnectionState.Reconnecting,
-        failed: ConnectionState.Disconnected,
-        closed: ConnectionState.Disconnected,
-      };
-      setConnectionState(map[pc.connectionState]);
-      if (pc.connectionState === "failed" || pc.connectionState === "closed") {
-        if (!cancelled) setPhase("ended");
-      }
-    };
-
-    pc.onicecandidate = (event) => {
-      if (!event.candidate) return;
-      sendWhenOpen({ type: "ice", candidate: event.candidate.candidate, mid: event.candidate.sdpMid ?? "0" });
-    };
-
-    // Compartilhado entre vídeo e áudio — os dois canais podem abrir em qualquer ordem (áudio é
-    // opcional, só existe se a captura nativa do host tiver conseguido inicializar, ver
-    // AudioCaptureCore.h/main/index.ts), então nenhum dos dois branches abaixo pode assumir que é
-    // o primeiro a criar o `MediaStream` do `<video>`.
-    const mediaStream = new MediaStream();
-
-    pc.ondatachannel = (event) => {
+    function handleDataChannel(event: RTCDataChannelEvent): void {
       if (event.channel.label === "audio") {
         const channel = event.channel;
         channel.binaryType = "arraybuffer";
 
         const generator = new MediaStreamTrackGenerator<AudioData>({ kind: "audio" });
         const writer = generator.writable.getWriter();
+        // Troca a track em vez de só adicionar — numa renegociação (ver comentário grande acima
+        // de `setupPeerConnection`), a track VELHA (do `pc` fechado) precisa sair da MESMA
+        // `MediaStream` antes da nova entrar, senão o `<video>` acumula 2 tracks de áudio e o
+        // navegador escolhe qual tocar de forma imprevisível.
+        if (currentAudioTrack) mediaStream.removeTrack(currentAudioTrack);
+        currentAudioTrack = generator;
         mediaStream.addTrack(generator);
         if (videoRef.current) videoRef.current.srcObject = mediaStream;
         setHasAudio(true);
@@ -214,6 +240,8 @@ export function useNativeStream(roomId: string) {
       // EncoderCore.cpp sobre VBV).
       const generator = new MediaStreamTrackGenerator<VideoFrame>({ kind: "video" });
       const writer = generator.writable.getWriter();
+      if (currentVideoTrack) mediaStream.removeTrack(currentVideoTrack);
+      currentVideoTrack = generator;
       mediaStream.addTrack(generator);
       if (videoRef.current) videoRef.current.srcObject = mediaStream;
 
@@ -336,11 +364,6 @@ export function useNativeStream(roomId: string) {
       }, STATS_POLL_MS);
     };
 
-    // Só processa o PRIMEIRO offer que chegar (mesmo limite que o REST+polling anterior sempre
-    // teve) — se o host renegociar depois (viewer caiu do lado dele, F5, etc.), esse hook não
-    // reage a um offer novo sozinho; o componente que monta o player precisa remontar.
-    let gotOffer = false;
-
     function handleWsMessage(event: MessageEvent): void {
       if (cancelled) return;
       let msg: { type?: string; sdp?: string; codec?: NativeVideoCodec; candidate?: string; mid?: string };
@@ -350,12 +373,18 @@ export function useNativeStream(roomId: string) {
         return;
       }
 
-      if (msg.type === "offer" && msg.sdp && !gotOffer) {
-        gotOffer = true;
+      if (msg.type === "offer" && msg.sdp) {
+        // Todo offer (o primeiro OU uma renegociação — ver comentário grande acima de
+        // `setupPeerConnection`) recria o `RTCPeerConnection` do zero. Fecha o antigo primeiro:
+        // sem isso, o `pc` velho ficaria pendurado gerando candidatos ICE e trocando estado sem
+        // ninguém mais ouvir de verdade (só o novo é dono dos handlers).
+        pc?.close();
+        pc = setupPeerConnection();
+        const activePc = pc;
         negotiatedCodec = msg.codec ?? "h264";
         (async () => {
           try {
-            await pc.setRemoteDescription({ type: "offer", sdp: msg.sdp! });
+            await activePc.setRemoteDescription({ type: "offer", sdp: msg.sdp! });
 
             // Checa suporte de DECODE antes de responder — Chrome só decodifica HEVC com hardware
             // disponível no dispositivo, inconsistente entre SO/GPU (diferente do H.264, ubíquo).
@@ -367,18 +396,18 @@ export function useNativeStream(roomId: string) {
               : negotiatedCodec === "av1" ? await isAv1DecodeSupported()
               : true;
 
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            if (!pc.localDescription) throw new Error("Falha ao gerar resposta SDP.");
-            sendWhenOpen({ type: "answer", sdp: pc.localDescription.sdp, decoderOk });
+            const answer = await activePc.createAnswer();
+            await activePc.setLocalDescription(answer);
+            if (!activePc.localDescription) throw new Error("Falha ao gerar resposta SDP.");
+            sendWhenOpen({ type: "answer", sdp: activePc.localDescription.sdp, decoderOk });
           } catch (err) {
-            if (cancelled) return;
+            if (cancelled || activePc !== pc) return; // sessão já foi substituída por outra renegociação — erro é do pc velho, ignora
             setError(err instanceof Error ? err.message : "Erro ao conectar na transmissão nativa.");
             setPhase("error");
           }
         })();
       } else if (msg.type === "ice" && msg.candidate) {
-        pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.mid ?? "0" }).catch(() => {});
+        pc?.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.mid ?? "0" }).catch(() => {});
       }
     }
 
@@ -390,7 +419,7 @@ export function useNativeStream(roomId: string) {
       if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
       ws.close();
       if (statsInterval) clearInterval(statsInterval);
-      pc.close();
+      pc?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);

@@ -14,7 +14,7 @@ import {
   type MessagePortMain,
 } from "electron";
 import { join } from "path";
-import { createWriteStream } from "fs";
+import { createWriteStream, writeFileSync } from "fs";
 import { autoUpdater } from "electron-updater";
 import WebSocket from "ws";
 
@@ -35,11 +35,32 @@ process.on("uncaughtException", (err) => {
   try {
     const logPath = join(app.getPath("userData"), "uncaught-exception.log");
     const entry = `[${new Date().toISOString()}] ${err.stack ?? err}\n`;
-    createWriteStream(logPath, { flags: "a" }).end(entry);
+    // Bug real corrigido: `createWriteStream(...).end(entry)` só AGENDA a escrita (assíncrona) —
+    // `app.exit(1)` logo abaixo é IMEDIATO e quase sempre vencia a corrida, matando o processo
+    // ANTES do arquivo ser gravado de verdade (o log ficava vazio/inexistente mesmo quando essa
+    // exceção era exatamente a causa do fechamento — mascarou a investigação de um crash real
+    // nesta sessão). `writeFileSync` bloqueia até terminar, garantindo que o log existe antes do
+    // `app.exit()`.
+    writeFileSync(logPath, entry, { flag: "a" });
   } catch {
     // se nem isso funcionar, não tem mais nada a fazer — deixa cair mesmo
   }
   console.error("[uncaughtException]", err);
+  app.exit(1);
+});
+
+// Mesmo raciocínio do handler acima, pra rejeição de Promise não tratada (Electron mata o
+// processo por padrão nesse caso também, mesma classe de "fecha sem rastro" — só que
+// `uncaughtException` sozinho não pega isso).
+process.on("unhandledRejection", (reason) => {
+  try {
+    const logPath = join(app.getPath("userData"), "uncaught-exception.log");
+    const entry = `[${new Date().toISOString()}] [unhandledRejection] ${reason instanceof Error ? reason.stack : reason}\n`;
+    writeFileSync(logPath, entry, { flag: "a" });
+  } catch {
+    // idem
+  }
+  console.error("[unhandledRejection]", reason);
   app.exit(1);
 });
 

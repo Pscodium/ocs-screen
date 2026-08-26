@@ -1,5 +1,64 @@
 # Roadmap execução
 
+## 🐛 Bug real de prod: espectador travava "conectando" pra sempre + app do host caía
+
+**Relato do usuário**: depois das últimas atualizações, conectar de outro dispositivo (celular,
+outro PC) na transmissão de monitor ficava "carregando infinitamente" — e o pior, o app do HOST
+caía sozinho bem na hora da tentativa de conexão.
+
+**Causa raiz #1 (confirmada, corrigida)** — o espectador que tentou conectar não decodifica HEVC
+(hardware inconsistente entre dispositivos — mesma limitação documentada desde o Sprint 24). O
+host reage recriando a sessão `TransportCore` inteira em H.264 (`main/index.ts`, fluxo já existia).
+Só que o **viewer só processava o PRIMEIRO offer que chegava** (`useNativeStream.ts`, guarda
+`!gotOffer` de propósito antigo, pra não reagir a uma renegociação) — o offer NOVO (H.264) era
+simplesmente ignorado, o espectador ficava esperando resposta que nunca vinha: "conectando..." pra
+sempre. **Fix**: `useNativeStream.ts` reescrito pra recriar o `RTCPeerConnection` do zero a cada
+offer que chega (mesma ideia do host: sessão nova por completo, já que ICE ufrag/certificado DTLS
+mudam entre as duas tentativas — não dá pra só reaproveitar o `pc` antigo). `MediaStream`
+compartilhada entre recriações (troca só as tracks, não o elemento `<video>` inteiro) pra não
+piscar a tela. Validado com script de reprodução automatizado (Playwright): as 2 sessões
+(HEVC + fallback H.264) fecham/abrem corretamente, servidor de sinalização não trava.
+
+**Causa raiz #2 (achada via dump de crash real, corrigida)** — o app do host caía sozinho e
+silenciosamente (sem `uncaughtException`, sem log — só depois de corrigir um bug SEPARADO no
+próprio handler de log, ver abaixo, é que ficou claro que também não era exceção JS). Analisando
+um `.dmp` de crash real (`Crashpad/reports/*.dmp`, parseado com a lib Python `minidump` já que não
+tinha `cdb`/WinDbg disponível): crash em `KERNELBASE.dll`, com os módulos `capture_core.node`/
+`datachannel.dll`/`opus.dll` carregados — **race condition real** entre threads. `addon.cpp`:
+`TransportCore::OnChannelOpen` (registrado em `TransportCreateSession`) dispara na thread INTERNA
+do libdatachannel (SCTP/DTLS worker), não na thread do Node, e lia `g_encoder`/`g_encoderLow`
+DIRETO (via `EncoderForTier`), sem nenhum `ThreadSafeFunction`/lock — diferente de
+`OnLocalDescription`/`OnLocalCandidate`/`OnStateChange`, que já usavam `NonBlockingCall` de
+propósito por causa exatamente disso (comentário já existia no código, só não tinha sido aplicado
+aqui). Bem na hora do fallback HEVC→H.264, a thread do Node faz `destroyEncoder()`+`initEncoder()`
+(destrói e recria `g_encoder`) — se o canal de uma sessão (nova ou saindo) abrir na thread do
+libdatachannel nesse instante exato, colide: use-after-free. **Fix**: `std::mutex g_encoderMutex`
+protegendo TODO acesso a `g_encoder`/`g_encoderLow` (leitura ou escrita) — `InitEncoder`/
+`InitEncoderLow`/`DestroyEncoder`/`DestroyEncoderLow`/`EncodeCurrentFrame(Low)`/`GetActiveCodec`/
+`IsUsingSoftwareEncoder`/`SetEncoderBitrate` (thread do Node) e uma função nova
+`ForceKeyframeForTierLocked` (usada tanto por `OnChannelOpen`, thread do libdatachannel, quanto por
+`TransportSetViewerTier`, thread do Node) — todos travam o MESMO mutex antes de tocar os ponteiros.
+- [x] **Bug relacionado corrigido no processo de diagnóstico**: `process.on("uncaughtException")`
+  gravava o log via `createWriteStream(...).end(entry)` (assíncrono) e chamava `app.exit(1)`
+  (imediato) logo em seguida — a escrita quase sempre perdia a corrida, o log ficava vazio mesmo
+  quando ERA uma exceção JS a derrubar o processo. Trocado pra `writeFileSync` (bloqueia até
+  terminar). Adicionado handler equivalente pra `unhandledRejection` (não existia antes — Electron
+  também mata o processo nesse caso, mesma classe de "fecha sem rastro nenhum").
+- **Validação parcial**: com o script de reprodução automatizado, o crash native (dump/KERNELBASE)
+  parou de acontecer depois do fix do mutex em várias repetições — mas o processo AINDA fecha em
+  alguns casos, agora SEM dump e SEM log de exceção (nem uncaught nem unhandledRejection), sugerindo
+  outro caminho de encerramento "limpo" (`app.quit()`/`window-all-closed`) cuja causa exata não foi
+  isolada ainda — instrumentação adicionada no script de teste (não commitada) não capturou o
+  evento a tempo. Pendente: reproduzir de novo com o log de exceção já corrigido (agora síncrono)
+  pra ver se sobra alguma pista nova, e considerar validar se `crashReporter.start({submitURL:""})`
+  com URL vazia impede o Crashpad de gravar dump local mesmo sem upload (suspeita nova, não
+  confirmada) — se for isso, dumps de crashes reais podem estar se perdendo silenciosamente há um
+  tempo.
+- **Build de produção do desktop refeito** com os dois fixes (`npm run dist`) — pronto pra
+  reinstalar. **Viewer também precisa de novo deploy** (o fix da renegociação vive em
+  `viewer/src/hooks/useNativeStream.ts`, publicado via `docker-compose.prod.yml`/EasyPanel) — sem
+  isso, `watch.pscodium.dev` continua com o bug antigo mesmo com o desktop atualizado.
+
 ## ✅ Item 3/3 da entrega concluído: WebRTC (TURN + resiliência)
 
 Último item da "Escopo da próxima entrega" (ver seção mais abaixo) — Interface gráfica e Áudio já

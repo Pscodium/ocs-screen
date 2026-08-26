@@ -4,6 +4,7 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <mutex>
 // NOMINMAX — sem isso, windows.h define macros `min`/`max` que quebram `std::max` mais abaixo
 // (TransportMaxBufferedAmount) com erro de sintaxe C2589/C2059 (o pré-processador expande
 // `std::max(...)` literalmente pra `std::(...)` antes do compilador ver o template).
@@ -73,6 +74,20 @@ static int ActiveHeight() {
     return g_usingWindow ? (g_windowCore ? g_windowCore->GetHeight() : 0) : (g_core ? g_core->GetHeight() : 0);
 }
 
+// Protege `g_encoder`/`g_encoderLow` — **bug real de concorrência achado via dump de crash real**
+// (KERNELBASE.dll, sem exceção JS/uncaughtException nenhuma, sem log — ver docs/TASKS.md). Causa:
+// `TransportCore::OnChannelOpen` (registrado em `TransportCreateSession` abaixo) é chamado pela
+// thread INTERNA do libdatachannel (SCTP/DTLS worker), NÃO pela thread do Node — e lê
+// `g_encoder`/`g_encoderLow` (via `EncoderForTier`) SEM passar por `ThreadSafeFunction` nenhum
+// (diferente de `OnLocalDescription`/`OnLocalCandidate`/`OnStateChange`, que já usam
+// `NonBlockingCall` de propósito por causa disso mesmo — ver comentário perto dos `g_on*Tsfn`).
+// Enquanto isso, `destroyEncoder()`/`initEncoder()` (chamados pela thread do Node, ex.: fallback
+// HEVC→H.264 quando um espectador não decodifica) fazem `g_encoder.reset()`/reatribuição — se um
+// canal de OUTRA sessão abrir na thread do libdatachannel bem nesse instante, a leitura de
+// `g_encoder` e a liberação de memória colidem (use-after-free/dado corrompido), derrubando o
+// processo inteiro sem nenhum rastro em JS. Todo acesso a esses dois ponteiros (leitura OU
+// escrita) precisa segurar esse mutex primeiro.
+static std::mutex g_encoderMutex;
 static std::unique_ptr<EncoderCore> g_encoder;
 static std::unique_ptr<EncoderCore> g_encoderLow;
 static std::unordered_map<std::string, ViewerSession> g_transportSessions;
@@ -84,9 +99,21 @@ static HANDLE g_mmcssHandle = nullptr;
 static std::unique_ptr<AudioCaptureCore> g_audioCore;
 
 // `g_encoder` (high) ou `g_encoderLow` (low) — usado nos vários pontos que precisam resolver "o
-// encoder desse tier" sem duplicar o if/else toda vez.
+// encoder desse tier" sem duplicar o if/else toda vez. CHAMAR SÓ com `g_encoderMutex` já
+// segurado (ver comentário grande em `g_encoderMutex`) — não tranca sozinho porque quem já tem o
+// lock (ex.: `ForceKeyframeForTierLocked`) não pode travar de novo (mutex não é recursivo).
 static EncoderCore* EncoderForTier(const std::string& tier) {
     return tier == "low" ? g_encoderLow.get() : g_encoder.get();
+}
+
+// Único jeito seguro de forçar keyframe num tier — usado tanto pela thread do Node
+// (`TransportSetViewerTier`) quanto pela thread INTERNA do libdatachannel (`OnChannelOpen`, ver
+// `TransportCreateSession`). Tranca o mesmo mutex que `InitEncoder`/`DestroyEncoder` usam, então
+// nunca roda no meio de uma troca de encoder.
+static void ForceKeyframeForTierLocked(const std::string& tier) {
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
+    EncoderCore* enc = EncoderForTier(tier);
+    if (enc) enc->ForceKeyframe();
 }
 
 // Callbacks de sinalização são registrados UMA VEZ (não por sessão) — cada sessão nova (criada em
@@ -315,6 +342,7 @@ Napi::Value InitEncoder(const Napi::CallbackInfo& info) {
         ? ParseCodec(info[2].As<Napi::String>().Utf8Value())
         : VideoCodecType::H264;
 
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
     g_encoder = std::make_unique<EncoderCore>();
     bool ok = g_encoder->Initialize(ActiveDevice(), ActiveWidth(), ActiveHeight(), fps, bitrateBps, codec);
     if (!ok) g_encoder.reset();
@@ -337,6 +365,7 @@ Napi::Value InitEncoderLow(const Napi::CallbackInfo& info) {
         ? ParseCodec(info[2].As<Napi::String>().Utf8Value())
         : VideoCodecType::H264;
 
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
     g_encoderLow = std::make_unique<EncoderCore>();
     bool ok = g_encoderLow->Initialize(ActiveDevice(), ActiveWidth(), ActiveHeight(), fps, bitrateBps, codec);
     if (!ok) g_encoderLow.reset();
@@ -344,6 +373,7 @@ Napi::Value InitEncoderLow(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value GetActiveCodec(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
     return Napi::String::New(info.Env(), CodecToString(g_encoder ? g_encoder->GetActiveCodec() : VideoCodecType::H264));
 }
 
@@ -351,15 +381,18 @@ Napi::Value GetActiveCodec(const Napi::CallbackInfo& info) {
 // Foundation) por NVENC não estar disponível — bem mais pesado em CPU, vale saber que caiu nesse
 // caminho (ver docs/NATIVE_CAPTURE.md Fase 3 "Fallback de encoder por software").
 Napi::Value IsUsingSoftwareEncoder(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
     return Napi::Boolean::New(info.Env(), g_encoder && g_encoder->IsUsingSoftwareFallback());
 }
 
 Napi::Value DestroyEncoder(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
     g_encoder.reset();
     return info.Env().Undefined();
 }
 
 Napi::Value DestroyEncoderLow(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
     g_encoderLow.reset();
     return info.Env().Undefined();
 }
@@ -367,6 +400,7 @@ Napi::Value DestroyEncoderLow(const Napi::CallbackInfo& info) {
 Napi::Value EncodeCurrentFrame(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
     if (!g_encoder || !ActiveComposeTexture()) return result;
 
     auto packets = g_encoder->EncodeFrame(ActiveComposeTexture());
@@ -380,6 +414,7 @@ Napi::Value EncodeCurrentFrame(const Napi::CallbackInfo& info) {
 Napi::Value EncodeCurrentFrameLow(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
     if (!g_encoderLow || !ActiveComposeTexture()) return result;
 
     auto packets = g_encoderLow->EncodeFrame(ActiveComposeTexture());
@@ -394,8 +429,7 @@ Napi::Value EncodeCurrentFrameLow(const Napi::CallbackInfo& info) {
 // funcionando pra qualquer chamador esquecido.
 Napi::Value ForceKeyframe(const Napi::CallbackInfo& info) {
     std::string tier = (info.Length() > 0 && info[0].IsString()) ? info[0].As<Napi::String>().Utf8Value() : "high";
-    EncoderCore* enc = EncoderForTier(tier);
-    if (enc) enc->ForceKeyframe();
+    ForceKeyframeForTierLocked(tier);
     return info.Env().Undefined();
 }
 
@@ -411,6 +445,7 @@ Napi::Value SetEncoderBitrate(const Napi::CallbackInfo& info) {
     int bitrateBps = info[0].As<Napi::Number>().Int32Value();
     bool forceKeyframe = info.Length() < 2 || !info[1].IsBoolean() || info[1].As<Napi::Boolean>().Value();
     std::string tier = (info.Length() > 2 && info[2].IsString()) ? info[2].As<Napi::String>().Utf8Value() : "high";
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
     EncoderCore* enc = EncoderForTier(tier);
     if (!enc) return Napi::Boolean::New(env, false);
     return Napi::Boolean::New(env, enc->SetBitrate(bitrateBps, forceKeyframe));
@@ -541,10 +576,11 @@ Napi::Value TransportCreateSession(const Napi::CallbackInfo& info) {
     // aceito: um viewer novo entrando força keyframe pra TODOS os outros do MESMO tier (o encoder
     // é compartilhado por tier, não dá pra mandar streams diferentes por espectador sem codificar
     // de novo pra cada um) — tier diferente não é afetado (encoder independente).
-    transport->OnChannelOpen([tier]() {
-        EncoderCore* enc = EncoderForTier(tier);
-        if (enc) enc->ForceKeyframe();
-    });
+    // ATENÇÃO: esse callback dispara na thread INTERNA do libdatachannel (SCTP/DTLS worker), não
+    // na thread do Node — por isso usa `ForceKeyframeForTierLocked` (protegida por
+    // `g_encoderMutex`) em vez de tocar `g_encoder`/`g_encoderLow` direto. Ver comentário grande
+    // em `g_encoderMutex` — bug real de concorrência achado via dump de crash.
+    transport->OnChannelOpen([tier]() { ForceKeyframeForTierLocked(tier); });
 
     if (g_onLocalDescriptionSet) {
         transport->OnLocalDescription([viewerId](const std::string& sdp, const std::string& type) {
@@ -599,8 +635,7 @@ Napi::Value TransportSetViewerTier(const Napi::CallbackInfo& info) {
 
     std::string tier = info[1].As<Napi::String>().Utf8Value();
     it->second.tier = tier;
-    EncoderCore* enc = EncoderForTier(tier);
-    if (enc) enc->ForceKeyframe();
+    ForceKeyframeForTierLocked(tier);
     return Napi::Boolean::New(env, true);
 }
 
