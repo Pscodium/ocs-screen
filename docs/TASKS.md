@@ -12,8 +12,32 @@ Sem investigação ainda, só a lista bruta do que foi notado testando hoje:
   lento) gera reset/abort de conexão → erro sem dono → crash. **Fix**: listener de `error` em
   ambos os sockets (loga, não propaga) + rede de segurança extra em `backend/src/server.ts`
   (`process.on("uncaughtException"/"unhandledRejection")`, loga e mantém processo vivo). Validado
-  só com `tsc --noEmit` limpo + smoke test isolado (sem repro real de F5-spam/crash ainda) — usuário
-  vai validar em prod.
+  só com `tsc --noEmit` limpo + smoke test isolado — usuário reportou em 2026-08-27 que o CRASH DO
+  HOST continuava mesmo depois desse fix, mas só compartilhando JANELA, nunca monitor. **Causa raiz
+  #2 achada (via dump de crash real, mesmo método do bug original — `minidump` em Python,
+  `Crashpad/reports/*.dmp`)**: KERNELBASE.dll de novo, mas dessa vez a pilha da thread aponta direto
+  pra `TransportCore::SendAudioFrame` (`TransportCore.cpp:244/247`), chamada por
+  `TransportSendAudioFrame` (`addon.cpp:766`). Bug real: `SendVideoFrame`/`SendAudioFrame` só
+  checavam `channel->isOpen()` antes de `send()` — TOCTOU (time-of-check-to-time-of-use) contra o
+  estado de verdade da `PeerConnection`, que pode mudar internamente (ICE/DTLS falhando, thread
+  PRÓPRIA do libdatachannel) entre o `isOpen()` e o `send()`, ou entre a hora que a conexão já
+  fechou de verdade internamente e a hora que o `OnStateChange` (assíncrono, `NonBlockingCall` de
+  propósito — ver bug original) chega no lado JS e chama `transportCloseSession` de fato. F5
+  repetido = muitas sessões trocando de estado rápido = janela de corrida aberta com frequência.
+  Só afeta JANELA na prática porque o canal de áudio só fica confiavelmente ATIVO nesse caminho
+  (`initAudioCaptureForWindow` quase sempre funciona; no caminho de monitor, a busca por
+  candidato — Discord/NVIDIA Broadcast — falha em silêncio bem mais often em ambiente de teste sem
+  call ativa, `ntAudioActive` fica `false`, canal nunca existe, `SendAudioFrame` nem chega a rodar
+  de verdade) — o BUG em si não é exclusivo de janela, só a exposição prática é. **Fix**: 2 camadas
+  — `TransportCore::SendVideoFrame`/`SendAudioFrame` (`TransportCore.cpp`) checam
+  `pc_->state() == Connected` além do `isOpen()` do canal; `TransportSendVideoFrame`/
+  `TransportSendAudioFrame` (`addon.cpp`) ganharam o mesmo filtro `IsConnected()` que
+  `TransportMaxBufferedAmount`/`TransportConnectedCount` já tinham (esses dois loops de envio nunca
+  filtravam antes — mandavam `send()` cego pra QUALQUER sessão no mapa). Estreita a janela de
+  corrida, não elimina 100% (libdatachannel não documenta garantia de thread-safety pra essa
+  sequência exata) — se persistir, próximo passo é `__try/__except` (SEH) em volta do `send()` pra
+  pelo menos não derrubar o processo inteiro, ou reportar upstream pro libdatachannel. `node-gyp
+  build` limpo (0 erros). Não testado rodando de verdade — usuário valida em prod.
 - [x] **[PRIORIDADE] Detectar e limpar salas "fantasma"** — causa raiz: sala em modo nativo era
   EXPLICITAMENTE excluída do cruzamento de órfãs do `GET /rooms` (`isOrphan` em
   `routes/rooms.ts`, de propósito — LiveKit não vê o transporte nativo, cruzar contra ele apagaria
@@ -26,31 +50,73 @@ Sem investigação ainda, só a lista bruta do que foi notado testando hoje:
   reconexão) e reagenda quando o socket do host fecha. Validado com `tsc --noEmit` limpo + smoke
   test do import circular `rooms.ts`↔`nativeWsRelay.ts` em runtime (`tsx`, sem crash) — cenário de
   host morto de verdade ainda não testado, usuário vai validar em prod.
-1. **Áudio errado ao trocar de fonte ao vivo** — trocar de janela/monitor no meio da transmissão
-   continua capturando o áudio da fonte ANTERIOR também (não troca o filtro de exclusão/inclusão
-   de processo junto com o vídeo). Ver `AudioCaptureCore`/`swapNativeTransportSource` em
-   `main/index.ts` — o swap de vídeo já existe, o de áudio provavelmente nunca foi religado nesse
-   fluxo.
-2. **F5 demais no espectador derruba a transmissão** — usuário recarregando a página repetidas
-   vezes (ou o navegador fazendo isso sozinho em background) parece contribuir pra transmissão
-   cair. Investigar limite/cooldown de reconexão (relacionado ao WS reconnect adicionado hoje,
-   ver seção "WebRTC (TURN + resiliência)" abaixo) e se o host trata bem múltiplas entradas/saídas
-   rápidas do mesmo espectador.
-3. **HEVC não funciona em todos os PCs/dispositivos** — validar de verdade por quê (suspeita:
-   suporte de hardware de decode inconsistente, mesma classe de problema já documentado no bug do
-   fallback quebrado desta sessão — ver seção abaixo). Pode ser só documentar a limitação, ou pode
-   ter algo corrigível.
-4. **Aba de telas (SourcePicker) fica espremida** — grade de fontes aperta dependendo da
-   quantidade de itens/altura do rodapé de config. Ajuste de CSS, mesma área já mexida antes
-   (`.picker-grid`/`.picker-body`, ver Sprint de UI anterior).
-5. **FPS travado em ~55 capturando janela de jogo** — mesmo sintoma já investigado pro caminho de
-   MONITOR (contenção de GPU, `docs/NATIVE_CAPTURE.md`) — validar se é a mesma causa ou algo
-   específico do backend de janela (WGC).
-6. **Troca de fonte pra monitor não funciona a partir do próprio monitor ativo** — se já
-   compartilhando Monitor 1 e tenta trocar pra Monitor 2, não troca; só funciona se estiver
-   numa JANELA no momento da troca. Bug real no fluxo de swap (`swapNativeTransportSource`/
-   `SourcePicker`) — provavelmente uma checagem tipo "mesma fonte" comparando errado
-   monitor-pra-monitor.
+- [x] **Áudio errado ao trocar de fonte ao vivo** — confirmado: `native-transport:swap-source`
+  (`main/index.ts`) trocava vídeo+encoder mas nunca tocava na captura de áudio, deixando o filtro
+  de exclusão/inclusão por processo preso na fonte ANTERIOR. **Fix**: bloco de init de áudio
+  extraído pra função própria (`startNativeAudioForSource`), chamada tanto no `start` quanto no
+  `swap-source` — troca agora chama `destroyAudioCapture()` + reinicia com a fonte nova (monitor →
+  exclude candidatos conhecidos, janela → include árvore do hwnd), mesma lógica de sempre.
+  Limitação conhecida que continua: espectador que já estava conectado ANTES do áudio nativo
+  existir/ativar não ganha um canal de áudio retroativo (só quem conecta depois da troca) — mesma
+  categoria de limitação já documentada pro áudio nativo em geral, não piora nem resolve aqui.
+  `tsc --noEmit` limpo. Não testado rodando de verdade (precisa trocar de fonte com áudio tocando
+  dos dois lados pra confirmar auditivamente).
+- [ ] **F5 demais no espectador derruba a transmissão** — causa raiz mais provável já corrigida
+  pelo item [PRIORIDADE] acima ("espectador nunca pode derrubar a transmissão do host" — backend
+  crashava inteiro por falta de handler de `error` no WS). Deixando em aberto até validação real em
+  prod confirmar que resolveu; se persistir mesmo com o fix de crash, o próximo suspeito é o host
+  criar/destruir sessões `TransportCore` rápido demais num F5-loop (sem cooldown) — não
+  investigado ainda.
+- [ ] **HEVC não funciona em todos os PCs/dispositivos** — não é bug, é limitação de hardware:
+  suporte de decode HEVC varia por dispositivo/driver, mesma classe de problema do "Bug real de
+  prod" já documentado abaixo (viewer reporta `decoderOk:false`, host já cai pra H.264
+  automaticamente quando ninguém mais tá conectado em HEVC). Mecanismo de fallback já existe e
+  funciona (ver seção "Bug real de prod"/`ntCodecFallbackDone`) — decisão: documentar como
+  limitação esperada em vez de tentar "corrigir" suporte de hardware que não existe no dispositivo.
+  Nenhuma mudança de código feita aqui.
+- [x] **Aba de telas (SourcePicker) fica espremida** — causa mais provável: `.picker-body`
+  (`styles.css`) é item de um flexbox coluna (`.picker-modal`) com `overflow-y:auto`, mas sem
+  `min-height:0` — item flex tem `min-height:auto` implícito (= tamanho do conteúdo), então o
+  `overflow-y:auto` nunca entra em ação de verdade; é a janela inteira (altura fixa) que estoura,
+  espremendo/cortando o conjunto grid+rodapé em vez de só rolar o grid por dentro. Mais visível com
+  rodapé de config mais alto (menos espaço sobra) — bate com a descrição do usuário. **Fix**:
+  `min-height: 0` em `.picker-body`. Não validado visualmente (sem ambiente gráfico aqui) —
+  usuário confirma testando o picker com bastante fontes e o rodapé aberto.
+- [x] **FPS travado em ~55 capturando janela de jogo** — sem causa raiz confirmada (não
+  reproduzível aqui, sem hardware/jogo real), mas 2 melhorias concretas aplicadas, ambas de baixo
+  risco e recompiladas (`node-gyp build`, 0 erros):
+  - **Pool de frame do WGC (`WindowCaptureCore.cpp`) de 2→3 buffers** (`kFramePoolBuffers`, os 2
+    call-sites — criação e `Recreate` em resize). Com 2 buffers não sobra folga nenhuma entre o WGC
+    entregar um frame novo e o consumidor (`AcquireFrameGpuOnly`, thread JS) terminar de ler o
+    anterior — qualquer atraso momentâneo do lado JS (log/AIMD/envio no mesmo tick) força
+    sincronização em vez de já ter um buffer livre pronto. 3 é o valor comumente recomendado pra
+    absorver esse descompasso produtor/consumidor sem acrescentar latência perceptível.
+  - **Folga de 50% no timeout de `acquireFrameGpuOnly` só pro caminho de janela** (`main/index.ts`,
+    `timeoutMs = ntHwnd !== null ? baseTimeoutMs*1.5 : baseTimeoutMs`) — `cv.wait_for` no WGC pode
+    estourar por jitter de scheduler de só alguns ms bem na borda do intervalo (16.67ms @60fps),
+    contando como "sem frame" um frame que chegaria um instante depois. Monitor/DXGI não precisa
+    disso (`AcquireNextFrame` servido pelo driver/compositor, timing mais preciso). Só afeta o
+    PIOR caso (nenhum frame chega); quando chega on-time, `notify_one` acorda na hora, sem atraso
+    extra.
+  - Suspeita que continua de pé, não descartada nem confirmada: contenção de GPU no jogo em si
+    (mesma causa já suspeitada pro monitor), sem cushion de compositor (DWM) no caminho de janela
+    pra suavizar. Se os 2 fixes acima não resolverem, esse é o próximo suspeito — precisaria de log
+    de timestamp do `FrameArrived` durante jogo real pra confirmar.
+- [x] **Troca de fonte pra monitor não funciona a partir do próprio monitor ativo** — pedido de
+  esclarecimento do usuário revelou que o sintoma real é OUTRO: ao trocar de fonte AO VIVO
+  compartilhando Monitor 1, a aba "Telas" do seletor só mostra "Tela cheia", os monitores
+  individuais somem (não é a troca em si que falha — a LISTAGEM que perde os monitores). **Causa
+  raiz encontrada**: `desktopCapturer.getSources({types:["screen"]})` do Chromium tenta capturar
+  uma miniatura POR MONITOR usando a mesma API de Desktop Duplication (DXGI) que o `CaptureCore`
+  nativo já segura ATIVA em Monitor 1 nesse momento (o picker lista fontes ANTES de parar a captura
+  velha — só `swap-source`, chamado DEPOIS de escolher, para). Duplication não é livre pra múltiplos
+  consumidores por output — Chromium falha em enumerar por monitor e cai pro pseudo-source único
+  "Entire Screen"/"Tela cheia". **Fix**: `ipcMain.handle("capture:list-sources", ...)` solta a
+  duplication NOSSA (`nativeCapture.stop()`) só durante a chamada de `desktopCapturer.getSources`
+  (só quando há transmissão nativa de MONITOR ativa) e retoma a MESMA fonte (`nativeCapture.start`)
+  logo em seguida — janela curta o bastante pra não derrubar viewers conectados (sessões não
+  dependem da captura), só perde uns frames de vídeo nesse intervalo. `node-gyp build`/`tsc
+  --noEmit` limpos. Não testado rodando de verdade com 2 monitores reais.
 
 ## 🐛 Bug real de prod: espectador travava "conectando" pra sempre + app do host caía
 

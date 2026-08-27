@@ -426,11 +426,31 @@ ipcMain.handle("clipboard:write-text", (_event, text: string) => {
 // Fontes de captura (monitores/janelas) — substitui o diálogo padrão do getDisplayMedia por
 // uma lista que a própria UI do app renderiza, sem passar pela permissão do browser.
 ipcMain.handle("capture:list-sources", async () => {
-  const sources = await desktopCapturer.getSources({
-    types: ["screen", "window"],
-    thumbnailSize: { width: 300, height: 200 },
-    fetchWindowIcons: true,
-  });
+  // Bug real (relatado trocando de fonte AO VIVO com Monitor 1 compartilhado via pipeline nativo):
+  // só "Tela cheia" aparecia na aba "Telas" do seletor, os monitores individuais sumiam. Causa:
+  // `desktopCapturer.getSources({types:["screen"]})` do Chromium tenta capturar UMA miniatura POR
+  // MONITOR usando a mesma API de Desktop Duplication (DXGI) que o `CaptureCore` nativo já está
+  // segurando ATIVA em Monitor 1 (o picker lista fontes ANTES de parar a captura atual — só o
+  // handler de `swap-source`, chamado DEPOIS de escolher, para a captura velha). Duplication não é
+  // livre pra múltiplos consumidores por output (nem sempre, mas na prática colide) — Chromium
+  // falha em enumerar por monitor e cai pro pseudo-source único "Entire Screen"/"Tela cheia" que
+  // representa a área virtual inteira. Solução: soltar a duplication NOSSA por um instante (só o
+  // capture, não o encoder/transporte/sessões — essas não dependem da captura, só recebem bytes)
+  // enquanto o Chromium enumera, e retomar a MESMA fonte de antes logo em seguida — janela curta o
+  // bastante (só a duração do próprio `getSources`) pra não derrubar viewers conectados, só perde
+  // uns frames de vídeo nesse intervalo (mesmo tipo de gap tolerado por timeout normal no loop).
+  const pauseNativeCapture = ntActive && ntMonitorIndex !== null && !!nativeCapture;
+  if (pauseNativeCapture) nativeCapture!.stop();
+  let sources;
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: 300, height: 200 },
+      fetchWindowIcons: true,
+    });
+  } finally {
+    if (pauseNativeCapture) nativeCapture!.start(ntMonitorIndex!);
+  }
   return sources
     .filter((source) => {
       // Janelas sem UI real (utilitários invisíveis tipo helper de tray, processo de shutdown,
@@ -794,6 +814,58 @@ function startNativeCaptureSource(monitorIndex?: number, hwnd?: number): boolean
   if (monitorIndex !== undefined) return nativeCapture.start(monitorIndex);
   return false;
 }
+
+// Extraído de dentro de "native-transport:start" pra ser reaproveitado por
+// "native-transport:swap-source" também (bug real: trocar de fonte ao vivo trocava o vídeo mas
+// nunca reiniciava a captura de áudio — o filtro de exclusão/inclusão por processo continuava
+// vinculado à fonte ANTERIOR, então o áudio de quem já tinha saído da transmissão continuava
+// vazando, ou o áudio de uma janela nova compartilhada não ficava isolado). Mesma lógica de sempre:
+// janela usa INCLUDE (só a árvore daquele processo), monitor usa EXCLUDE (candidatos conhecidos de
+// app com efeito de áudio, ver `NATIVE_AUDIO_EXCLUDE_CANDIDATES`). Nunca bloqueia a transmissão se
+// falhar — só fica sem áudio, mesmo comportamento de sempre.
+function startNativeAudioForSource(hwnd?: number): void {
+  if (!nativeCapture) return;
+  if (hwnd !== undefined) {
+    const audioResult = nativeCapture.initAudioCaptureForWindow(hwnd);
+    ntAudioActive = audioResult.ok;
+    if (!ntAudioActive) {
+      console.warn("[native-transport] captura de áudio nativa (janela) não iniciou — transmissão segue sem áudio.");
+    } else {
+      console.log("[native-transport] áudio nativo ativo (só a janela compartilhada).");
+    }
+    return;
+  }
+  // Tenta cada candidato em ordem — o PRIMEIRO que resolver um PID de verdade é o usado.
+  // `initAudioCapture` recria a sessão a cada tentativa (barato, só ativa uma vez por troca de
+  // fonte) — não dá pra saber de antemão qual candidato tá rodando sem tentar.
+  let resolvedName: string | null = null;
+  let resolvedPid = 0;
+  for (const candidate of NATIVE_AUDIO_EXCLUDE_CANDIDATES) {
+    const attempt = nativeCapture.initAudioCapture(candidate);
+    if (attempt.ok && attempt.excludedPid !== 0) {
+      resolvedName = candidate;
+      resolvedPid = attempt.excludedPid;
+      break;
+    }
+    nativeCapture.destroyAudioCapture();
+  }
+  if (resolvedPid === 0) {
+    // Nenhum candidato resolveu (nenhum dos apps tava rodando nesse instante) — inicia sem
+    // exclusão mesmo assim (loopback normal), não bloqueia a transmissão por causa disso.
+    const fallback = nativeCapture.initAudioCapture();
+    ntAudioActive = fallback.ok;
+    if (ntAudioActive) {
+      console.warn(
+        `[native-transport] nenhum de [${NATIVE_AUDIO_EXCLUDE_CANDIDATES.join(", ")}] encontrado ao iniciar áudio — captura SEM exclusão (tudo incluído).`,
+      );
+    } else {
+      console.warn("[native-transport] captura de áudio nativa não iniciou — transmissão segue sem áudio.");
+    }
+  } else {
+    ntAudioActive = true;
+    console.log(`[native-transport] áudio nativo ativo, excluindo PID ${resolvedPid} (${resolvedName}).`);
+  }
+}
 // Codec ATIVO agora (pode ter degradado de HEVC pra H.264 em qualquer momento — cascata de
 // fallback do encoder, ou fallback por decode do primeiro viewer). Toda sessão NOVA usa esse
 // valor. Só tenta o fallback HEVC→H.264 UMA vez por transmissão.
@@ -894,46 +966,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // resolve o caso Discord automaticamente, sem precisar de exclusão nenhuma nesse caminho).
   // Monitor inteiro continua no modo EXCLUDE (Discord), única opção que faz sentido quando a
   // transmissão é a tela toda.
-  if (hwnd !== undefined) {
-    const audioResult = nativeCapture.initAudioCaptureForWindow(hwnd);
-    ntAudioActive = audioResult.ok;
-    if (!ntAudioActive) {
-      console.warn("[native-transport] captura de áudio nativa (janela) não iniciou — transmissão segue sem áudio.");
-    } else {
-      console.log("[native-transport] áudio nativo ativo (só a janela compartilhada).");
-    }
-  } else {
-    // Tenta cada candidato em ordem — o PRIMEIRO que resolver um PID de verdade é o usado.
-    // `initAudioCapture` recria a sessão a cada tentativa (barato, só ativa uma vez no início da
-    // transmissão) — não dá pra saber de antemão qual candidato tá rodando sem tentar.
-    let resolvedName: string | null = null;
-    let resolvedPid = 0;
-    for (const candidate of NATIVE_AUDIO_EXCLUDE_CANDIDATES) {
-      const attempt = nativeCapture.initAudioCapture(candidate);
-      if (attempt.ok && attempt.excludedPid !== 0) {
-        resolvedName = candidate;
-        resolvedPid = attempt.excludedPid;
-        break;
-      }
-      nativeCapture.destroyAudioCapture();
-    }
-    if (resolvedPid === 0) {
-      // Nenhum candidato resolveu (nenhum dos apps tava rodando nesse instante) — inicia sem
-      // exclusão mesmo assim (loopback normal), não bloqueia a transmissão por causa disso.
-      const fallback = nativeCapture.initAudioCapture();
-      ntAudioActive = fallback.ok;
-      if (ntAudioActive) {
-        console.warn(
-          `[native-transport] nenhum de [${NATIVE_AUDIO_EXCLUDE_CANDIDATES.join(", ")}] encontrado ao iniciar áudio — captura SEM exclusão (tudo incluído).`,
-        );
-      } else {
-        console.warn("[native-transport] captura de áudio nativa não iniciou — transmissão segue sem áudio.");
-      }
-    } else {
-      ntAudioActive = true;
-      console.log(`[native-transport] áudio nativo ativo, excluindo PID ${resolvedPid} (${resolvedName}).`);
-    }
-  }
+  startNativeAudioForSource(hwnd);
 
   // Encoder do tier "low" (Sprint 27/simulcast, ver docs/NATIVE_CAPTURE.md Fase 4 "Simulcast") —
   // MESMO codec já resolvido pro "high" (nunca teve chance de degradar diferente, mesma
@@ -1098,7 +1131,17 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // relógio real) — revertido temporariamente enquanto a causa raiz (provável contenção com
   // threads internas do libdatachannel) não é investigada mais a fundo. Mantém os fixes que JÁ
   // se mostraram corretos independente do loop: pacing 8x, VBV, NonBlockingCall no PLI/state.
-  const timeoutMs = Math.max(1, Math.round(1000 / Math.max(1, targetFps)));
+  const baseTimeoutMs = Math.max(1, Math.round(1000 / Math.max(1, targetFps)));
+  // Captura de JANELA (WGC) depende do jogo/app apresentar dentro da janela de espera — um jitter
+  // de scheduler de só alguns ms bem na borda do intervalo (16.67ms pra 60fps) já basta pra
+  // `cv.wait_for` estourar o timeout achando que não teve frame novo, mesmo o jogo tendo
+  // apresentado normal um instante depois (tentativa de melhorar o item 5 do docs/TASKS.md — FPS
+  // travado em ~55 num caminho que deveria bater 60). Monitor/DXGI não precisa dessa folga:
+  // `AcquireNextFrame` é servido pelo driver/compositor com timing bem mais preciso que uma espera
+  // em condvar cruzando pra thread JS. A folga só afeta quanto tempo uma chamada ESPERA no pior
+  // caso (sem frame nenhum) — quando o frame chega on-time, o `notify_one` acorda na hora, não
+  // atrasa nada.
+  const timeoutMs = ntHwnd !== null ? Math.round(baseTimeoutMs * 1.5) : baseTimeoutMs;
   const startTime = Date.now();
 
   let dbgAcquired = 0;
@@ -1320,16 +1363,37 @@ ipcMain.handle(
   (_event, args: { monitorIndex?: number; hwnd?: number; showCursor: boolean }): boolean => {
     if (!nativeCapture || !ntActive) return false;
 
+    // Log de diagnóstico pro bug pendente "troca pra monitor não funciona a partir do próprio
+    // monitor ativo" (docs/TASKS.md item 6) — não achado por leitura de código (CaptureCore::Start
+    // re-enumera output/DuplicateOutput do zero, sem cache aparente do monitor anterior); precisa
+    // do log de qual etapa falha (ou se `startNativeCaptureSource` retorna `true` mas o vídeo
+    // continua vindo do monitor errado) num teste real com 2+ monitores pra ir além de suspeita.
+    console.log(
+      `[native-transport] swap-source: de (monitor=${ntMonitorIndex} hwnd=${ntHwnd}) pra (monitor=${args.monitorIndex ?? "-"} hwnd=${args.hwnd ?? "-"})`,
+    );
+
     nativeCapture.stop();
     nativeCapture.destroyEncoder();
     nativeCapture.destroyEncoderLow();
+    // Sem isso, o filtro de áudio (exclusão por processo pra monitor, inclusão da árvore do hwnd
+    // pra janela) continuava vinculado à fonte ANTERIOR depois de trocar de vídeo (bug real —
+    // ver docs/TASKS.md). `destroyAudioCapture` é seguro chamar mesmo se áudio já não estava
+    // ativo (ntAudioActive false).
+    nativeCapture.destroyAudioCapture();
+    ntAudioActive = false;
 
-    if (!startNativeCaptureSource(args.monitorIndex, args.hwnd)) return false;
+    const captureOk = startNativeCaptureSource(args.monitorIndex, args.hwnd);
+    console.log(`[native-transport] swap-source: startNativeCaptureSource -> ${captureOk}`);
+    if (!captureOk) return false;
     nativeCapture.setCursorEnabled(args.showCursor);
     ntMonitorIndex = args.monitorIndex ?? null;
     ntHwnd = args.hwnd ?? null;
+    startNativeAudioForSource(args.hwnd);
 
-    if (!nativeCapture.initEncoder(ntTargetFps, ntBitrateBps, ntActiveCodec)) return false;
+    if (!nativeCapture.initEncoder(ntTargetFps, ntBitrateBps, ntActiveCodec)) {
+      console.log("[native-transport] swap-source: initEncoder falhou");
+      return false;
+    }
     if (!nativeCapture.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, ntActiveCodec)) {
       console.warn("[native-transport] falha ao reiniciar encoder do tier 'low' após troca de fonte — simulcast fica só com 'high'.");
     }

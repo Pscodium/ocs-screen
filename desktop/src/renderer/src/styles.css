@@ -796,6 +796,13 @@ body {
 
 .picker-body {
   flex: 1;
+  /* Sem isso, o `min-height` implícito de um item flex é `auto` (= tamanho do conteúdo), não 0 —
+     `.picker-body` nunca encolhe abaixo do grid inteiro, então é o `.picker-modal` (altura fixa da
+     janela) que estoura, não o `overflow-y:auto` daqui que entra em ação. Resultado visível: com
+     rodapé de config mais alto (mais campos) ou grid com mais linhas, sobra menos espaço e o corpo
+     inteiro (grid + rodapé) fica espremido/cortado contra o fim da janela em vez de só rolar por
+     dentro. `min-height: 0` deixa o flexbox respeitar a altura disponível de verdade. */
+  min-height: 0;
   overflow-y: auto;
   /* Sem isso, "overflow-x: visible" (default) computa sozinho pra "auto" só por causa do
      overflow-y:auto (regra da spec CSS: um eixo overflow != visible força o outro a virar auto) —

@@ -217,6 +217,11 @@ static bool ContainsKeyframeNal(const uint8_t* data, size_t size, bool isHevc) {
 // [payload: H.264 Annex-B cru]. Pequeno o bastante pra não pesar, o suficiente pra reconstruir o
 // `EncodedVideoChunk` do WebCodecs do outro lado sem precisar inspecionar o bitstream no cliente.
 bool TransportCore::SendVideoFrame(const uint8_t* data, size_t size, uint64_t timestampUs) {
+    // Mesma checagem extra de `SendAudioFrame` (ver comentário lá) — vídeo não apareceu na pilha
+    // do crash real analisado, mas é o MESMO padrão `isOpen()`-então-`send()`, só não foi pego
+    // ainda (canal de áudio só fica reliably ativo no caminho de janela, ver docs/TASKS.md — vídeo
+    // roda igual nos dois caminhos, então o mesmo risco existe, só não observado/relatado ainda).
+    if (!pc_ || pc_->state() != rtc::PeerConnection::State::Connected) return false;
     if (!videoChannel_ || !videoChannel_->isOpen()) return false;
 
     try {
@@ -238,6 +243,17 @@ bool TransportCore::SendVideoFrame(const uint8_t* data, size_t size, uint64_t ti
 
 // Formato no DataChannel: [8 bytes: timestamp µs, little-endian][payload: pacote Opus cru].
 bool TransportCore::SendAudioFrame(const uint8_t* data, size_t size, uint64_t timestampUs) {
+    // `pc_->state()` além do `isOpen()` do canal — bug real achado via dump de crash (KERNELBASE,
+    // mesma classe do bug de `g_encoder` já corrigido): sessão cuja conexão já falhou/fechou
+    // internamente no libdatachannel (detectado pela THREAD INTERNA dele — ICE/DTLS, reconexão
+    // abrupta do lado do espectador tipo F5 repetido) mas cujo `OnStateChange` (que dispara
+    // `transportCloseSession` do lado JS) ainda não foi processado pelo event loop do Node —
+    // `TransportSendAudioFrame` continua chamando `send()` nessa janela porque só filtra por
+    // `IsConnected()` estritamente igual, mas cada checagem aqui é feita num instante levemente
+    // diferente do que a checagem externa (`addon.cpp`), estreitando (não elimina 100%, libdatachannel
+    // não documenta as garantias internas) a janela de corrida entre "isOpen() ainda true" e o
+    // estado real da conexão internamente já em transição.
+    if (!pc_ || pc_->state() != rtc::PeerConnection::State::Connected) return false;
     if (!audioChannel_ || !audioChannel_->isOpen()) return false;
 
     try {

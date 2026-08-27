@@ -29,6 +29,16 @@ using namespace ABI::Windows::Graphics::DirectX::Direct3D11;
 
 namespace {
 
+// Tentativa de melhorar o item 5 do docs/TASKS.md (FPS travado em ~55 capturando janela de jogo).
+// Pool de 2 buffers (valor original) deixa zero folga entre o WGC entregar um frame novo e o
+// consumidor (`AcquireFrameGpuOnly`, thread JS) terminar de ler o anterior — qualquer atraso
+// momentâneo do lado JS (ex.: um tick do loop gastando um pouco mais por causa de log/AIMD/envio)
+// faz o WGC ter que esperar um buffer libertar em vez de já ter um livre pronto, o que synchroniza
+// e potencialmente descarta o frame em vez de só enfileirar. 3 buffers é o valor comumente
+// recomendado pra suavizar exatamente esse descompasso produtor/consumidor sem acrescentar
+// latência perceptível (ainda é "o mais recente", não um buffer de replay).
+constexpr int kFramePoolBuffers = 3;
+
 // Handler de `Direct3D11CaptureFramePool::FrameArrived` — dispara numa thread própria do WGC
 // (não a thread do Node/Electron), então só faz o mínimo (copia o ponteiro COM da textura +
 // acorda quem tá esperando) — nenhuma chamada de D3D11 acontece aqui, só no lado que chama
@@ -69,7 +79,7 @@ public:
             poolWidth = contentSize.Width;
             poolHeight = contentSize.Height;
             SizeInt32 newSize{contentSize.Width, contentSize.Height};
-            sender->Recreate(winrtDevice, DirectXPixelFormat_B8G8R8A8UIntNormalized, 2, newSize);
+            sender->Recreate(winrtDevice, DirectXPixelFormat_B8G8R8A8UIntNormalized, kFramePoolBuffers, newSize);
             return S_OK;
         }
 
@@ -269,7 +279,7 @@ bool WindowCaptureCore::Start(HWND hwnd) {
     }
 
     if (FAILED(framePoolStatics2->CreateFreeThreaded(
-            impl_->winrtDevice.Get(), DirectXPixelFormat_B8G8R8A8UIntNormalized, 2, size, &impl_->framePool))) {
+            impl_->winrtDevice.Get(), DirectXPixelFormat_B8G8R8A8UIntNormalized, kFramePoolBuffers, size, &impl_->framePool))) {
         impl_.reset();
         return false;
     }

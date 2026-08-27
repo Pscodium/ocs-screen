@@ -745,6 +745,12 @@ Napi::Value TransportSendVideoFrame(const Napi::CallbackInfo& info) {
     bool anyOk = false;
     for (auto& entry : g_transportSessions) {
         if (entry.second.tier != tier) continue;
+        // Filtro extra além do que `TransportCore::SendVideoFrame` já checa internamente —
+        // `TransportMaxBufferedAmount`/`TransportConnectedCount` já filtravam por `IsConnected()`,
+        // esse loop (e o de áudio abaixo) nunca filtrava, mandando `send()` cego pra QUALQUER
+        // sessão no mapa independente do estado real da conexão (ver bug real achado via dump de
+        // crash, comentário grande em `TransportCore::SendAudioFrame`).
+        if (!entry.second.transport->IsConnected()) continue;
         if (entry.second.transport->SendVideoFrame(buffer.Data(), buffer.Length(), static_cast<uint64_t>(timestampUs))) {
             anyOk = true;
         }
@@ -764,6 +770,10 @@ Napi::Value TransportSendAudioFrame(const Napi::CallbackInfo& info) {
 
     bool anyOk = false;
     for (auto& entry : g_transportSessions) {
+        // Ver comentário equivalente em `TransportSendVideoFrame` acima — bug real achado via
+        // dump de crash (KERNELBASE, thread crashando dentro de `TransportCore::SendAudioFrame`,
+        // ver TASKS.md): esse loop nunca filtrava por `IsConnected()` antes de mandar `send()`.
+        if (!entry.second.transport->IsConnected()) continue;
         if (entry.second.transport->SendAudioFrame(buffer.Data(), buffer.Length(), static_cast<uint64_t>(timestampUs))) {
             anyOk = true;
         }
