@@ -31,6 +31,14 @@ export function createRoom(
     nativeMode,
   };
   rooms.set(room.id, room);
+  // Sala nativa nunca aparece no cruzamento de órfãs de `GET /rooms` (`isOrphan` em
+  // routes/rooms.ts ignora `nativeMode` de propósito — LiveKit não tem visibilidade nenhuma do
+  // transporte nativo, cruzar contra ele apagaria toda sala nativa ativa ~20s depois de criada).
+  // Sem substituto, uma sala nativa cujo host nunca chega a conectar (crash entre o POST /rooms e
+  // o WS de sinalização) ou cujo host cai e não volta ficava presa pra sempre — sala fantasma,
+  // sem transmissão real nenhuma por trás. `registerHostSocket`/o "close" do socket do host
+  // (nativeWsRelay.ts) cancelam/reagendam isso conforme o host aparece/some de verdade.
+  if (nativeMode) scheduleRoomCleanup(room.id);
   return room;
 }
 

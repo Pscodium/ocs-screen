@@ -1,5 +1,57 @@
 # Roadmap execução
 
+## 📋 Pendências levantadas pelo usuário (2026-08-26 à noite) — pra pegar amanhã
+
+Sem investigação ainda, só a lista bruta do que foi notado testando hoje:
+
+- [x] **[PRIORIDADE] Espectador nunca pode derrubar a transmissão do host** — causa raiz achada e
+  corrigida: `backend/src/services/nativeWsRelay.ts` nunca tinha `socket.on("error", ...)` nem no
+  socket do host nem no do espectador — evento "error" sem listener derruba o PROCESSO INTEIRO do
+  backend (comportamento padrão do Node/EventEmitter), matando toda transmissão ativa na instância
+  de uma vez, não só a sessão do espectador problemático. F5 repetido no espectador (carregamento
+  lento) gera reset/abort de conexão → erro sem dono → crash. **Fix**: listener de `error` em
+  ambos os sockets (loga, não propaga) + rede de segurança extra em `backend/src/server.ts`
+  (`process.on("uncaughtException"/"unhandledRejection")`, loga e mantém processo vivo). Validado
+  só com `tsc --noEmit` limpo + smoke test isolado (sem repro real de F5-spam/crash ainda) — usuário
+  vai validar em prod.
+- [x] **[PRIORIDADE] Detectar e limpar salas "fantasma"** — causa raiz: sala em modo nativo era
+  EXPLICITAMENTE excluída do cruzamento de órfãs do `GET /rooms` (`isOrphan` em
+  `routes/rooms.ts`, de propósito — LiveKit não vê o transporte nativo, cruzar contra ele apagaria
+  sala nativa ativa ~20s depois de criada) mas nunca ganhou um substituto — sala cujo host nunca
+  conecta (crash entre `POST /rooms` e o WS) ou cujo host cai e não volta ficava presa pra sempre,
+  sem transmissão real por trás. **Fix**: reaproveitado o TTL que já existia pro caso LiveKit
+  (`scheduleRoomCleanup`/`cancelRoomCleanup`, `ROOM_EMPTY_TTL_SECONDS`, padrão 5min) —
+  `services/rooms.ts::createRoom` agenda destruição ao criar sala nativa;
+  `nativeWsRelay.ts::registerHostSocket` cancela quando o host conecta de verdade (primeira vez ou
+  reconexão) e reagenda quando o socket do host fecha. Validado com `tsc --noEmit` limpo + smoke
+  test do import circular `rooms.ts`↔`nativeWsRelay.ts` em runtime (`tsx`, sem crash) — cenário de
+  host morto de verdade ainda não testado, usuário vai validar em prod.
+1. **Áudio errado ao trocar de fonte ao vivo** — trocar de janela/monitor no meio da transmissão
+   continua capturando o áudio da fonte ANTERIOR também (não troca o filtro de exclusão/inclusão
+   de processo junto com o vídeo). Ver `AudioCaptureCore`/`swapNativeTransportSource` em
+   `main/index.ts` — o swap de vídeo já existe, o de áudio provavelmente nunca foi religado nesse
+   fluxo.
+2. **F5 demais no espectador derruba a transmissão** — usuário recarregando a página repetidas
+   vezes (ou o navegador fazendo isso sozinho em background) parece contribuir pra transmissão
+   cair. Investigar limite/cooldown de reconexão (relacionado ao WS reconnect adicionado hoje,
+   ver seção "WebRTC (TURN + resiliência)" abaixo) e se o host trata bem múltiplas entradas/saídas
+   rápidas do mesmo espectador.
+3. **HEVC não funciona em todos os PCs/dispositivos** — validar de verdade por quê (suspeita:
+   suporte de hardware de decode inconsistente, mesma classe de problema já documentado no bug do
+   fallback quebrado desta sessão — ver seção abaixo). Pode ser só documentar a limitação, ou pode
+   ter algo corrigível.
+4. **Aba de telas (SourcePicker) fica espremida** — grade de fontes aperta dependendo da
+   quantidade de itens/altura do rodapé de config. Ajuste de CSS, mesma área já mexida antes
+   (`.picker-grid`/`.picker-body`, ver Sprint de UI anterior).
+5. **FPS travado em ~55 capturando janela de jogo** — mesmo sintoma já investigado pro caminho de
+   MONITOR (contenção de GPU, `docs/NATIVE_CAPTURE.md`) — validar se é a mesma causa ou algo
+   específico do backend de janela (WGC).
+6. **Troca de fonte pra monitor não funciona a partir do próprio monitor ativo** — se já
+   compartilhando Monitor 1 e tenta trocar pra Monitor 2, não troca; só funciona se estiver
+   numa JANELA no momento da troca. Bug real no fluxo de swap (`swapNativeTransportSource`/
+   `SourcePicker`) — provavelmente uma checagem tipo "mesma fonte" comparando errado
+   monitor-pra-monitor.
+
 ## 🐛 Bug real de prod: espectador travava "conectando" pra sempre + app do host caía
 
 **Relato do usuário**: depois das últimas atualizações, conectar de outro dispositivo (celular,

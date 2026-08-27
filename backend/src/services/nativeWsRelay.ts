@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
+import { cancelRoomCleanup, scheduleRoomCleanup } from "./rooms.js";
 
 // Sinalização do transporte nativo via WebSocket, multi-espectador (ver
 // docs/NATIVE_CAPTURE.md Fase 4 — SFU do projeto: 1 sessão `TransportCore` por espectador, mesmo
@@ -43,6 +44,10 @@ export function registerHostSocket(roomId: string, socket: WebSocket): void {
     state.host.close();
   }
   state.host = socket;
+  // Host de verdade presente agora — cancela qualquer destruição pendente da sala (agendada na
+  // criação, pra cobrir o caso de o host nunca aparecer, ou no "close" anterior, pra cobrir o
+  // caso de o host ter caído e voltado). Ver comentário em `rooms.ts::createRoom`.
+  cancelRoomCleanup(roomId);
 
   // Espectadores PERSISTEM entre reconexões de host (diferente do V1, onde qualquer troca de
   // conexão do host matava a sala inteira) — avisa de cada um já conectado pra esse host novo
@@ -52,7 +57,24 @@ export function registerHostSocket(roomId: string, socket: WebSocket): void {
   }
 
   socket.on("close", () => {
-    if (state.host === socket) state.host = null;
+    if (state.host === socket) {
+      state.host = null;
+      // Host sumiu (crash, queda de rede sem voltar) — agenda a destruição da sala pra não ficar
+      // "ativa" pra sempre sem transmissão real nenhuma por trás. O host já tenta reconectar
+      // sozinho com backoff (main/index.ts, teto 10s) bem antes do TTL (5min por padrão,
+      // `ROOM_EMPTY_TTL_SECONDS`) — reconexão de verdade cancela isso de novo lá em cima.
+      scheduleRoomCleanup(roomId);
+    }
+  });
+
+  // Sem isso, um erro de socket (reset de conexão, timeout, F5 repetido no espectador causando
+  // aborts em sequência etc.) é um evento "error" sem listener — `ws`/Node relança como exceção
+  // não tratada e derruba o PROCESSO INTEIRO do backend, matando toda transmissão ativa na
+  // instância, não só a sessão desse espectador. `close` já é emitido em seguida de qualquer
+  // forma (reconexão do host já trata isso), então aqui só precisa existir pra não deixar o erro
+  // sem dono.
+  socket.on("error", (err) => {
+    console.warn(`[nativeWsRelay] erro no socket do host (sala ${roomId}):`, err);
   });
 
   // Mensagens do host (offer/ice) já vêm com `viewerId` — repassa cru pro espectador certo, sem
@@ -84,6 +106,14 @@ export function registerViewerSocket(roomId: string, socket: WebSocket): string 
   socket.on("close", () => {
     state.viewers.delete(viewerId);
     if (state.host) sendJson(state.host, { type: "viewer-left", viewerId });
+  });
+
+  // Caso principal que motivou isso: espectador com carregamento lento apertando F5 repetido —
+  // cada tentativa nova pode abortar a anterior com reset de conexão. Sem listener de "error"
+  // aqui, isso derrubava o processo do backend inteiro (ver comentário equivalente em
+  // `registerHostSocket` acima).
+  socket.on("error", (err) => {
+    console.warn(`[nativeWsRelay] erro no socket do espectador ${viewerId} (sala ${roomId}):`, err);
   });
 
   // Mensagens do espectador (answer/ice) NÃO carregam `viewerId` (ele não sabe o próprio id) —
