@@ -89,6 +89,50 @@ export function useNativeStream(roomId: string) {
     const JITTER_EWMA_ALPHA = 1 / 16; // mesmo peso que RFC 3550 usa pra estimativa de jitter RTP
     const JITTER_SAFETY_MULTIPLIER = 4; // margem de segurança sobre o jitter médio medido
 
+    // Ancoragem/jitter e o buffer adaptativo eram só do VÍDEO — o áudio escrevia assim que
+    // decodificava, sem atraso nenhum (comentário antigo: "o pipeline de áudio do navegador já
+    // lida com o ritmo de reprodução"). Isso é verdade pro RITMO interno de cada faixa, mas não
+    // sincroniza as DUAS entre si — sob rede ruim, o vídeo atrasa de propósito pra absorver
+    // jitter e o áudio não, dessincronizando (relatado em prod, ver docs/TASKS.md item
+    // "[URGENTE] Áudio dessincroniza..."). Os dois canais usam o MESMO relógio de origem
+    // (`timestampUs = (Date.now()-startTime)*1000` em main/index.ts, gerado uma vez por tick e
+    // usado pros dois `transportSend*Frame`), então dá pra ancorar os dois no MESMO
+    // `anchorLocalMs`/`anchorStreamUs` e aplicar o MESMO atraso adaptativo — funções genéricas
+    // abaixo, chamadas pelos dois `onmessage`/`decoder.output`.
+    function noteArrivalAndUpdateJitter(timestampUs: number): void {
+      const arrivalLocalMs = performance.now();
+      if (anchorLocalMs === null) {
+        anchorLocalMs = arrivalLocalMs;
+        anchorStreamUs = timestampUs;
+        return;
+      }
+      const expectedLocalMs = anchorLocalMs + (timestampUs - anchorStreamUs) / 1000;
+      const delta = arrivalLocalMs - expectedLocalMs;
+      // EWMA — só a MAGNITUDE do desvio importa (adiantado ou atrasado, os dois indicam rede
+      // instável), não o sinal. Compartilhado entre vídeo e áudio de propósito: os dois passam
+      // pelo MESMO caminho de rede, jitter medido em qualquer um dos dois é sinal válido pros dois.
+      jitterEstimateMs += (Math.abs(delta) - jitterEstimateMs) * JITTER_EWMA_ALPHA;
+      autoDelayMs = Math.min(PLAYOUT_DELAY_MAX_MS, Math.max(0, Math.round(jitterEstimateMs * JITTER_SAFETY_MULTIPLIER)));
+    }
+
+    function scheduleSyncedWrite<T extends { timestamp: number; close(): void }>(
+      writer: WritableStreamDefaultWriter<T>,
+      item: T,
+    ): void {
+      const effectiveDelayMs = Math.max(userFloorMsRef.current, autoDelayMs);
+      if (anchorLocalMs === null) {
+        writer.write(item).catch(() => item.close());
+        return;
+      }
+      const targetLocalMs = anchorLocalMs + (item.timestamp - anchorStreamUs) / 1000 + effectiveDelayMs;
+      const waitMs = targetLocalMs - performance.now();
+      if (waitMs <= 0) {
+        writer.write(item).catch(() => item.close());
+      } else {
+        setTimeout(() => writer.write(item).catch(() => item.close()), waitMs);
+      }
+    }
+
     // Setado ANTES do canal de vídeo abrir de verdade (só abre depois do SDP fechar) — o handler
     // de `ondatachannel` mais abaixo lê essa variável já com o valor certo.
     let negotiatedCodec: NativeVideoCodec = "h264";
@@ -213,12 +257,13 @@ export function useNativeStream(roomId: string) {
 
         // Opus não tem conceito de keyframe/GOP como vídeo — todo pacote decodifica sozinho a
         // partir do seguinte, por isso `type: "key"` sempre (é o único tipo que faz sentido pro
-        // WebCodecs `EncodedAudioChunk` de áudio). Sem buffer de jitter próprio aqui (diferente do
-        // vídeo) — escreve assim que decodifica; o pipeline de áudio do navegador já lida com o
-        // ritmo de reprodução a partir do timestamp de cada `AudioData`.
+        // WebCodecs `EncodedAudioChunk` de áudio). Buffer de jitter COMPARTILHADO com o vídeo
+        // (`scheduleSyncedWrite`, ver comentário grande no topo do effect) — antes escrevia assim
+        // que decodificava, sem atraso nenhum, dessincronizando do vídeo sob rede ruim (o vídeo
+        // atrasa de propósito pra absorver jitter, o áudio não atrasava nada).
         const decoder = new AudioDecoder({
           output: (audioData) => {
-            writer.write(audioData).catch(() => audioData.close());
+            scheduleSyncedWrite(writer, audioData);
           },
           error: () => {
             // eslint-disable-next-line no-console
@@ -233,6 +278,7 @@ export function useNativeStream(roomId: string) {
           const view = new DataView(buffer);
           const timestampUs = Number(view.getBigUint64(0, true));
           const payload = new Uint8Array(buffer, 8);
+          noteArrivalAndUpdateJitter(timestampUs);
 
           try {
             decoder.decode(new EncodedAudioChunk({ type: "key", timestamp: timestampUs, data: payload }));
@@ -291,18 +337,7 @@ export function useNativeStream(roomId: string) {
           // `frame.timestamp` = o MESMO `timestampUs` que o chunk carregava (WebCodecs preserva
           // timestamp do chunk pro frame decodificado) — dá pra recalcular quando esse frame
           // "deveria" aparecer na tela usando a mesma âncora local/stream do onmessage abaixo.
-          const effectiveDelayMs = Math.max(userFloorMsRef.current, autoDelayMs);
-          if (anchorLocalMs === null) {
-            writer.write(frame).catch(() => frame.close());
-            return;
-          }
-          const targetLocalMs = anchorLocalMs + (frame.timestamp - anchorStreamUs) / 1000 + effectiveDelayMs;
-          const waitMs = targetLocalMs - performance.now();
-          if (waitMs <= 0) {
-            writer.write(frame).catch(() => frame.close());
-          } else {
-            setTimeout(() => writer.write(frame).catch(() => frame.close()), waitMs);
-          }
+          scheduleSyncedWrite(writer, frame);
         },
         error: (e) => {
           // Bug real reportado pelo usuário: no WebCodecs, o callback `error` do VideoDecoder
@@ -361,21 +396,10 @@ export function useNativeStream(roomId: string) {
         const payload = new Uint8Array(buffer, 9);
         bytesReceived += payload.byteLength;
 
-        // Âncora stream-time↔local-time no PRIMEIRO chunk (ver comentário no topo do effect) —
-        // todo chunk seguinte atualiza a estimativa de jitter comparando chegada esperada (se a
-        // rede fosse perfeitamente estável) com chegada real.
-        const arrivalLocalMs = performance.now();
-        if (anchorLocalMs === null) {
-          anchorLocalMs = arrivalLocalMs;
-          anchorStreamUs = timestampUs;
-        } else {
-          const expectedLocalMs = anchorLocalMs + (timestampUs - anchorStreamUs) / 1000;
-          const delta = arrivalLocalMs - expectedLocalMs;
-          // EWMA — só a MAGNITUDE do desvio importa (adiantado ou atrasado, os dois indicam rede
-          // instável), não o sinal.
-          jitterEstimateMs += (Math.abs(delta) - jitterEstimateMs) * JITTER_EWMA_ALPHA;
-          autoDelayMs = Math.min(PLAYOUT_DELAY_MAX_MS, Math.max(0, Math.round(jitterEstimateMs * JITTER_SAFETY_MULTIPLIER)));
-        }
+        // Âncora stream-time↔local-time no PRIMEIRO chunk de QUALQUER um dos 2 canais (ver
+        // `noteArrivalAndUpdateJitter` no topo do effect) — todo chunk seguinte (vídeo OU áudio)
+        // atualiza a MESMA estimativa de jitter compartilhada.
+        noteArrivalAndUpdateJitter(timestampUs);
 
         if (!gotFirstFrame && !isKeyframe) return; // WebCodecs exige que o primeiro chunk seja "key"
 

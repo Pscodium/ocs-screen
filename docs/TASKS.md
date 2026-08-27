@@ -4,6 +4,20 @@
 
 Sem investigação ainda, só a lista bruta do que foi notado testando hoje:
 
+- [x] **[URGENTE] Áudio dessincroniza do vídeo sob rede ruim do espectador** — relatado pelo
+  usuário em prod (2026-08-26/27). Causa raiz confirmada em `viewer/src/hooks/useNativeStream.ts`:
+  vídeo tinha buffer de jitter adaptativo (EWMA + `targetLocalMs`) segurando frame até um horário
+  calculado, crescendo o delay sob rede ruim; áudio escrevia assim que decodificava, sem atraso
+  nenhum — sob rede ruim os dois se afastam. **Fix**: os dois canais já usam o MESMO relógio de
+  origem (`timestampUs` gerado uma vez por tick em `main/index.ts`, usado pros dois
+  `transportSend*Frame`) — extraídas 2 funções compartilhadas (`noteArrivalAndUpdateJitter`,
+  `scheduleSyncedWrite`, genérica sobre `{timestamp, close()}` — serve pra `VideoFrame` E
+  `AudioData`) usando a MESMA âncora/estimativa de jitter/delay pros dois canais em vez de cada um
+  ter a própria. Vídeo trocado pra usar as funções compartilhadas (comportamento idêntico de
+  antes, só refatorado); áudio ganhou a mesma ancoragem no `onmessage` e o mesmo agendamento no
+  `decoder.output` (antes escrevia direto). `tsc --noEmit` limpo (viewer). Não testado rodando de
+  verdade sob rede ruim real — usuário valida.
+
 - [x] **[PRIORIDADE] Espectador nunca pode derrubar a transmissão do host** — causa raiz achada e
   corrigida: `backend/src/services/nativeWsRelay.ts` nunca tinha `socket.on("error", ...)` nem no
   socket do host nem no do espectador — evento "error" sem listener derruba o PROCESSO INTEIRO do
