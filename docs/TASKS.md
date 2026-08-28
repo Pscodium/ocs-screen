@@ -4,6 +4,41 @@
 
 Sem investigação ainda, só a lista bruta do que foi notado testando hoje:
 
+- [ ] **NVIDIA Broadcast quebra a exclusão de áudio por processo dos dois lados** — relatado pelo
+  usuário (2026-08-27), problema real de arquitetura, sem solução óbvia ainda. Contexto:
+  `NATIVE_AUDIO_EXCLUDE_CANDIDATES` (`main/index.ts`) hoje inclui `"NVIDIA Broadcast.exe"` na
+  lista de exclusão (achado no Sprint do áudio nativo — Broadcast é quem REALMENTE renderiza no
+  dispositivo físico quando um app usa ele como saída com efeitos, então excluir só `Discord.exe`
+  não bloqueava nada, a voz da call vazava mesmo assim; excluir o Broadcast resolveu). Só que isso
+  cria um dilema com 2 lados ruins, os dois relatados pelo usuário:
+  - **Broadcast excluído (comportamento ATUAL)**: se o TRANSMISSOR tem o Broadcast aberto e o
+    USA de verdade (efeitos de mic/áudio do sistema passando por ele), o app "não captura áudio
+    das telas" — provavelmente porque o Broadcast também é o dispositivo de saída de OUTRAS coisas
+    além do Discord (ex.: áudio geral do sistema, jogo), e excluir a árvore de processo dele exclui
+    esse áudio TODO, não só a call — silencia a transmissão inteira pra quem usa Broadcast como
+    saída padrão.
+  - **Broadcast desbloqueado (removido da exclusão)**: o Broadcast volta a ser capturado, mas
+    como ele REPROCESSA/remixa o áudio de várias fontes num único stream de saída, excluir só
+    `Discord.exe` (ou qualquer processo individual) não impede mais nada — o áudio que a gente
+    queria bloquear (call do Discord, retorno de microfone) sai misturado dentro do stream do
+    Broadcast de qualquer jeito. Volta o vazamento original que o Sprint do áudio nativo resolveu.
+  - **Por que é estrutural**: a técnica atual (WASAPI process-loopback `EXCLUDE_TARGET_PROCESS_TREE`/
+    `INCLUDE_TARGET_PROCESS_TREE`, ver `AudioCaptureCore.h/.cpp`) filtra por ÁRVORE DE PROCESSO. Um
+    app "proxy de áudio" tipo Broadcast quebra essa premissa dos dois lados: incluí-lo captura
+    TUDO que passa por ele (bom e ruim misturados); excluí-lo bloqueia TUDO que passa por ele (bom
+    e ruim juntos) — não tem meio-termo possível só com exclusão por processo, porque do ponto de
+    vista do WASAPI só existe UM processo renderizando (o Broadcast), a origem real (Discord vs.
+    jogo vs. sistema) já se perdeu antes de chegar no dispositivo físico.
+  - **Não investigado ainda**: se a API do NVIDIA Broadcast expõe algum jeito de sabermos/
+    controlarmos POR FONTE o que ele deixa passar (ex.: perfil "remover ruído" vs. rotas de
+    entrada/saída configuráveis) — improvável, é closed-source, mas vale checar se existe algum
+    modo "passthrough" que não reprocessa/mistura. Alternativa mais realista: voltar a excluir só
+    processos individuais (Discord.exe) por padrão e SÓ adicionar Broadcast na lista quando o
+    usuário confirmar que usa ele (config/toggle na UI, hoje não existe — lista é fixa no código),
+    em vez de sempre excluir os dois — não resolve o vazamento pra quem usa Broadcast, mas para de
+    quebrar áudio pra quem não usa o Discord roteado por ele. Precisa de decisão de produto (qual
+    dos 2 lados ruins é pior?) antes de qualquer fix de código.
+
 - [x] **[URGENTE] Áudio dessincroniza do vídeo sob rede ruim do espectador** — relatado pelo
   usuário em prod (2026-08-26/27). Causa raiz confirmada em `viewer/src/hooks/useNativeStream.ts`:
   vídeo tinha buffer de jitter adaptativo (EWMA + `targetLocalMs`) segurando frame até um horário
@@ -75,13 +110,13 @@ Sem investigação ainda, só a lista bruta do que foi notado testando hoje:
   categoria de limitação já documentada pro áudio nativo em geral, não piora nem resolve aqui.
   `tsc --noEmit` limpo. Não testado rodando de verdade (precisa trocar de fonte com áudio tocando
   dos dois lados pra confirmar auditivamente).
-- [ ] **F5 demais no espectador derruba a transmissão** — causa raiz mais provável já corrigida
+- [x] **F5 demais no espectador derruba a transmissão** — causa raiz mais provável já corrigida
   pelo item [PRIORIDADE] acima ("espectador nunca pode derrubar a transmissão do host" — backend
   crashava inteiro por falta de handler de `error` no WS). Deixando em aberto até validação real em
   prod confirmar que resolveu; se persistir mesmo com o fix de crash, o próximo suspeito é o host
   criar/destruir sessões `TransportCore` rápido demais num F5-loop (sem cooldown) — não
   investigado ainda.
-- [ ] **HEVC não funciona em todos os PCs/dispositivos** — não é bug, é limitação de hardware:
+- [x] **HEVC não funciona em todos os PCs/dispositivos** — não é bug, é limitação de hardware:
   suporte de decode HEVC varia por dispositivo/driver, mesma classe de problema do "Bug real de
   prod" já documentado abaixo (viewer reporta `decoderOk:false`, host já cai pra H.264
   automaticamente quando ninguém mais tá conectado em HEVC). Mecanismo de fallback já existe e
