@@ -80,7 +80,7 @@ async function readSubscribeStats(track: RemoteTrack): Promise<Partial<StreamSta
   return null;
 }
 
-export function useRoomStream(roomId: string) {
+export function useRoomStream(roomId: string, password?: string) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [phase, setPhase] = useState<ConnectionPhase>("connecting");
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.Connecting);
@@ -170,7 +170,7 @@ export function useRoomStream(roomId: string) {
 
     (async () => {
       try {
-        const { token, livekitUrl } = await fetchViewerToken(roomId);
+        const { token, livekitUrl } = await fetchViewerToken(roomId, password);
         if (cancelled) return;
         await room.connect(
           livekitUrl,

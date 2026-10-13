@@ -18,7 +18,7 @@ const STATS_POLL_MS = 2000;
 // ainda) — ver `setQuality` abaixo.
 export type NativeQualityTier = "high" | "low";
 
-export function useNativeStream(roomId: string) {
+export function useNativeStream(roomId: string, password?: string) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [phase, setPhase] = useState<ConnectionPhase>("connecting");
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.Connecting);
@@ -203,7 +203,7 @@ export function useNativeStream(roomId: string) {
     // reagir a uma renegociação do host DEPOIS de já conectado (ex.: host caiu e voltou) — isso
     // continua exigindo remontar o player (mesma limitação documentada desde o Sprint 23), só a
     // fase de handshake inicial ficou resiliente.
-    let ws = openNativeSignalingSocket(roomId);
+    let ws = openNativeSignalingSocket(roomId, password);
     let everConnected = false;
     let wsReconnectAttempt = 0;
     let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -232,7 +232,7 @@ export function useNativeStream(roomId: string) {
         wsReconnectTimer = setTimeout(() => {
           wsReconnectTimer = null;
           if (cancelled || everConnected) return;
-          ws = openNativeSignalingSocket(roomId);
+          ws = openNativeSignalingSocket(roomId, password);
           attachWsHandlers(ws);
         }, delayMs);
       };

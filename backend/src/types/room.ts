@@ -17,12 +17,18 @@ export interface Room {
   // vídeo — decidido pelo host na criação da sala (settings.nativeTransport no desktop). O viewer
   // usa isso pra escolher entre useRoomStream (LiveKit) e useNativeStream (RTCPeerConnection cru).
   nativeMode: boolean;
+  // Sala privada não aparece em GET /rooms — só entra quem tem o link.
+  isPrivate: boolean;
+  // Hash scrypt (`salt:hash` em hex) — nunca a senha em texto puro. null = sala aberta.
+  passwordHash: string | null;
 }
 
 export interface CreateRoomRequest {
   settings?: Partial<RoomSettings>;
   slug?: string;
   nativeMode?: boolean;
+  isPrivate?: boolean;
+  password?: string;
 }
 
 export interface CreateRoomResponse {
@@ -43,6 +49,7 @@ export interface RoomSummary {
   roomId: string;
   createdAt: number;
   settings: RoomSettings;
+  hasPassword: boolean;
 }
 
 export interface ListRoomsResponse {

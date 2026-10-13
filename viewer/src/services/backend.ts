@@ -9,11 +9,25 @@ export interface CreateRoomResponse {
   viewerUrl: string;
 }
 
-export async function createRoom(settings: StreamSettings, slug?: string): Promise<CreateRoomResponse> {
+export interface RoomAccess {
+  isPrivate: boolean;
+  password?: string;
+}
+
+export async function createRoom(
+  settings: StreamSettings,
+  slug?: string,
+  access: RoomAccess = { isPrivate: false },
+): Promise<CreateRoomResponse> {
   const res = await fetch(`${backendUrl}/rooms`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ settings, slug: slug || undefined }),
+    body: JSON.stringify({
+      settings,
+      slug: slug || undefined,
+      isPrivate: access.isPrivate,
+      password: access.password || undefined,
+    }),
   });
   if (!res.ok) {
     if (res.status === 409) throw new Error("Esse nome de sala já está em uso.");
@@ -30,6 +44,7 @@ export async function endRoom(roomId: string): Promise<void> {
 export interface RoomSummary {
   roomId: string;
   createdAt: number;
+  hasPassword: boolean;
 }
 
 export async function fetchActiveRooms(): Promise<RoomSummary[]> {
@@ -43,6 +58,19 @@ export interface RoomInfo {
   roomId: string;
   createdAt: number;
   nativeMode: boolean;
+  hasPassword: boolean;
+}
+
+// Valida a senha antes de montar o player (token/WS checam de novo no backend).
+export async function verifyRoomPassword(roomId: string, password: string): Promise<boolean> {
+  const res = await fetch(`${backendUrl}/rooms/${roomId}/auth`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  if (res.status === 401) return false;
+  if (!res.ok) throw new Error("Sala não encontrada ou encerrada.");
+  return true;
 }
 
 // Chamado antes de decidir qual hook usar pra assistir (LiveKit vs transporte nativo, ver
@@ -84,7 +112,8 @@ export async function fetchIceServers(): Promise<IceServerDescriptor[]> {
 // direto em useNativeStream.ts, aqui só abre a conexão.
 export type NativeVideoCodec = "h264" | "hevc" | "av1";
 
-export function openNativeSignalingSocket(roomId: string): WebSocket {
-  const wsUrl = `${backendUrl.replace(/^http/, "ws")}/rooms/${roomId}/native/ws?role=viewer`;
+export function openNativeSignalingSocket(roomId: string, password?: string): WebSocket {
+  const passwordParam = password ? `&password=${encodeURIComponent(password)}` : "";
+  const wsUrl = `${backendUrl.replace(/^http/, "ws")}/rooms/${roomId}/native/ws?role=viewer${passwordParam}`;
   return new WebSocket(wsUrl);
 }

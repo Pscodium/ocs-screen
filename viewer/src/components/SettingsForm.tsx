@@ -87,11 +87,6 @@ export function SettingsForm({ settings, onChange }: SettingsFormProps) {
           <span className="toggle-slider" />
         </span>
       </label>
-
-      <p className="settings-hint">
-        No diálogo que abrir a seguir, ligue o botão "Compartilhar também áudio do sistema" se quiser transmitir som
-        — o navegador exige essa confirmação separada, não dá pra pular.
-      </p>
     </div>
   );
 }

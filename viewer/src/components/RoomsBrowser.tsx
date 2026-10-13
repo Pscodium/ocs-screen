@@ -13,6 +13,14 @@ function timeAgo(createdAt: number): string {
   return `há ${hours}h`;
 }
 
+function LockIcon() {
+  return (
+    <svg className="room-row-lock" width="12" height="12" viewBox="0 0 24 24" aria-label="Protegida por senha">
+      <path fill="currentColor" d="M17 9V7A5 5 0 0 0 7 7v2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2ZM9 7a3 3 0 0 1 6 0v2H9Z" />
+    </svg>
+  );
+}
+
 export function RoomsBrowser() {
   const navigate = useNavigate();
   const [rooms, setRooms] = useState<RoomSummary[] | null>(null);
@@ -63,7 +71,10 @@ export function RoomsBrowser() {
         <button key={room.roomId} className="room-row" onClick={() => navigate(`/s/${room.roomId}`)}>
           <span className="room-row-dot" />
           <span className="room-row-info">
-            <span className="room-row-name">{room.roomId}</span>
+            <span className="room-row-name">
+              {room.roomId}
+              {room.hasPassword && <LockIcon />}
+            </span>
             <span className="room-row-meta">{timeAgo(room.createdAt)}</span>
           </span>
           <span className="room-row-cta">Assistir</span>

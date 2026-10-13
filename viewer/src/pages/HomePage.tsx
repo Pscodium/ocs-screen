@@ -10,6 +10,11 @@ type Tab = "share" | "watch";
 export function HomePage() {
   const [settings, setSettings] = useState(defaultStreamSettings);
   const [slug, setSlug] = useState("");
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [usePassword, setUsePassword] = useState(false);
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const passwordMissing = usePassword && password.trim() === "";
   const [tab, setTab] = useState<Tab>("share");
   const { state, info, error, start, stop, optimizeCodec, optimizingCodec } = useBroadcast();
 
@@ -50,11 +55,66 @@ export function HomePage() {
               />
             </label>
 
+            <div className="access-options">
+              <label className="toggle-row">
+                <span className="toggle-row-label">
+                  Sala privada
+                  <span className="toggle-row-hint">Não aparece na lista — só entra quem tiver o link.</span>
+                </span>
+                <span className="toggle-switch">
+                  <input type="checkbox" checked={isPrivate} onChange={(e) => setIsPrivate(e.target.checked)} />
+                  <span className="toggle-slider" />
+                </span>
+              </label>
+
+              <label className="toggle-row">
+                <span className="toggle-row-label">
+                  Proteger com senha
+                  <span className="toggle-row-hint">Espectadores precisam digitar a senha pra assistir.</span>
+                </span>
+                <span className="toggle-switch">
+                  <input type="checkbox" checked={usePassword} onChange={(e) => setUsePassword(e.target.checked)} />
+                  <span className="toggle-slider" />
+                </span>
+              </label>
+
+              {usePassword && (
+                <div className="password-input-wrap">
+                  <input
+                    className="slug-input password-input"
+                    type={showPassword ? "text" : "password"}
+                    placeholder="Senha da sala"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    maxLength={128}
+                    autoComplete="new-password"
+                    autoFocus
+                  />
+                  <button
+                    type="button"
+                    className="password-reveal"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  >
+                    {showPassword ? "Ocultar" : "Mostrar"}
+                  </button>
+                </div>
+              )}
+            </div>
+
             {error && <p className="error-text">{error}</p>}
 
-            <button className="btn-primary" onClick={() => start(settings, slug)} disabled={state === "starting"}>
+            <button
+              className="btn-primary"
+              onClick={() => start(settings, slug, { isPrivate, password: usePassword ? password : undefined })}
+              disabled={state === "starting" || passwordMissing}
+            >
               {state === "starting" ? "Iniciando..." : "Compartilhar tela"}
             </button>
+
+            <p className="share-audio-hint">
+              Pra transmitir som, ligue "Compartilhar também áudio do sistema" no diálogo do navegador.
+            </p>
           </>
         ) : (
           <RoomsBrowser />

@@ -276,13 +276,13 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 3rem 1.5rem;
-  gap: 0.4rem;
+  padding: 1.5rem 1.5rem;
+  gap: 0.25rem;
   text-align: center;
 }
 
 .home-page h1 {
-  margin: 1.1rem 0 0;
+  margin: 0;
   font-size: 1.75rem;
   font-weight: 700;
   letter-spacing: -0.015em;
@@ -290,9 +290,9 @@ body {
 
 .subtitle {
   color: var(--muted);
-  margin: 0.2rem 0 2rem;
+  margin: 0.15rem 0 1.25rem;
   font-size: 0.95rem;
-  max-width: 360px;
+  max-width: 420px;
 }
 
 .home-card {
@@ -301,7 +301,7 @@ body {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 1.5rem;
+  padding: 1.25rem 1.5rem;
 }
 
 .mode-tabs {
@@ -423,8 +423,8 @@ body {
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
+  gap: 0.85rem;
+  margin-bottom: 1rem;
 }
 
 .settings-field {
@@ -461,7 +461,7 @@ body {
 }
 
 .room-slug-field {
-  margin: 0.9rem 0 1.1rem;
+  margin: 0 0 1rem;
 }
 
 .slug-input {
@@ -480,6 +480,111 @@ body {
 .slug-input:focus-visible {
   outline: none;
   border-color: var(--accent);
+}
+
+/* Privacidade/senha da sala — card agrupado com os toggles. */
+.access-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin: 0 0 1.1rem;
+  padding: 0.85rem 0.9rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  animation: password-reveal-in 0.18s ease;
+}
+
+.password-input-wrap .password-input {
+  flex: 1;
+  padding-right: 4.8rem;
+  background: var(--surface);
+}
+
+.password-reveal {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.password-reveal:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+@keyframes password-reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.password-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  width: min(360px, 100%);
+}
+
+.password-gate h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.password-gate .subtitle {
+  margin: 0 0 0.25rem;
+}
+
+.password-gate .password-input {
+  width: 100%;
+  text-align: center;
+}
+
+.password-gate-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.input-error {
+  border-color: var(--danger);
+}
+
+.room-row-lock {
+  margin-left: 0.4rem;
+  vertical-align: -1px;
+  color: var(--muted);
+}
+
+.share-audio-hint {
+  margin: 0.6rem 0 0;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--muted);
+  text-align: center;
 }
 
 .settings-hint {

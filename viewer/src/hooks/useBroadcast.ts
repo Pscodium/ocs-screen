@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState } from "livekit-client";
 import { captureScreen, stopCapture } from "../services/capture";
-import { createRoom, endRoom } from "../services/backend";
+import { createRoom, endRoom, type RoomAccess } from "../services/backend";
 import { startBroadcast, readPublishStats, switchToH264, type BroadcastSession } from "../services/publish";
 import type { StreamSettings } from "../types/stream";
 
@@ -39,7 +39,7 @@ export function useBroadcast() {
   const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const settingsRef = useRef<StreamSettings | null>(null);
 
-  const start = useCallback(async (settings: StreamSettings, slug?: string) => {
+  const start = useCallback(async (settings: StreamSettings, slug?: string, access?: RoomAccess) => {
     setState("starting");
     setError(null);
     settingsRef.current = settings;
@@ -47,7 +47,7 @@ export function useBroadcast() {
       const { stream, settings: actualSettings, hasAudio } = await captureScreen(settings);
       streamRef.current = stream;
 
-      const room = await createRoom(settings, slug);
+      const room = await createRoom(settings, slug, access);
       roomIdRef.current = room.roomId;
 
       const session = await startBroadcast(

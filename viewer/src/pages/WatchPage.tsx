@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useParams } from "react-router-dom";
 import { ConnectionState } from "livekit-client";
 import { useRoomStream } from "../hooks/useRoomStream";
 import { useNativeStream } from "../hooks/useNativeStream";
-import { fetchRoomInfo } from "../services/backend";
+import { fetchRoomInfo, verifyRoomPassword } from "../services/backend";
 import { VideoPlayer } from "../components/VideoPlayer";
 
 export function WatchPage() {
@@ -19,13 +19,17 @@ export function WatchPage() {
 // sinalização diferentes, não dá pra tentar um e cair pro outro depois de já ter começado.
 function WatchRoomGate({ roomId }: { roomId: string }) {
   const [nativeMode, setNativeMode] = useState<boolean | null>(null);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [password, setPassword] = useState<string | undefined>(undefined);
   const [gateError, setGateError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     fetchRoomInfo(roomId)
       .then((info) => {
-        if (!cancelled) setNativeMode(info.nativeMode);
+        if (cancelled) return;
+        setNeedsPassword(info.hasPassword);
+        setNativeMode(info.nativeMode);
       })
       .catch((err) => {
         if (!cancelled) setGateError(err instanceof Error ? err.message : "Erro ao conectar.");
@@ -37,12 +41,66 @@ function WatchRoomGate({ roomId }: { roomId: string }) {
 
   if (gateError) return <StatusMessage text={gateError} />;
   if (nativeMode === null) return <StatusMessage text="Conectando à transmissão..." overlay />;
-  return nativeMode ? <NativeWatchRoom roomId={roomId} /> : <WatchRoom roomId={roomId} />;
+  if (needsPassword && password === undefined) return <PasswordGate roomId={roomId} onUnlock={setPassword} />;
+  return nativeMode ? (
+    <NativeWatchRoom roomId={roomId} password={password} />
+  ) : (
+    <WatchRoom roomId={roomId} password={password} />
+  );
 }
 
-function NativeWatchRoom({ roomId }: { roomId: string }) {
+function PasswordGate({ roomId, onUnlock }: { roomId: string; onUnlock: (password: string) => void }) {
+  const [value, setValue] = useState("");
+  const [checking, setChecking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!value || checking) return;
+    setChecking(true);
+    setError(null);
+    try {
+      if (await verifyRoomPassword(roomId, value)) onUnlock(value);
+      else setError("Senha incorreta.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erro ao validar senha.");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div className="status-page">
+      <form className="home-card password-gate" onSubmit={submit}>
+        <div className="password-gate-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="currentColor" d="M17 9V7A5 5 0 0 0 7 7v2a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2ZM9 7a3 3 0 0 1 6 0v2H9Z" />
+          </svg>
+        </div>
+        <h2>Transmissão protegida</h2>
+        <p className="subtitle">
+          Digite a senha para assistir <strong>{roomId}</strong>.
+        </p>
+        <input
+          className={`slug-input password-input${error ? " input-error" : ""}`}
+          type="password"
+          placeholder="Senha"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          autoFocus
+        />
+        {error && <p className="error-text">{error}</p>}
+        <button className="btn-primary" type="submit" disabled={!value || checking}>
+          {checking ? "Verificando..." : "Entrar"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function NativeWatchRoom({ roomId, password }: { roomId: string; password?: string }) {
   const { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs, quality, setQuality } =
-    useNativeStream(roomId);
+    useNativeStream(roomId, password);
   return (
     <WatchRoomView
       phase={phase}
@@ -59,9 +117,9 @@ function NativeWatchRoom({ roomId }: { roomId: string }) {
   );
 }
 
-function WatchRoom({ roomId }: { roomId: string }) {
+function WatchRoom({ roomId, password }: { roomId: string; password?: string }) {
   const { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs } =
-    useRoomStream(roomId);
+    useRoomStream(roomId, password);
   return (
     <WatchRoomView
       phase={phase}

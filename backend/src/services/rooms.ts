@@ -1,3 +1,4 @@
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { generateRoomId } from "../utils/ids.js";
 import { cleanupNativeSockets } from "./nativeWsRelay.js";
@@ -19,6 +20,7 @@ export function createRoom(
   settings?: Partial<RoomSettings>,
   slug?: string,
   nativeMode = false,
+  access: { isPrivate?: boolean; password?: string } = {},
 ): Room {
   const id = slug ?? generateRoomId();
   if (slug && rooms.has(slug)) throw new SlugTakenError(`Sala "${slug}" já está em uso.`);
@@ -29,6 +31,8 @@ export function createRoom(
     createdAt: Date.now(),
     settings: { ...defaultSettings, ...settings },
     nativeMode,
+    isPrivate: access.isPrivate ?? false,
+    passwordHash: access.password ? hashPassword(access.password) : null,
   };
   rooms.set(room.id, room);
   // Sala nativa nunca aparece no cruzamento de órfãs de `GET /rooms` (`isOrphan` em
@@ -40,6 +44,21 @@ export function createRoom(
   // (nativeWsRelay.ts) cancelam/reagendam isso conforme o host aparece/some de verdade.
   if (nativeMode) scheduleRoomCleanup(room.id);
   return room;
+}
+
+function hashPassword(password: string): string {
+  const salt = randomBytes(16);
+  return `${salt.toString("hex")}:${scryptSync(password, salt, 32).toString("hex")}`;
+}
+
+// Sala sem senha sempre libera. Comparação em tempo constante pra não vazar timing.
+export function checkRoomPassword(room: Room, password: string | undefined): boolean {
+  if (!room.passwordHash) return true;
+  if (!password) return false;
+  const [saltHex, hashHex] = room.passwordHash.split(":");
+  const expected = Buffer.from(hashHex, "hex");
+  const actual = scryptSync(password, Buffer.from(saltHex, "hex"), expected.length);
+  return timingSafeEqual(expected, actual);
 }
 
 export function getRoom(roomId: string): Room | undefined {
