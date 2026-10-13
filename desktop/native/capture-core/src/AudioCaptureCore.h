@@ -72,6 +72,12 @@ public:
     // não precisa achar cada processo filho manualmente.
     static DWORD FindProcessIdByName(const wchar_t* exeName);
 
+    // Nome amigável do dispositivo de RENDERIZAÇÃO padrão atual (ex.: L"NVIDIA Broadcast",
+    // L"Fone de ouvido (Realtek...)") — usado pra decidir se um "app proxy de áudio" (Broadcast,
+    // Voicemeeter etc.) tá REALMENTE no caminho de renderização antes de excluí-lo da captura (ver
+    // uso em main/index.ts). String vazia se a consulta falhar por qualquer motivo.
+    static std::wstring GetDefaultRenderDeviceName();
+
 private:
     bool InitializeProcessLoopback(DWORD targetProcessId, PROCESS_LOOPBACK_MODE mode);
     bool InitializeDeviceLoopback();

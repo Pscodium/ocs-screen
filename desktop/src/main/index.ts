@@ -609,6 +609,11 @@ interface NativeCaptureAddon {
   // último poll. Só pra validar ao vivo se um filtro de processo (exclude/include) tá cortando de
   // verdade, não é usado pra nada além de log.
   getAudioRms(): number;
+  // Nome amigável do dispositivo de RENDERIZAÇÃO padrão atual (ver AudioCaptureCore::
+  // GetDefaultRenderDeviceName) — usado pra só excluir um "app proxy de áudio" (ex.: NVIDIA
+  // Broadcast) da captura quando ele estiver de fato configurado como saída, em vez de excluir
+  // sempre e silenciar quem não usa esse app. String vazia se a consulta falhar.
+  getDefaultAudioDeviceName(): string;
 }
 
 let nativeCapture: NativeCaptureAddon | null = null;
@@ -823,47 +828,84 @@ function startNativeCaptureSource(monitorIndex?: number, hwnd?: number): boolean
 // janela usa INCLUDE (só a árvore daquele processo), monitor usa EXCLUDE (candidatos conhecidos de
 // app com efeito de áudio, ver `NATIVE_AUDIO_EXCLUDE_CANDIDATES`). Nunca bloqueia a transmissão se
 // falhar — só fica sem áudio, mesmo comportamento de sempre.
+// Blindado com try/catch (2026-08-29, relatado como "sistema de áudio muito ruim" — ver
+// docs/TASKS.md): qualquer exceção aqui antes não tinha rede de segurança nenhuma — se
+// `initAudioCapture`/`getDefaultAudioDeviceName` lançasse (addon desatualizado sem uma função nova,
+// COM em estado inesperado, etc.), a exceção subia pra dentro do handler de "native-transport:start"
+// e abortava a transmissão INTEIRA (vídeo incluído) por causa só do áudio. Mesma classe de bug já
+// corrigida pro WebSocket do backend (`nativeWsRelay.ts`), nunca replicada aqui. Áudio é sempre
+// best-effort: qualquer falha aqui dentro vira "transmissão segue sem áudio", nunca derruba nada.
 function startNativeAudioForSource(hwnd?: number): void {
   if (!nativeCapture) return;
-  if (hwnd !== undefined) {
-    const audioResult = nativeCapture.initAudioCaptureForWindow(hwnd);
-    ntAudioActive = audioResult.ok;
-    if (!ntAudioActive) {
-      console.warn("[native-transport] captura de áudio nativa (janela) não iniciou — transmissão segue sem áudio.");
+  // Sessão de captura NOVA (troca de fonte ou início) — relógio de áudio recomeça junto, senão o
+  // primeiro pacote da fonte nova herdaria um `ntAudioClockUs` de uma sessão anterior possivelmente
+  // bem atrás do tempo real.
+  ntAudioClockUs = null;
+  try {
+    if (hwnd !== undefined) {
+      const audioResult = nativeCapture.initAudioCaptureForWindow(hwnd);
+      ntAudioActive = audioResult.ok;
+      if (!ntAudioActive) {
+        console.warn("[native-transport] captura de áudio nativa (janela) não iniciou — transmissão segue sem áudio.");
+      } else {
+        console.log("[native-transport] áudio nativo ativo (só a janela compartilhada).");
+      }
+      return;
+    }
+    // Tenta cada candidato em ordem — o PRIMEIRO que resolver um PID de verdade é o usado. Proxy(s)
+    // confirmados como dispositivo de saída padrão (ver `resolveAudioExcludeCandidates`) vêm antes
+    // dos fixos. `initAudioCapture` recria a sessão a cada tentativa (barato, só ativa uma vez por
+    // troca de fonte) — não dá pra saber de antemão qual candidato tá rodando sem tentar.
+    const candidates = resolveAudioExcludeCandidates();
+    let resolvedName: string | null = null;
+    let resolvedPid = 0;
+    let lastAttemptOk = false;
+    for (const candidate of candidates) {
+      const attempt = nativeCapture.initAudioCapture(candidate);
+      if (attempt.ok && attempt.excludedPid !== 0) {
+        resolvedName = candidate;
+        resolvedPid = attempt.excludedPid;
+        lastAttemptOk = true;
+        break;
+      }
+      // Só destrói se essa tentativa também falhou (`ok:false`) — se `ok:true` mas
+      // `excludedPid:0`, a API já caiu sozinha pro loopback normal (sem exclusão, ver
+      // `AudioCaptureCore::Initialize`) e a sessão já tá ATIVA e funcionando; destruir e recriar
+      // de novo no fallback abaixo era só trabalho e um gap de áudio à toa, sem motivo real (nenhum
+      // candidato seguinte resolveria diferente de qualquer forma).
+      if (!attempt.ok) nativeCapture.destroyAudioCapture();
+      else lastAttemptOk = true;
+    }
+    if (resolvedPid === 0) {
+      if (lastAttemptOk) {
+        // Última tentativa já deixou uma sessão sem exclusão ativa e funcionando — usa ela mesma.
+        ntAudioActive = true;
+        console.warn(
+          `[native-transport] nenhum de [${candidates.join(", ")}] encontrado ao iniciar áudio — captura SEM exclusão (tudo incluído).`,
+        );
+      } else {
+        // Nenhuma tentativa funcionou nem em fallback — tenta uma vez mais, explícito, sem
+        // nenhum processo alvo.
+        const fallback = nativeCapture.initAudioCapture();
+        ntAudioActive = fallback.ok;
+        if (ntAudioActive) {
+          console.warn("[native-transport] captura de áudio nativa ativa, mas SEM nenhuma exclusão (candidatos falharam).");
+        } else {
+          console.warn("[native-transport] captura de áudio nativa não iniciou — transmissão segue sem áudio.");
+        }
+      }
     } else {
-      console.log("[native-transport] áudio nativo ativo (só a janela compartilhada).");
+      ntAudioActive = true;
+      console.log(`[native-transport] áudio nativo ativo, excluindo PID ${resolvedPid} (${resolvedName}).`);
     }
-    return;
-  }
-  // Tenta cada candidato em ordem — o PRIMEIRO que resolver um PID de verdade é o usado.
-  // `initAudioCapture` recria a sessão a cada tentativa (barato, só ativa uma vez por troca de
-  // fonte) — não dá pra saber de antemão qual candidato tá rodando sem tentar.
-  let resolvedName: string | null = null;
-  let resolvedPid = 0;
-  for (const candidate of NATIVE_AUDIO_EXCLUDE_CANDIDATES) {
-    const attempt = nativeCapture.initAudioCapture(candidate);
-    if (attempt.ok && attempt.excludedPid !== 0) {
-      resolvedName = candidate;
-      resolvedPid = attempt.excludedPid;
-      break;
+  } catch (err) {
+    console.error("[native-transport] falha inesperada iniciando áudio nativo — transmissão segue sem áudio:", err);
+    try {
+      nativeCapture.destroyAudioCapture();
+    } catch {
+      // já em recuperação de erro — não deixa um segundo erro mascarar o primeiro no log.
     }
-    nativeCapture.destroyAudioCapture();
-  }
-  if (resolvedPid === 0) {
-    // Nenhum candidato resolveu (nenhum dos apps tava rodando nesse instante) — inicia sem
-    // exclusão mesmo assim (loopback normal), não bloqueia a transmissão por causa disso.
-    const fallback = nativeCapture.initAudioCapture();
-    ntAudioActive = fallback.ok;
-    if (ntAudioActive) {
-      console.warn(
-        `[native-transport] nenhum de [${NATIVE_AUDIO_EXCLUDE_CANDIDATES.join(", ")}] encontrado ao iniciar áudio — captura SEM exclusão (tudo incluído).`,
-      );
-    } else {
-      console.warn("[native-transport] captura de áudio nativa não iniciou — transmissão segue sem áudio.");
-    }
-  } else {
-    ntAudioActive = true;
-    console.log(`[native-transport] áudio nativo ativo, excluindo PID ${resolvedPid} (${resolvedName}).`);
+    ntAudioActive = false;
   }
 }
 // Codec ATIVO agora (pode ter degradado de HEVC pra H.264 em qualquer momento — cascata de
@@ -874,16 +916,60 @@ let ntCodecFallbackDone = false;
 
 // Áudio nativo (ver AudioCaptureCore.h) — pedido do usuário: nome do processo cujo áudio NUNCA
 // deve sair pela transmissão (excluído do loopback de sistema). Discord é o caso de uso real
-// (compartilhar tela DURANTE uma call), mas usuário com "NVIDIA Broadcast" configurado como
-// dispositivo de SAÍDA do Discord (efeitos de áudio/remoção de eco) faz TODO o áudio do Discord
-// (incluindo voz de call) ser renderizado de verdade pelo processo do Broadcast, não pelo
-// Discord.exe — Discord só manda pro dispositivo VIRTUAL do Broadcast, quem realmente toca no
-// dispositivo físico (o que o loopback de sistema enxerga) é o Broadcast. Excluir só "Discord.exe"
-// nesse setup não pega nada (confirmado com log real: `audioRms` subia com a voz do amigo mesmo
-// com a exclusão "ativa"). Lista de candidatos tentados em ordem — primeiro que resolver um PID
-// de verdade é o usado; sem UI pra escolher ainda, próximo passo se precisar de mais casos.
-const NATIVE_AUDIO_EXCLUDE_CANDIDATES = ["NVIDIA Broadcast.exe", "Discord.exe"];
+// (compartilhar tela DURANTE uma call), sempre tentado.
+const NATIVE_AUDIO_EXCLUDE_CANDIDATES = ["Discord.exe"];
+
+// Apps "proxy de áudio" — usuário com um desses configurado como dispositivo de SAÍDA do Discord
+// (efeitos/remoção de eco) faz TODO o áudio do Discord (incluindo voz de call) ser renderizado de
+// verdade pelo processo do proxy, não pelo Discord.exe — Discord só manda pro dispositivo VIRTUAL
+// dele, quem realmente toca no dispositivo físico (o que o loopback de sistema enxerga) é o proxy.
+// Excluir só "Discord.exe" nesse setup não pega nada (confirmado com log real: `audioRms` subia com
+// a voz do amigo mesmo com a exclusão "ativa" — ver docs/TASKS.md).
+//
+// Só que excluir o proxy INCONDICIONALMENTE quebra o lado oposto: quem tem o app aberto mas NÃO o
+// usa como saída (ex.: fone físico direto) perde TODO o áudio do sistema que passaria por ele —
+// arquitetura de exclusão por árvore de processo não separa fonte dentro de um proxy que
+// reprocessa/remixa várias entradas num stream de saída só (ver doc, "por que é estrutural").
+//
+// Fix: só inclui o proxy na lista de exclusão quando `getDefaultAudioDeviceName()` confirma que ele
+// É o dispositivo de renderização padrão ATUAL — sinal direto de "tá no caminho de saída de
+// verdade", não só "tá instalado/rodando". Sem toggle manual: decide sozinho por transmissão,
+// reflete se o usuário trocou de saída padrão entre uma sessão e outra.
+const NATIVE_AUDIO_PROXY_APPS = [{ exeName: "NVIDIA Broadcast.exe", deviceNameMatch: "nvidia broadcast" }];
+
+// Resolve os candidatos de exclusão pra ESSA transmissão: proxy(s) cujo nome bate com o
+// dispositivo de renderização padrão atual, na frente (mais específico), seguido dos candidatos
+// fixos (Discord). `getDefaultAudioDeviceName` pode falhar/vir vazio (ex.: sem dispositivo padrão
+// configurado) — nesse caso nenhum proxy entra, comportamento cai pro candidato fixo só.
+function resolveAudioExcludeCandidates(): string[] {
+  const defaultDeviceName = nativeCapture?.getDefaultAudioDeviceName()?.toLowerCase() ?? "";
+  const activeProxies = NATIVE_AUDIO_PROXY_APPS.filter(
+    (proxy) => defaultDeviceName && defaultDeviceName.includes(proxy.deviceNameMatch),
+  ).map((proxy) => proxy.exeName);
+  return [...activeProxies, ...NATIVE_AUDIO_EXCLUDE_CANDIDATES];
+}
+
 let ntAudioActive = false;
+// Relógio PRÓPRIO do áudio (2026-08-30, relatado como "sistema de áudio muito ruim, às vezes só
+// toca depois de X tempo ou só quando a transmissão encerra" — ver docs/TASKS.md). Causa raiz: o
+// loop de vídeo (`runNativeTransportLoop`) tickeia em ~1000/targetFps ms (ex.: 33ms a 30fps), mas
+// pacotes Opus são fatias fixas de 20ms (`AudioCaptureCore::samplesPerChannelPerFrame_`) — quando
+// `pollAudioPackets()` devolve MAIS de 1 pacote na mesma volta (comum: 33ms de vídeo ≈ 1.6 pacote
+// de áudio; pior ainda se o loop atrasar por qualquer motivo — encoder, GC, I/O), todos os pacotes
+// daquela volta saíam com o MESMO `timestampUs` do vídeo (reusado sem querer). O espectador agenda
+// playback pelo timestamp (`scheduleSyncedWrite`) — pacotes com timestamp igual "empilham" pra
+// tocar juntos; se o host atrasar, o backlog inteiro sai marcado como "agora" de uma vez, soando
+// como silêncio seguido de rajada (às vezes só perceptível depois que a transmissão encerra e o
+// backlog finalmente drena). Fix: cada pacote de áudio ganha SEU PRÓPRIO timestamp, incrementado em
+// exatamente 20ms a partir do anterior — reflete o espaçamento REAL de cada frame Opus, não o tick
+// do loop de vídeo que por acaso o despachou.
+let ntAudioClockUs: number | null = null;
+const AUDIO_FRAME_DURATION_US = 20_000; // 20ms @ 48kHz, mesmo frame size do AudioCaptureCore
+// Se o relógio de áudio ficar muito atrás do relógio real (loop travou de verdade, não só um
+// atraso normal de scheduling) — resincroniza pro "agora" em vez de deixar o backlog crescer sem
+// fim tentando tocar tudo em sequência estritamente 20ms depois do anterior (isso SÓ adiaria o
+// problema, nunca deixaria o áudio alcançar o presente de novo).
+const AUDIO_CLOCK_MAX_DRIFT_US = 1_000_000; // 1s
 
 function stopNativeTransport(): void {
   ntActive = false;
@@ -896,6 +982,7 @@ function stopNativeTransport(): void {
   nativeCapture?.destroyEncoderLow();
   nativeCapture?.destroyAudioCapture();
   ntAudioActive = false;
+  ntAudioClockUs = null; // próxima transmissão recomeça o relógio de áudio do zero
   nativeCapture?.stop();
   ntRoomId = null;
   ntBackendUrl = null;
@@ -1305,10 +1392,36 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
     // Áudio poll a cada volta do loop (mesmo ritmo do vídeo, sem timer/thread própria) — o
     // `AudioCaptureCore` já acumula PCM internamente e só devolve pacote quando fecha um frame
     // Opus de 20ms, então isso pode devolver 0, 1 ou vários pacotes por chamada.
+    //
+    // try/catch AQUI é crítico (2026-08-29, relatado como "sistema de áudio muito ruim" — ver
+    // docs/TASKS.md): esse loop inteiro (vídeo INCLUÍDO) roda dentro da MESMA função recursiva via
+    // `setImmediate` — antes dessa blindagem, qualquer exceção do lado de áudio (WASAPI devolvendo
+    // erro inesperado, addon em estado ruim) escapava sem seguro nenhum e travava o loop pra
+    // SEMPRE, matando o vídeo de TODOS os espectadores por causa só do áudio de ninguém em
+    // particular. Áudio nunca pode ser motivo de a transmissão inteira cair — na falha, desliga só
+    // o áudio (`ntAudioActive = false`) e deixa o vídeo seguir intacto.
     if (ntAudioActive) {
-      const audioPackets = nativeCapture.pollAudioPackets();
-      for (const packet of audioPackets) {
-        nativeCapture.transportSendAudioFrame(packet, timestampUs);
+      try {
+        const audioPackets = nativeCapture.pollAudioPackets();
+        for (const packet of audioPackets) {
+          // Relógio próprio do áudio (ver `ntAudioClockUs` acima) — cada pacote avança exatos 20ms
+          // do anterior, nunca reusa o `timestampUs` do vídeo (que é só "agora", igual pra todos os
+          // pacotes despachados na mesma volta do loop).
+          if (ntAudioClockUs === null || timestampUs - ntAudioClockUs > AUDIO_CLOCK_MAX_DRIFT_US) {
+            ntAudioClockUs = timestampUs;
+          } else {
+            ntAudioClockUs += AUDIO_FRAME_DURATION_US;
+          }
+          nativeCapture.transportSendAudioFrame(packet, ntAudioClockUs);
+        }
+      } catch (err) {
+        console.error("[native-transport] falha inesperada no poll/envio de áudio — desligando só o áudio, vídeo continua:", err);
+        ntAudioActive = false;
+        try {
+          nativeCapture.destroyAudioCapture();
+        } catch {
+          // já em recuperação de erro — ignora falha secundária no cleanup.
+        }
       }
     }
 

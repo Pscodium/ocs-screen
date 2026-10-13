@@ -124,6 +124,41 @@ static std::wstring GetExeNameForPid(DWORD pid) {
     return name;
 }
 
+// Resolve o nome amigável do dispositivo de renderização PADRÃO atual — usado pra decidir se um
+// app "proxy de áudio" (ex.: NVIDIA Broadcast) tá de fato configurado como saída antes de excluí-lo
+// da captura por processo (ver docs/TASKS.md: excluir esses apps sem confirmar que estão no caminho
+// de renderização silencia usuários que não os usam como saída). Consulta independente da sessão de
+// captura ativa (própria instância de COM/enumerator) — chamável mesmo sem `Initialize` ter rodado
+// ainda, e sem interferir com uma sessão já ativa.
+std::wstring AudioCaptureCore::GetDefaultRenderDeviceName() {
+    HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool comInitializedHere = SUCCEEDED(coHr) && coHr != RPC_E_CHANGED_MODE;
+
+    std::wstring name;
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
+    if (SUCCEEDED(hr)) {
+        ComPtr<IMMDevice> device;
+        hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
+        if (SUCCEEDED(hr)) {
+            ComPtr<IPropertyStore> props;
+            hr = device->OpenPropertyStore(STGM_READ, &props);
+            if (SUCCEEDED(hr)) {
+                PROPVARIANT varName;
+                PropVariantInit(&varName);
+                hr = props->GetValue(PKEY_Device_FriendlyName, &varName);
+                if (SUCCEEDED(hr) && varName.vt == VT_LPWSTR && varName.pwszVal) {
+                    name = varName.pwszVal;
+                }
+                PropVariantClear(&varName);
+            }
+        }
+    }
+
+    if (comInitializedHere) CoUninitialize();
+    return name;
+}
+
 bool AudioCaptureCore::EnsureComInitialized() {
     // COM pode já estar inicializado pelo resto do processo Electron (ou não, se chamado via
     // ELECTRON_RUN_AS_NODE/script isolado) — mesmo padrão de SoftwareEncoderCore.cpp:

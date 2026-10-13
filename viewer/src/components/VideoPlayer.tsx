@@ -96,7 +96,18 @@ export function VideoPlayer({
         ref={videoRef as RefObject<HTMLVideoElement>}
         autoPlay
         playsInline
-        muted
+        // `muted={muted}` (2026-08-30, bug real relatado como "áudio nunca toca ao vivo, só quando
+        // a transmissão encerra"): antes era o atributo booleano `muted` HARDCODED — sempre `true`
+        // no JSX, desconectado do estado `muted` que o botão de desmutar controla via
+        // `videoRef.current.muted = muted` (useEffect abaixo). A cada re-render (stats atualiza a
+        // cada 2s, `STATS_POLL_MS`), o React reconciliava o JSX e forçava `muted` de volta pra
+        // `true`, desfazendo o unmute do usuário sem avisar nada — o elemento ficava
+        // PERMANENTEMENTE mudo. Pra áudio mudo, o navegador evita consumir o
+        // `MediaStreamTrackGenerator` em tempo real (otimização de energia), então as amostras
+        // decodificadas empilhavam num buffer interno até parar de re-renderizar (transmissão
+        // encerra → stats para → nada mais força `muted=true` → buffer acumulado finalmente toca
+        // de uma vez). Vinculando ao estado, o JSX e o efeito nunca mais discordam.
+        muted={muted}
         className="video-element"
       />
 

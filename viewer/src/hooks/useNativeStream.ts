@@ -87,7 +87,12 @@ export function useNativeStream(roomId: string) {
     let jitterEstimateMs = 0;
     let autoDelayMs = 0;
     const JITTER_EWMA_ALPHA = 1 / 16; // mesmo peso que RFC 3550 usa pra estimativa de jitter RTP
-    const JITTER_SAFETY_MULTIPLIER = 4; // margem de segurança sobre o jitter médio medido
+    // Baixado de 4→2 (2026-08-29): esse delay agora é COMPARTILHADO entre vídeo e áudio (ver
+    // comentário grande acima) — o jitter medido no vídeo (bursty por natureza, frames de tamanho
+    // variável) inflava o delay do áudio junto, relatado em prod como "áudio muito atrasado".
+    // Margem menor + teto mais baixo (`PLAYOUT_DELAY_MAX_MS`, useRoomStream.ts) juntos reduzem o
+    // pior caso sem eliminar a proteção contra jitter real.
+    const JITTER_SAFETY_MULTIPLIER = 2; // margem de segurança sobre o jitter médio medido
 
     // Ancoragem/jitter e o buffer adaptativo eram só do VÍDEO — o áudio escrevia assim que
     // decodificava, sem atraso nenhum (comentário antigo: "o pipeline de áudio do navegador já
@@ -118,18 +123,37 @@ export function useNativeStream(roomId: string) {
     function scheduleSyncedWrite<T extends { timestamp: number; close(): void }>(
       writer: WritableStreamDefaultWriter<T>,
       item: T,
+      diagIndex = -1, // DIAGNÓSTICO TEMPORÁRIO (2026-08-30) — ver comentário em createAudioDecoder acima
     ): void {
       const effectiveDelayMs = Math.max(userFloorMsRef.current, autoDelayMs);
+      const doWrite = () => {
+        const p = writer.write(item);
+        if (diagIndex >= 0) {
+          p.then(
+            () => console.debug(`[audio-diag] write #${diagIndex} RESOLVEU ok`), // eslint-disable-line no-console
+            (err) => console.debug(`[audio-diag] write #${diagIndex} REJEITOU:`, err), // eslint-disable-line no-console
+          );
+        } else {
+          p.catch(() => item.close());
+        }
+      };
       if (anchorLocalMs === null) {
-        writer.write(item).catch(() => item.close());
+        if (diagIndex >= 0) console.debug(`[audio-diag] write #${diagIndex} imediato (sem âncora ainda)`); // eslint-disable-line no-console
+        doWrite();
         return;
       }
       const targetLocalMs = anchorLocalMs + (item.timestamp - anchorStreamUs) / 1000 + effectiveDelayMs;
       const waitMs = targetLocalMs - performance.now();
+      if (diagIndex >= 0) {
+        // eslint-disable-next-line no-console
+        console.debug(
+          `[audio-diag] write #${diagIndex} waitMs=${waitMs.toFixed(1)} effectiveDelayMs=${effectiveDelayMs} autoDelayMs=${autoDelayMs} jitterEstimateMs=${jitterEstimateMs.toFixed(1)} anchorLocalMs=${anchorLocalMs.toFixed(1)} itemTimestamp=${item.timestamp} anchorStreamUs=${anchorStreamUs}`,
+        );
+      }
       if (waitMs <= 0) {
-        writer.write(item).catch(() => item.close());
+        doWrite();
       } else {
-        setTimeout(() => writer.write(item).catch(() => item.close()), waitMs);
+        setTimeout(doWrite, waitMs);
       }
     }
 
@@ -261,16 +285,60 @@ export function useNativeStream(roomId: string) {
         // (`scheduleSyncedWrite`, ver comentário grande no topo do effect) — antes escrevia assim
         // que decodificava, sem atraso nenhum, dessincronizando do vídeo sob rede ruim (o vídeo
         // atrasa de propósito pra absorver jitter, o áudio não atrasava nada).
-        const decoder = new AudioDecoder({
-          output: (audioData) => {
-            scheduleSyncedWrite(writer, audioData);
-          },
-          error: () => {
-            // eslint-disable-next-line no-console
-            console.error("[native-stream] erro no AudioDecoder");
-          },
-        });
-        decoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: 2 });
+        //
+        // `decoder` é `let` (2026-08-29, relatado como "sistema de áudio muito ruim" — ver
+        // docs/TASKS.md): o callback `error` do WebCodecs dispara quando o decoder entra em estado
+        // FECHADO PERMANENTEMENTE (mesmo comportamento já documentado pro VideoDecoder abaixo) —
+        // antes só logava e o áudio morria em silêncio pro resto da sessão, sem nenhuma recuperação
+        // (diferente do vídeo, que pelo menos tinha o watchdog de primeira-frame). Opus não tem GOP
+        // — não tem "esperar keyframe" como vídeo tem, então recriar o decoder do zero recupera
+        // 100% a partir do PRÓXIMO pacote, sem gap perceptível maior que 1 frame de 20ms.
+        let audioDecoderErrorCount = 0;
+        let decoder = createAudioDecoder();
+
+        // DIAGNÓSTICO TEMPORÁRIO (2026-08-30) — remover depois de achar a causa de "áudio nunca
+        // toca ao vivo, só quando a transmissão encerra" (host confirma `audioRms` normal, então o
+        // problema é 100% daqui pra baixo: decode → write → track). Loga os primeiros N eventos de
+        // cada etapa com detalhe, sem inundar o console no resto da sessão.
+        let audioDiagCount = 0;
+        const AUDIO_DIAG_LIMIT = 15;
+
+        function createAudioDecoder(): AudioDecoder {
+          const d = new AudioDecoder({
+            output: (audioData) => {
+              if (audioDiagCount < AUDIO_DIAG_LIMIT) {
+                // eslint-disable-next-line no-console
+                console.debug(
+                  `[audio-diag] decoder.output #${audioDiagCount} timestamp=${audioData.timestamp} numberOfFrames=${audioData.numberOfFrames} sampleRate=${audioData.sampleRate} format=${audioData.format} writer.desiredSize=${writer.desiredSize}`,
+                );
+              }
+              scheduleSyncedWrite(writer, audioData, audioDiagCount < AUDIO_DIAG_LIMIT ? audioDiagCount : -1);
+              audioDiagCount++;
+            },
+            error: (e) => {
+              audioDecoderErrorCount++;
+              // eslint-disable-next-line no-console
+              console.error(`[native-stream] AudioDecoder fechou por erro (recriando, ocorrência #${audioDecoderErrorCount}):`, e);
+              // Teto de segurança — se o ambiente tá quebrado de verdade (não um pacote ruim
+              // isolado), recriar em loop sem parar só spamma o console sem nunca ajudar. Acima
+              // disso desiste e loga uma vez só; áudio fica sem esse canal pro resto da sessão
+              // (mesmo trade-off do vídeo, que já desiste de vez no erro dele).
+              if (audioDecoderErrorCount > 20) {
+                // eslint-disable-next-line no-console
+                console.error("[native-stream] AudioDecoder falhou demais (>20x) — desistindo de recriar, áudio indisponível pro resto da sessão.");
+                return;
+              }
+              try {
+                decoder = createAudioDecoder();
+              } catch (recreateErr) {
+                // eslint-disable-next-line no-console
+                console.error("[native-stream] falha ao recriar AudioDecoder — áudio fica indisponível pro resto da sessão:", recreateErr);
+              }
+            },
+          });
+          d.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: 2 });
+          return d;
+        }
 
         channel.onmessage = (event) => {
           const buffer = event.data as ArrayBuffer;

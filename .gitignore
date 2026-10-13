@@ -153,5 +153,3 @@ desktop/encoder/
 desktop/native/*/vendor/
 desktop/native/*/build/
 
-# Docs
-docs/

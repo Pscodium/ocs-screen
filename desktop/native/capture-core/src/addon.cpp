@@ -521,6 +521,23 @@ Napi::Value GetAudioRms(const Napi::CallbackInfo& info) {
     return Napi::Number::New(info.Env(), g_audioCore ? g_audioCore->LastRms() : 0.0);
 }
 
+// Nome do dispositivo de renderização PADRÃO atual (ver AudioCaptureCore::GetDefaultRenderDeviceName)
+// — usado por main/index.ts pra só incluir "app proxy de áudio" (ex.: NVIDIA Broadcast) na lista de
+// exclusão quando ele estiver realmente configurado como saída, evitando silenciar quem não o usa.
+// Independente de sessão de captura ativa — não usa `g_audioCore`.
+Napi::Value GetDefaultAudioDeviceName(const Napi::CallbackInfo& info) {
+    std::wstring name = AudioCaptureCore::GetDefaultRenderDeviceName();
+    std::string utf8;
+    if (!name.empty()) {
+        int size = WideCharToMultiByte(CP_UTF8, 0, name.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (size > 0) {
+            utf8.resize(size - 1);
+            WideCharToMultiByte(CP_UTF8, 0, name.c_str(), -1, utf8.data(), size, nullptr, nullptr);
+        }
+    }
+    return Napi::String::New(info.Env(), utf8);
+}
+
 // Chamado do mesmo loop JS que já poll vídeo (main/index.ts) — retorna 0+ pacotes Opus prontos
 // pra mandar (o `AudioCaptureCore` já acumula PCM internamente até fechar um frame de 20ms).
 Napi::Value PollAudioPackets(const Napi::CallbackInfo& info) {
@@ -834,6 +851,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("destroyAudioCapture", Napi::Function::New(env, DestroyAudioCapture));
     exports.Set("pollAudioPackets", Napi::Function::New(env, PollAudioPackets));
     exports.Set("getAudioRms", Napi::Function::New(env, GetAudioRms));
+    exports.Set("getDefaultAudioDeviceName", Napi::Function::New(env, GetDefaultAudioDeviceName));
 
     exports.Set("transportCreateSession", Napi::Function::New(env, TransportCreateSession));
     exports.Set("transportSetViewerTier", Napi::Function::New(env, TransportSetViewerTier));

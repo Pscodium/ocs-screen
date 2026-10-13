@@ -16,8 +16,13 @@ const STATS_POLL_MS = 2000;
 
 // Teto baixo de propósito: 2s de atraso destruiria a experiência de baixa latência que é o
 // objetivo do produto (CLAUDE.md §Latência) — isso aqui é só um "colchão" pra jitter, não buffer
-// de streaming tradicional.
-export const PLAYOUT_DELAY_MAX_MS = 1000;
+// de streaming tradicional. Baixado de 1000→500 (2026-08-29): desde que o buffer de jitter passou a
+// ser COMPARTILHADO entre vídeo e áudio (useNativeStream.ts, `scheduleSyncedWrite`/
+// `noteArrivalAndUpdateJitter`), o jitter medido no vídeo (frames H.264 de tamanho variável, mais
+// bursty por natureza) empurra o delay do ÁUDIO junto — relatado em prod como "áudio muito
+// atrasado" batendo perto do teto antigo de 1000ms, sensível demais agora que os 2 canais pagam o
+// mesmo preço.
+export const PLAYOUT_DELAY_MAX_MS = 500;
 export const PLAYOUT_DELAY_DEFAULT_MS = 150;
 
 // Ver nota em services/publish.ts — LiveKit local não precisa de STUN público.
