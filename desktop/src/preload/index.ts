@@ -49,6 +49,16 @@ export interface NativeTransportStartArgs {
   codec?: "h264" | "hevc" | "av1";
 }
 
+// App com sessão de áudio (ou já silenciado) — ver ipcMain "native-audio:list-apps".
+export interface AudioAppEntry {
+  // Nome do executável (ex.: "Discord.exe") — é por isso que a exclusão é feita.
+  exe: string;
+  // Tocando áudio neste instante.
+  active: boolean;
+  // Silenciado na transmissão (não entra no áudio que os espectadores ouvem).
+  excluded: boolean;
+}
+
 export interface NativeCaptureStats {
   // Frames de fato entregues no último segundo — distinto do fps que o LiveKit reporta (esse é
   // do lado de captura, antes do encoder; útil pra diferenciar "captura tá lenta" de "encoder tá
@@ -123,6 +133,12 @@ const api = {
       ipcRenderer.on("native-capture:stats", listener);
       return () => ipcRenderer.removeListener("native-capture:stats", listener);
     },
+  },
+  // Apps silenciados no áudio da transmissão nativa (mixer por app, ver AudioCaptureCore.h) —
+  // `setExcluded` salva a preferência e aplica na hora se tiver transmissão no ar.
+  nativeAudio: {
+    listApps: (): Promise<AudioAppEntry[]> => ipcRenderer.invoke("native-audio:list-apps"),
+    setExcluded: (excludedApps: string[]): Promise<boolean> => ipcRenderer.invoke("native-audio:set-excluded", excludedApps),
   },
   // Transporte nativo (libdatachannel, ver docs/NATIVE_CAPTURE.md Fase 4) — publish opt-in que
   // pula LiveKit pro vídeo. Ver ipcMain.handle("native-transport:*") em main/index.ts.

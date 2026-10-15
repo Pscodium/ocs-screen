@@ -13,7 +13,7 @@ Especificação completa em [`CLAUDE.md`](./CLAUDE.md). Contexto de arquitetura 
 
 ## Rodando localmente
 
-Pré-requisitos: Node 20+, Docker.
+Pré-requisitos: Node 20+, Docker — lista completa (Build Tools C++, vcpkg, GPU) em [`docs/REQUIREMENTS.md`](./docs/REQUIREMENTS.md).
 
 ```bash
 cp .env.example .env

@@ -32,7 +32,7 @@ bool SoftwareEncoderCore::Initialize(ID3D11Device* device, ID3D11DeviceContext* 
     fps_ = fps > 0 ? fps : 30;
     frameDuration100ns_ = 10'000'000LL / fps_;
     sampleTime_ = 0;
-    nextEncodeTime_ = std::chrono::steady_clock::time_point{};
+    pacer_.Reset(fps_);
 
     // MFTEnumEx (não CLSID fixo) — deixa o Windows escolher o melhor MFT disponível pra
     // NV12→H264. `MFT_ENUM_FLAG_SORTANDFILTER` prioriza hardware quando existir (bônus: se a
@@ -235,15 +235,7 @@ std::vector<std::vector<uint8_t>> SoftwareEncoderCore::EncodeFrame(ID3D11Texture
 
     // Mesmo pacing de grade fixa que o EncoderCore (NVENC) usa — ver comentário lá (evita jitter
     // acumulado por recalcular "agora" a cada frame aceito).
-    const auto now = std::chrono::steady_clock::now();
-    const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-        std::chrono::duration<double>(1.0 / (fps_ > 0 ? fps_ : 30)));
-    if (nextEncodeTime_.time_since_epoch().count() != 0 && now < nextEncodeTime_) return packets;
-    if (nextEncodeTime_.time_since_epoch().count() == 0 || now - nextEncodeTime_ > interval) {
-        nextEncodeTime_ = now + interval;
-    } else {
-        nextEncodeTime_ += interval;
-    }
+    if (!pacer_.ShouldEncode(std::chrono::steady_clock::now())) return packets;
 
     PumpEvents(packets); // drena output pronto + atualiza needsInput_ (MFT assíncrono)
     if (eventGen_ && !needsInput_) return packets; // MFT ainda processando o frame anterior — pula esse, mesmo espírito do skip de pacing do NVENC

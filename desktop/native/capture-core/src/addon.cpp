@@ -17,6 +17,7 @@
 #include "TransportCore.h"
 #include "VideoCodecType.h"
 #include "AudioCaptureCore.h"
+#include "QpcClock.h"
 
 // "h264"/"hevc"/"av1" (case-sensitive, vem sempre de string literal do lado JS) — qualquer coisa
 // que não seja "hevc"/"av1" cai em H.264, o padrão seguro.
@@ -91,6 +92,13 @@ static std::mutex g_encoderMutex;
 static std::unique_ptr<EncoderCore> g_encoder;
 static std::unique_ptr<EncoderCore> g_encoderLow;
 static std::unordered_map<std::string, ViewerSession> g_transportSessions;
+// Protege `g_transportSessions` — o áudio é enviado direto da thread de áudio nativa
+// (AudioCaptureCore, ver `StartAudioForwarding`), não mais do loop JS, então o mapa passou a ser
+// lido por duas threads. TODA função que toca no mapa trava isso. Ordem de lock quando precisar dos
+// dois: este ANTES de `g_encoderMutex` (`TransportSendVideoFrame` → `ForceKeyframeForTierLocked`).
+static std::mutex g_sessionsMutex;
+// Origem (QPC µs) dos timestamps de áudio enviados — o mesmo `startUs` que o loop JS usa pro vídeo.
+static int64_t g_audioStreamStartUs = 0;
 static HANDLE g_mmcssHandle = nullptr;
 
 // Áudio (ver AudioCaptureCore.h) — único, compartilhado por TODOS os espectadores (não tem tier
@@ -127,6 +135,14 @@ static Napi::ThreadSafeFunction g_onStateChangeTsfn;
 static bool g_onLocalDescriptionSet = false;
 static bool g_onLocalCandidateSet = false;
 static bool g_onStateChangeSet = false;
+
+// Relógio QPC compartilhado com o áudio (ver QpcClock.h) — `timestampUs` de vídeo E áudio saem
+// dele. Antes os dois usavam `Date.now()` do instante em que o loop JS ENVIAVA o pacote — áudio
+// represado no buffer WASAPI e vídeo atrasado no encoder ganhavam o mesmo carimbo de "agora", e a
+// diferença real entre eles virava dessincronia que o espectador não tinha como corrigir.
+Napi::Value NowUs(const Napi::CallbackInfo& info) {
+    return Napi::Number::New(info.Env(), static_cast<double>(QpcNowUs()));
+}
 
 Napi::Value Initialize(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -468,47 +484,133 @@ Napi::Value SetCursorEnabled(const Napi::CallbackInfo& info) {
 // também) da captura de áudio de sistema do pipeline nativo.
 // ---------------------------------------------------------------------------------------------
 
-// `info[0]` (string, opcional) = nome do executável a excluir (ex.: "Discord.exe"). Resolve o PID
-// aqui mesmo (via AudioCaptureCore::FindProcessIdByName) pra não expor Win32/PID pro lado JS —
-// se o processo não estiver rodando (0 encontrado), cai pro loopback normal sem exclusão (não é
-// erro: usuário pode não estar com o app aberto ainda).
+static std::wstring Utf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+    const int len = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring out(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), len);
+    return out;
+}
+
+static std::string WideToUtf8(const std::wstring& s) {
+    if (s.empty()) return {};
+    const int len = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
+    std::string out(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+// Array JS de nomes de executável (ex.: ["Discord.exe", "NVIDIA Broadcast.exe"]) — apps cujo
+// áudio NUNCA sai na transmissão (ver AudioCaptureCore.h, "mixer por app").
+static std::vector<std::wstring> ReadExeNameArray(const Napi::Value& value) {
+    std::vector<std::wstring> names;
+    if (!value.IsArray()) return names;
+    Napi::Array arr = value.As<Napi::Array>();
+    for (uint32_t i = 0; i < arr.Length(); i++) {
+        Napi::Value item = arr.Get(i);
+        if (item.IsString()) names.push_back(Utf8ToWide(item.As<Napi::String>().Utf8Value()));
+    }
+    return names;
+}
+
+static Napi::Array CapturedSourcesArray(Napi::Env env) {
+    std::vector<std::wstring> names = g_audioCore ? g_audioCore->CapturedExeNames() : std::vector<std::wstring>{};
+    Napi::Array arr = Napi::Array::New(env, names.size());
+    for (size_t i = 0; i < names.size(); i++) arr.Set(i, Napi::String::New(env, WideToUtf8(names[i])));
+    return arr;
+}
+
+// Caminho de MONITOR — `info[0]` = array de executáveis excluídos. Mixa o áudio de todo app com
+// sessão de áudio ativa menos esses (e menos o próprio app). Retorna `{ ok, sources }`.
 Napi::Value InitAudioCapture(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    DWORD excludePid = 0;
-    if (info.Length() > 0 && info[0].IsString()) {
-        std::string exeNameUtf8 = info[0].As<Napi::String>().Utf8Value();
-        std::wstring exeNameW(exeNameUtf8.begin(), exeNameUtf8.end());
-        excludePid = AudioCaptureCore::FindProcessIdByName(exeNameW.c_str());
-    }
+    std::vector<std::wstring> excluded = info.Length() > 0 ? ReadExeNameArray(info[0]) : std::vector<std::wstring>{};
 
     g_audioCore = std::make_unique<AudioCaptureCore>();
-    bool ok = g_audioCore->Initialize(excludePid);
-    if (!ok) g_audioCore.reset();
-
+    bool ok = g_audioCore->InitializeForSystem(excluded);
     Napi::Object result = Napi::Object::New(env);
     result.Set("ok", ok);
-    result.Set("excludedPid", static_cast<double>(excludePid));
+    result.Set("sources", CapturedSourcesArray(env));
+    if (!ok) g_audioCore.reset();
     return result;
 }
 
-// Caminho de JANELA — `info[0]` = HWND (mesmo formato de `StartWindow`). INCLUDE em vez de
-// EXCLUDE: só o áudio da árvore de processos dona da janela compartilhada sai na transmissão
-// (ver AudioCaptureCore::InitializeForWindow) — resolve sozinho o pedido do usuário de isolar só
-// o app em destaque, sem precisar saber o nome dele nem excluir nada manualmente.
+// Caminho de JANELA — `info[0]` = HWND (mesmo formato de `StartWindow`), `info[1]` = array de
+// executáveis excluídos. Só a árvore de processos dona da janela entra (ver
+// AudioCaptureCore::InitializeForWindow).
 Napi::Value InitAudioCaptureForWindow(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    Napi::Object result = Napi::Object::New(env);
     if (info.Length() < 1 || !info[0].IsNumber()) {
-        return Napi::Object::New(env);
+        result.Set("ok", false);
+        return result;
     }
     HWND hwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(info[0].As<Napi::Number>().Int64Value()));
+    std::vector<std::wstring> excluded = info.Length() > 1 ? ReadExeNameArray(info[1]) : std::vector<std::wstring>{};
 
     g_audioCore = std::make_unique<AudioCaptureCore>();
-    bool ok = g_audioCore->InitializeForWindow(hwnd);
-    if (!ok) g_audioCore.reset();
-
-    Napi::Object result = Napi::Object::New(env);
+    bool ok = g_audioCore->InitializeForWindow(hwnd, excluded);
     result.Set("ok", ok);
+    result.Set("sources", CapturedSourcesArray(env));
+    if (!ok) g_audioCore.reset();
     return result;
+}
+
+// Troca a lista de exclusão AO VIVO (`info[0]` = array) — sem reiniciar a captura.
+Napi::Value SetAudioExcludedApps(const Napi::CallbackInfo& info) {
+    if (g_audioCore && info.Length() > 0) g_audioCore->SetExcludedExeNames(ReadExeNameArray(info[0]));
+    return CapturedSourcesArray(info.Env());
+}
+
+// `info[0]` = `startUs` (QPC µs, mesmo `nowUs()` usado como origem dos timestamps de vídeo). A partir
+// daqui cada pacote Opus vai DIRETO da thread de áudio pras sessões conectadas, sem passar pelo
+// loop JS (ver AudioCaptureCore.h — era o loop JS que limitava a latência do áudio, e com ela a do
+// vídeo, que espera o áudio pra ficar sincronizado no espectador).
+Napi::Value StartAudioForwarding(const Napi::CallbackInfo& info) {
+    if (!g_audioCore || info.Length() < 1 || !info[0].IsNumber()) return Napi::Boolean::New(info.Env(), false);
+    {
+        std::lock_guard<std::mutex> lock(g_sessionsMutex);
+        g_audioStreamStartUs = static_cast<int64_t>(info[0].As<Napi::Number>().Int64Value());
+    }
+    g_audioCore->SetPacketCallback([](const EncodedAudioPacket& packet) {
+        std::lock_guard<std::mutex> lock(g_sessionsMutex);
+        const int64_t ptsUs = packet.ptsUs - g_audioStreamStartUs;
+        if (ptsUs < 0) return; // capturado antes do início da transmissão
+        for (auto& entry : g_transportSessions) {
+            if (!entry.second.transport->IsConnected()) continue;
+            entry.second.transport->SendAudioFrame(packet.data.data(), packet.data.size(), static_cast<uint64_t>(ptsUs));
+        }
+    });
+    return Napi::Boolean::New(info.Env(), true);
+}
+
+// Diagnóstico do mixer (ver AudioCaptureCore::TakeMixStats) — `{ maxArrivalLagMs, lateSamples }`.
+Napi::Value GetAudioMixStats(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Object obj = Napi::Object::New(env);
+    AudioCaptureCore::MixStats stats = g_audioCore ? g_audioCore->TakeMixStats() : AudioCaptureCore::MixStats{};
+    obj.Set("maxArrivalLagMs", stats.maxArrivalLagMs);
+    obj.Set("lateSamples", static_cast<double>(stats.lateSamples));
+    return obj;
+}
+
+// Executáveis sendo capturados agora (diagnóstico/UI).
+Napi::Value GetAudioSources(const Napi::CallbackInfo& info) {
+    return CapturedSourcesArray(info.Env());
+}
+
+// Apps com sessão de áudio agora (`[{ exe, active }]`) — pra UI de silenciar app.
+Napi::Value ListAudioApps(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    auto apps = AudioCaptureCore::ListAudioApps();
+    Napi::Array arr = Napi::Array::New(env, apps.size());
+    for (size_t i = 0; i < apps.size(); i++) {
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("exe", Napi::String::New(env, WideToUtf8(apps[i].exeName)));
+        obj.Set("active", apps[i].active);
+        arr.Set(i, obj);
+    }
+    return arr;
 }
 
 Napi::Value DestroyAudioCapture(const Napi::CallbackInfo& info) {
@@ -522,7 +624,9 @@ Napi::Value GetAudioRms(const Napi::CallbackInfo& info) {
 }
 
 // Chamado do mesmo loop JS que já poll vídeo (main/index.ts) — retorna 0+ pacotes Opus prontos
-// pra mandar (o `AudioCaptureCore` já acumula PCM internamente até fechar um frame de 20ms).
+// pra mandar (o `AudioCaptureCore` já acumula PCM internamente até fechar um frame de 10ms).
+// Cada item = `{ data: Buffer, ptsUs: number }` — `ptsUs` no MESMO relógio de `nowUs()` (QPC),
+// instante real de captura da primeira amostra do pacote.
 Napi::Value PollAudioPackets(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
@@ -531,7 +635,10 @@ Napi::Value PollAudioPackets(const Napi::CallbackInfo& info) {
     auto packets = g_audioCore->PollEncodedPackets();
     result = Napi::Array::New(env, packets.size());
     for (size_t i = 0; i < packets.size(); i++) {
-        result.Set(i, Napi::Buffer<uint8_t>::Copy(env, packets[i].data(), packets[i].size()));
+        Napi::Object obj = Napi::Object::New(env);
+        obj.Set("data", Napi::Buffer<uint8_t>::Copy(env, packets[i].data.data(), packets[i].data.size()));
+        obj.Set("ptsUs", static_cast<double>(packets[i].ptsUs));
+        result.Set(i, obj);
     }
     return result;
 }
@@ -550,6 +657,7 @@ Napi::Value PollAudioPackets(const Napi::CallbackInfo& info) {
 // simulcast), padrão "high" (todo espectador novo entra na qualidade alta; troca depois via
 // `transportSetViewerTier`).
 Napi::Value TransportCreateSession(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
     std::string viewerId = info[0].As<Napi::String>().Utf8Value();
@@ -628,6 +736,7 @@ Napi::Value TransportCreateSession(const Napi::CallbackInfo& info) {
 // próximo `TransportSendVideoFrame`. Força keyframe no encoder do tier NOVO (mesmo raciocínio do
 // `OnChannelOpen`: o primeiro chunk que essa sessão vai receber depois da troca precisa ser "key").
 Napi::Value TransportSetViewerTier(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 2 || !info[0].IsString() || !info[1].IsString()) return Napi::Boolean::New(env, false);
     auto it = g_transportSessions.find(info[0].As<Napi::String>().Utf8Value());
@@ -642,6 +751,7 @@ Napi::Value TransportSetViewerTier(const Napi::CallbackInfo& info) {
 // `info[0]` = viewerId. Fecha só a sessão desse espectador — os outros continuam recebendo o
 // stream normalmente (diferente do V1 singleton, onde fechar a sessão derrubava todo mundo).
 Napi::Value TransportCloseSession(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     if (info.Length() > 0 && info[0].IsString()) {
         g_transportSessions.erase(info[0].As<Napi::String>().Utf8Value());
     }
@@ -651,11 +761,13 @@ Napi::Value TransportCloseSession(const Napi::CallbackInfo& info) {
 // Fecha TODAS as sessões de uma vez — usado só quando a transmissão inteira para (ver
 // stopNativeTransport em main/index.ts), não no ciclo normal de um viewer saindo.
 Napi::Value TransportCloseAllSessions(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     g_transportSessions.clear();
     return info.Env().Undefined();
 }
 
 Napi::Value TransportAddVideoChannel(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
     auto it = g_transportSessions.find(info[0].As<Napi::String>().Utf8Value());
@@ -663,6 +775,7 @@ Napi::Value TransportAddVideoChannel(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value TransportAddAudioChannel(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
     auto it = g_transportSessions.find(info[0].As<Napi::String>().Utf8Value());
@@ -670,6 +783,7 @@ Napi::Value TransportAddAudioChannel(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value TransportCreateOffer(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
     auto it = g_transportSessions.find(info[0].As<Napi::String>().Utf8Value());
@@ -677,6 +791,7 @@ Napi::Value TransportCreateOffer(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value TransportSetRemoteDescription(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 3) return Napi::Boolean::New(env, false);
     auto it = g_transportSessions.find(info[0].As<Napi::String>().Utf8Value());
@@ -686,6 +801,7 @@ Napi::Value TransportSetRemoteDescription(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value TransportAddRemoteCandidate(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 3) return Napi::Boolean::New(env, false);
     auto it = g_transportSessions.find(info[0].As<Napi::String>().Utf8Value());
@@ -695,6 +811,7 @@ Napi::Value TransportAddRemoteCandidate(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value TransportIsConnected(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsString()) return Napi::Boolean::New(env, false);
     auto it = g_transportSessions.find(info[0].As<Napi::String>().Utf8Value());
@@ -705,6 +822,7 @@ Napi::Value TransportIsConnected(const Napi::CallbackInfo& info) {
 // era sempre 0 ou 1, V1 só suportava 1 espectador). Conta TODOS os tiers juntos — o LiveCard
 // mostra "espectadores", não "espectadores em alta qualidade".
 Napi::Value TransportConnectedCount(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     int count = 0;
     for (auto& entry : g_transportSessions) {
         if (entry.second.transport->IsConnected()) count++;
@@ -717,6 +835,7 @@ Napi::Value TransportConnectedCount(const Napi::CallbackInfo& info) {
 // main/index.ts), já que cada um tem encoder e bitrate independentes. 0 se não tiver nenhuma
 // sessão conectada NESSE tier (nada represado).
 Napi::Value TransportMaxBufferedAmount(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     std::string tier = (info.Length() > 0 && info[0].IsString()) ? info[0].As<Napi::String>().Utf8Value() : "high";
     size_t maxAmount = 0;
     for (auto& entry : g_transportSessions) {
@@ -724,6 +843,31 @@ Napi::Value TransportMaxBufferedAmount(const Napi::CallbackInfo& info) {
         maxAmount = std::max(maxAmount, entry.second.transport->GetBufferedAmount());
     }
     return Napi::Number::New(info.Env(), static_cast<double>(maxAmount));
+}
+
+// Sinais de congestionamento de UM tier pro AIMD (main/index.ts) — `maxQueueDelayMs` = maior
+// atraso de fila acima do RTT mínimo entre as sessões (medido por ack do espectador, ver
+// TransportCore.h "Controle de latência"), `droppedFrames` = frames descartados por
+// congestionamento desde a última leitura (zera ao ler), `maxBufferedAmount` = sinal antigo
+// (fila do libdatachannel), mantido pra espectador sem ack.
+Napi::Value TransportGetTierStats(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
+    Napi::Env env = info.Env();
+    std::string tier = (info.Length() > 0 && info[0].IsString()) ? info[0].As<Napi::String>().Utf8Value() : "high";
+    double maxQueueDelayMs = 0.0;
+    uint32_t droppedFrames = 0;
+    size_t maxBuffered = 0;
+    for (auto& entry : g_transportSessions) {
+        if (entry.second.tier != tier || !entry.second.transport->IsConnected()) continue;
+        maxQueueDelayMs = std::max(maxQueueDelayMs, entry.second.transport->GetQueueDelayMs());
+        droppedFrames += entry.second.transport->TakeDroppedFrames();
+        maxBuffered = std::max(maxBuffered, entry.second.transport->GetBufferedAmount());
+    }
+    Napi::Object result = Napi::Object::New(env);
+    result.Set("maxQueueDelayMs", maxQueueDelayMs);
+    result.Set("droppedFrames", droppedFrames);
+    result.Set("maxBufferedAmount", static_cast<double>(maxBuffered));
+    return result;
 }
 
 // Envio direto da thread JS (loop em main/index.ts, ver histórico — StreamWorker numa thread
@@ -734,6 +878,7 @@ Napi::Value TransportMaxBufferedAmount(const Napi::CallbackInfo& info) {
 // cada tier tem seu próprio grupo de espectadores). Retorna `true` se pelo menos UMA sessão do
 // tier recebeu com sucesso.
 Napi::Value TransportSendVideoFrame(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 3 || !info[0].IsString() || !info[1].IsBuffer() || !info[2].IsNumber()) {
         return Napi::Boolean::New(env, false);
@@ -743,6 +888,7 @@ Napi::Value TransportSendVideoFrame(const Napi::CallbackInfo& info) {
     int64_t timestampUs = info[2].As<Napi::Number>().Int64Value();
 
     bool anyOk = false;
+    bool keyframeNeeded = false;
     for (auto& entry : g_transportSessions) {
         if (entry.second.tier != tier) continue;
         // Filtro extra além do que `TransportCore::SendVideoFrame` já checa internamente —
@@ -754,13 +900,19 @@ Napi::Value TransportSendVideoFrame(const Napi::CallbackInfo& info) {
         if (entry.second.transport->SendVideoFrame(buffer.Data(), buffer.Length(), static_cast<uint64_t>(timestampUs))) {
             anyOk = true;
         }
+        // Sessão que descartou frames por congestionamento (e já escoou a fila) ou cujo decoder
+        // pediu recuperação — ver "Controle de latência" em TransportCore.h. Keyframe é do encoder
+        // do TIER (compartilhado), então sai pra todo mundo desse tier, não só pra essa sessão.
+        if (entry.second.transport->ConsumeKeyframeRequest()) keyframeNeeded = true;
     }
+    if (keyframeNeeded) ForceKeyframeForTierLocked(tier);
     return Napi::Boolean::New(env, anyOk);
 }
 
 // Áudio não tem tier — manda pra TODAS as sessões que já abriram canal de áudio (as que não
 // abriram simplesmente ignoram, `SendAudioFrame` retorna `false` sem side-effect).
 Napi::Value TransportSendAudioFrame(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
     Napi::Env env = info.Env();
     if (info.Length() < 2 || !info[0].IsBuffer() || !info[1].IsNumber()) {
         return Napi::Boolean::New(env, false);
@@ -788,6 +940,9 @@ Napi::Value TransportSendAudioFrame(const Napi::CallbackInfo& info) {
 Napi::Value TransportOnLocalDescription(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsFunction()) return env.Undefined();
+    // Cada "native-transport:start" registra de novo — solta o anterior (senão o TSFN velho, e o
+    // closure JS dele com a janela/estado da transmissão anterior, ficava vivo pra sempre).
+    if (g_onLocalDescriptionSet) g_onLocalDescriptionTsfn.Release();
     g_onLocalDescriptionTsfn = Napi::ThreadSafeFunction::New(env, info[0].As<Napi::Function>(), "onLocalDescription", 0, 1);
     g_onLocalDescriptionSet = true;
     return env.Undefined();
@@ -796,6 +951,9 @@ Napi::Value TransportOnLocalDescription(const Napi::CallbackInfo& info) {
 Napi::Value TransportOnLocalCandidate(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsFunction()) return env.Undefined();
+    // Cada "native-transport:start" registra de novo — solta o anterior (senão o TSFN velho, e o
+    // closure JS dele com a janela/estado da transmissão anterior, ficava vivo pra sempre).
+    if (g_onLocalCandidateSet) g_onLocalCandidateTsfn.Release();
     g_onLocalCandidateTsfn = Napi::ThreadSafeFunction::New(env, info[0].As<Napi::Function>(), "onLocalCandidate", 0, 1);
     g_onLocalCandidateSet = true;
     return env.Undefined();
@@ -804,6 +962,9 @@ Napi::Value TransportOnLocalCandidate(const Napi::CallbackInfo& info) {
 Napi::Value TransportOnStateChange(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsFunction()) return env.Undefined();
+    // Cada "native-transport:start" registra de novo — solta o anterior (senão o TSFN velho, e o
+    // closure JS dele com a janela/estado da transmissão anterior, ficava vivo pra sempre).
+    if (g_onStateChangeSet) g_onStateChangeTsfn.Release();
     g_onStateChangeTsfn = Napi::ThreadSafeFunction::New(env, info[0].As<Napi::Function>(), "onStateChange", 0, 1);
     g_onStateChangeSet = true;
     return env.Undefined();
@@ -811,6 +972,7 @@ Napi::Value TransportOnStateChange(const Napi::CallbackInfo& info) {
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("initialize", Napi::Function::New(env, Initialize));
+    exports.Set("nowUs", Napi::Function::New(env, NowUs));
     exports.Set("listMonitors", Napi::Function::New(env, ListMonitors));
     exports.Set("start", Napi::Function::New(env, Start));
     exports.Set("startWindow", Napi::Function::New(env, StartWindow));
@@ -834,6 +996,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("destroyAudioCapture", Napi::Function::New(env, DestroyAudioCapture));
     exports.Set("pollAudioPackets", Napi::Function::New(env, PollAudioPackets));
     exports.Set("getAudioRms", Napi::Function::New(env, GetAudioRms));
+    exports.Set("setAudioExcludedApps", Napi::Function::New(env, SetAudioExcludedApps));
+    exports.Set("getAudioSources", Napi::Function::New(env, GetAudioSources));
+    exports.Set("getAudioMixStats", Napi::Function::New(env, GetAudioMixStats));
+    exports.Set("startAudioForwarding", Napi::Function::New(env, StartAudioForwarding));
+    exports.Set("listAudioApps", Napi::Function::New(env, ListAudioApps));
 
     exports.Set("transportCreateSession", Napi::Function::New(env, TransportCreateSession));
     exports.Set("transportSetViewerTier", Napi::Function::New(env, TransportSetViewerTier));
@@ -847,6 +1014,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("transportIsConnected", Napi::Function::New(env, TransportIsConnected));
     exports.Set("transportConnectedCount", Napi::Function::New(env, TransportConnectedCount));
     exports.Set("transportMaxBufferedAmount", Napi::Function::New(env, TransportMaxBufferedAmount));
+    exports.Set("transportGetTierStats", Napi::Function::New(env, TransportGetTierStats));
     exports.Set("transportSendVideoFrame", Napi::Function::New(env, TransportSendVideoFrame));
     exports.Set("transportSendAudioFrame", Napi::Function::New(env, TransportSendAudioFrame));
     exports.Set("transportOnLocalDescription", Napi::Function::New(env, TransportOnLocalDescription));

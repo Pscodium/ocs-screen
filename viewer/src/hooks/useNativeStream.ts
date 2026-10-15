@@ -2,9 +2,21 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState } from "livekit-client";
 import { fetchIceServers, openNativeSignalingSocket, type NativeVideoCodec } from "../services/backend";
 import type { ConnectionPhase, StreamStats } from "./useRoomStream";
-import { PLAYOUT_DELAY_MAX_MS, PLAYOUT_DELAY_DEFAULT_MS } from "./useRoomStream";
+import { PLAYOUT_DELAY_MAX_MS } from "./useRoomStream";
+import { PlayoutClock } from "../services/playoutClock";
+import { NativeAudioPlayer } from "../services/nativeAudioPlayer";
 
 const STATS_POLL_MS = 2000;
+// Piso de "suavização" do caminho nativo — 0 = só o buffer adaptativo (`PlayoutClock` já cobre o
+// jitter medido). O caminho LiveKit continua com o próprio padrão (`PLAYOUT_DELAY_DEFAULT_MS`).
+const NATIVE_PLAYOUT_FLOOR_DEFAULT_MS = 0;
+// Pedido de keyframe ao host (`'K'` no canal de vídeo, ver TransportCore.h "Controle de
+// latência") — no máximo 1 a cada isso, o host também limita do lado dele.
+const KEYFRAME_REQUEST_INTERVAL_MS = 1000;
+// Erros de decoder seguidos (dentro da janela) antes de desistir e mostrar erro — um erro isolado
+// é recuperado recriando o decoder + keyframe; vários seguidos = decoder/dispositivo incompatível.
+const DECODER_ERROR_LIMIT = 3;
+const DECODER_ERROR_WINDOW_MS = 10_000;
 
 // Espectador do transporte nativo (libdatachannel, ver docs/NATIVE_CAPTURE.md Fase 4) —
 // `RTCPeerConnection` cru do navegador (sem livekit-client) + vídeo por DATACHANNEL (não RTP
@@ -25,7 +37,7 @@ export function useNativeStream(roomId: string, password?: string) {
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<StreamStats | null>(null);
   const [hasAudio, setHasAudio] = useState(false);
-  const [playoutDelayMs, setPlayoutDelayMsState] = useState(PLAYOUT_DELAY_DEFAULT_MS);
+  const [playoutDelayMs, setPlayoutDelayMsState] = useState(NATIVE_PLAYOUT_FLOOR_DEFAULT_MS);
   const [quality, setQualityState] = useState<NativeQualityTier>("high");
   // `sendWhenOpen` de dentro do useEffect não é visível pro `setQuality` exposto no retorno do
   // hook (closures diferentes) — guarda a referência aqui pra poder mandar a troca de qualidade
@@ -38,14 +50,13 @@ export function useNativeStream(roomId: string, password?: string) {
   }, []);
 
   // Sem RTCRtpReceiver nesse caminho (DataChannel, não RTP) — não tem "playout delay" nativo do
-  // navegador pra ajustar, por isso o buffer de jitter é implementado à mão abaixo (ver
-  // `channel.onmessage`/`decoder.output`). O valor aqui vira o PISO mínimo do buffer adaptativo —
-  // o usuário pode pedir "quero mais suavização" e o algoritmo nunca desce abaixo disso, mas ainda
-  // pode subir mais sozinho se a rede pedir (ver `userFloorMsRef`).
-  const userFloorMsRef = useRef(PLAYOUT_DELAY_DEFAULT_MS);
+  // navegador pra ajustar; o relógio de apresentação é próprio (`PlayoutClock`). O valor do slider
+  // vira o PISO do buffer adaptativo — o usuário pode pedir mais suavização, o automático ainda
+  // pode subir mais sozinho se a rede pedir.
+  const playoutClockRef = useRef(new PlayoutClock());
   const applyPlayoutDelay = useCallback((ms: number) => {
     const clamped = Math.max(0, Math.min(PLAYOUT_DELAY_MAX_MS, ms));
-    userFloorMsRef.current = clamped;
+    playoutClockRef.current.floorMs = clamped;
     setPlayoutDelayMsState(clamped);
   }, []);
 
@@ -73,64 +84,16 @@ export function useNativeStream(roomId: string, password?: string) {
     let bytesReceived = 0;
     let lastStatsAt = performance.now();
 
-    // Buffer de jitter adaptativo (Sprint 29, ver docs/NATIVE_CAPTURE.md Fase 4 "Latência
-    // adaptativa") — sem RTP nesse caminho, não existe jitter buffer nativo do navegador pra usar.
-    // `anchorLocalMs`/`anchorStreamUs` ancoram o relógio de STREAM (timestampUs, gerado pelo host
-    // como `Date.now()-startTime` — ver main/index.ts) no relógio LOCAL (`performance.now()`) a
-    // partir do PRIMEIRO chunk recebido. Todo chunk seguinte compara "quando deveria ter chegado
-    // se a rede fosse perfeitamente estável" (`expectedLocalMs`) com "quando chegou de verdade" —
-    // a diferença é jitter de rede cru. `jitterEstimateMs` suaviza isso com EWMA (mesmo espírito da
-    // fórmula de estimativa de jitter do RFC 3550/RTP, só que sobre o próprio timestamp de
-    // aplicação em vez de RTP timestamp).
-    let anchorLocalMs: number | null = null;
-    let anchorStreamUs = 0;
-    let jitterEstimateMs = 0;
-    let autoDelayMs = 0;
-    const JITTER_EWMA_ALPHA = 1 / 16; // mesmo peso que RFC 3550 usa pra estimativa de jitter RTP
-    const JITTER_SAFETY_MULTIPLIER = 4; // margem de segurança sobre o jitter médio medido
+    // Vídeo e áudio apresentados pelo MESMO relógio (ver services/playoutClock.ts) — é o que
+    // mantém os dois sincronizados: o host carimba os dois no mesmo relógio de captura.
+    const playout = playoutClockRef.current;
+    playout.reset();
 
-    // Ancoragem/jitter e o buffer adaptativo eram só do VÍDEO — o áudio escrevia assim que
-    // decodificava, sem atraso nenhum (comentário antigo: "o pipeline de áudio do navegador já
-    // lida com o ritmo de reprodução"). Isso é verdade pro RITMO interno de cada faixa, mas não
-    // sincroniza as DUAS entre si — sob rede ruim, o vídeo atrasa de propósito pra absorver
-    // jitter e o áudio não, dessincronizando (relatado em prod, ver docs/TASKS.md item
-    // "[URGENTE] Áudio dessincroniza..."). Os dois canais usam o MESMO relógio de origem
-    // (`timestampUs = (Date.now()-startTime)*1000` em main/index.ts, gerado uma vez por tick e
-    // usado pros dois `transportSend*Frame`), então dá pra ancorar os dois no MESMO
-    // `anchorLocalMs`/`anchorStreamUs` e aplicar o MESMO atraso adaptativo — funções genéricas
-    // abaixo, chamadas pelos dois `onmessage`/`decoder.output`.
-    function noteArrivalAndUpdateJitter(timestampUs: number): void {
-      const arrivalLocalMs = performance.now();
-      if (anchorLocalMs === null) {
-        anchorLocalMs = arrivalLocalMs;
-        anchorStreamUs = timestampUs;
-        return;
-      }
-      const expectedLocalMs = anchorLocalMs + (timestampUs - anchorStreamUs) / 1000;
-      const delta = arrivalLocalMs - expectedLocalMs;
-      // EWMA — só a MAGNITUDE do desvio importa (adiantado ou atrasado, os dois indicam rede
-      // instável), não o sinal. Compartilhado entre vídeo e áudio de propósito: os dois passam
-      // pelo MESMO caminho de rede, jitter medido em qualquer um dos dois é sinal válido pros dois.
-      jitterEstimateMs += (Math.abs(delta) - jitterEstimateMs) * JITTER_EWMA_ALPHA;
-      autoDelayMs = Math.min(PLAYOUT_DELAY_MAX_MS, Math.max(0, Math.round(jitterEstimateMs * JITTER_SAFETY_MULTIPLIER)));
-    }
-
-    function scheduleSyncedWrite<T extends { timestamp: number; close(): void }>(
-      writer: WritableStreamDefaultWriter<T>,
-      item: T,
-    ): void {
-      const effectiveDelayMs = Math.max(userFloorMsRef.current, autoDelayMs);
-      if (anchorLocalMs === null) {
-        writer.write(item).catch(() => item.close());
-        return;
-      }
-      const targetLocalMs = anchorLocalMs + (item.timestamp - anchorStreamUs) / 1000 + effectiveDelayMs;
-      const waitMs = targetLocalMs - performance.now();
-      if (waitMs <= 0) {
-        writer.write(item).catch(() => item.close());
-      } else {
-        setTimeout(() => writer.write(item).catch(() => item.close()), waitMs);
-      }
+    function presentVideoFrame(writer: WritableStreamDefaultWriter<VideoFrame>, frame: VideoFrame): void {
+      const waitMs = playout.schedule(frame.timestamp, performance.now());
+      const write = () => writer.write(frame).catch(() => frame.close());
+      if (waitMs <= 1) write();
+      else setTimeout(write, waitMs);
     }
 
     // Setado ANTES do canal de vídeo abrir de verdade (só abre depois do SDP fechar) — o handler
@@ -145,7 +108,10 @@ export function useNativeStream(roomId: string, password?: string) {
     // elemento `<video>`) — só troca as TRACKS de dentro dela.
     const mediaStream = new MediaStream();
     let currentVideoTrack: MediaStreamTrack | null = null;
-    let currentAudioTrack: MediaStreamTrack | null = null;
+    // Áudio NÃO entra na MediaStream do `<video>` — vai por Web Audio, agendado no relógio de
+    // apresentação (ver services/nativeAudioPlayer.ts). Criado sob demanda no 1º canal de áudio,
+    // compartilhado entre renegociações (mesmo motivo da `mediaStream`).
+    let audioPlayer: NativeAudioPlayer | null = null;
 
     // Bug real corrigido (achado testando com um dispositivo sem decode de hardware HEVC): o host
     // troca de codec e cria uma sessão `TransportCore` INTEIRAMENTE NOVA quando o espectador não
@@ -243,27 +209,19 @@ export function useNativeStream(roomId: string, password?: string) {
         const channel = event.channel;
         channel.binaryType = "arraybuffer";
 
-        const generator = new MediaStreamTrackGenerator<AudioData>({ kind: "audio" });
-        const writer = generator.writable.getWriter();
-        // Troca a track em vez de só adicionar — numa renegociação (ver comentário grande acima
-        // de `setupPeerConnection`), a track VELHA (do `pc` fechado) precisa sair da MESMA
-        // `MediaStream` antes da nova entrar, senão o `<video>` acumula 2 tracks de áudio e o
-        // navegador escolhe qual tocar de forma imprevisível.
-        if (currentAudioTrack) mediaStream.removeTrack(currentAudioTrack);
-        currentAudioTrack = generator;
-        mediaStream.addTrack(generator);
-        if (videoRef.current) videoRef.current.srcObject = mediaStream;
+        if (!audioPlayer) audioPlayer = new NativeAudioPlayer();
+        const player = audioPlayer;
+        if (videoRef.current) player.attachVideoElement(videoRef.current);
         setHasAudio(true);
 
-        // Opus não tem conceito de keyframe/GOP como vídeo — todo pacote decodifica sozinho a
-        // partir do seguinte, por isso `type: "key"` sempre (é o único tipo que faz sentido pro
-        // WebCodecs `EncodedAudioChunk` de áudio). Buffer de jitter COMPARTILHADO com o vídeo
-        // (`scheduleSyncedWrite`, ver comentário grande no topo do effect) — antes escrevia assim
-        // que decodificava, sem atraso nenhum, dessincronizando do vídeo sob rede ruim (o vídeo
-        // atrasa de propósito pra absorver jitter, o áudio não atrasava nada).
+        // Opus não tem conceito de keyframe/GOP como vídeo — todo pacote decodifica sozinho, por
+        // isso `type: "key"` sempre. Apresentação pelo MESMO relógio do vídeo (`playout`).
         const decoder = new AudioDecoder({
           output: (audioData) => {
-            scheduleSyncedWrite(writer, audioData);
+            // `videoRef` pode ter montado depois do canal abrir — liga o volume/mudo assim que der.
+            if (videoRef.current) player.attachVideoElement(videoRef.current);
+            const waitMs = playout.schedule(audioData.timestamp, performance.now());
+            player.play(audioData, performance.now() + Math.max(0, waitMs));
           },
           error: () => {
             // eslint-disable-next-line no-console
@@ -278,7 +236,6 @@ export function useNativeStream(roomId: string, password?: string) {
           const view = new DataView(buffer);
           const timestampUs = Number(view.getBigUint64(0, true));
           const payload = new Uint8Array(buffer, 8);
-          noteArrivalAndUpdateJitter(timestampUs);
 
           try {
             decoder.decode(new EncodedAudioChunk({ type: "key", timestamp: timestampUs, data: payload }));
@@ -322,70 +279,100 @@ export function useNativeStream(roomId: string, password?: string) {
         }
       }, 12000);
 
-      const decoder = new VideoDecoder({
-        output: (frame) => {
-          if (!gotFirstFrame) {
-            gotFirstFrame = true;
-            clearTimeout(noFrameTimeout);
-            width = frame.displayWidth;
-            height = frame.displayHeight;
-            setStats({ resolution: `${width} × ${height}`, fps: 0, bitrateKbps: 0, latencyMs: 0, packetLossPercent: 0 });
-            setPhase("connected");
-          }
-          framesDecoded++;
+      // Canal de volta pro host (ver TransportCore.h "Controle de latência"): ack de cada frame
+      // recebido (8 bytes = o timestamp dele) — o host mede a fila real com isso e descarta frames
+      // em vez de deixar a latência crescer quando a rede não dá conta —, e `'K'` pra pedir
+      // keyframe (GOP infinito no host: sem IDR periódico pra se recuperar sozinho).
+      let lastKeyframeRequestAt = -Infinity;
+      const requestKeyframe = () => {
+        const now = performance.now();
+        if (channel.readyState !== "open" || now - lastKeyframeRequestAt < KEYFRAME_REQUEST_INTERVAL_MS) return;
+        lastKeyframeRequestAt = now;
+        try {
+          channel.send(new Uint8Array([0x4b]));
+        } catch {
+          // canal fechando — a sessão vai ser recriada de qualquer jeito
+        }
+      };
 
-          // `frame.timestamp` = o MESMO `timestampUs` que o chunk carregava (WebCodecs preserva
-          // timestamp do chunk pro frame decodificado) — dá pra recalcular quando esse frame
-          // "deveria" aparecer na tela usando a mesma âncora local/stream do onmessage abaixo.
-          scheduleSyncedWrite(writer, frame);
-        },
-        error: (e) => {
-          // Bug real reportado pelo usuário: no WebCodecs, o callback `error` do VideoDecoder
-          // dispara quando o decoder entra em estado FECHADO PERMANENTEMENTE (spec: erro
-          // irrecuperável, não é "só esse frame ruim") — todo `decode()` seguinte falha em
-          // silêncio (o catch em `channel.onmessage` engolia isso sem avisar ninguém), a tela
-          // ficava preta pra sempre sem nenhum erro visível (achado testando num iPhone — a
-          // combinação de config usada aqui, "avc1.64002a"+annexb, parece não ser suportada de
-          // verdade no decoder do WebKit mesmo relatando o codec como reconhecido). Antes só
-          // logava no console; agora aparece pro usuário de verdade, com dica do motivo provável.
-          if (!cancelled) {
-            setError(
-              `Falha ao decodificar o vídeo neste navegador/dispositivo (${e instanceof Error ? e.message : String(e)}). Tente um Chrome/Edge em Windows, Mac ou Android.`,
-            );
-            setPhase("error");
-          }
-          // eslint-disable-next-line no-console
-          console.error("[native-stream] erro no VideoDecoder (permanente, decoder fechado):", e);
-        },
-      });
-      if (negotiatedCodec === "hevc") {
-        // Codec string genérica (Main profile/tier, level 4.0) — assim como no H.264 abaixo, o
-        // profile/level REAL vem do VPS/SPS embutido no bitstream Annex-B (`repeatSPSPPS`
-        // equivalente do EncoderCore pro HEVC), essa string só é o feature-gate grosseiro que o
-        // Chrome usa antes de sequer olhar os bytes.
-        decoder.configure({ codec: "hev1.1.6.L120.B0", optimizeForLatency: true, hevc: { format: "annexb" } });
-      } else if (negotiatedCodec === "av1") {
-        // "av01.0.04M.08" = profile Main (0) + level 4.0 (04) + tier Main (M) + 8-bit (08) —
-        // mesmo espírito de string genérica que HEVC/H.264 acima, o profile/level real vem do
-        // Sequence Header embutido no bitstream (`repeatSeqHdr=1` no EncoderCore). Diferente de
-        // avc/hevc, o WebCodecs não tem um sub-objeto `{format: "annexb"}` pro AV1 — o spec só
-        // conhece o formato "low overhead" (OBUs crus concatenados), que é exatamente o que
-        // `outputAnnexBFormat=0` no EncoderCore já produz.
-        decoder.configure({ codec: "av01.0.04M.08", optimizeForLatency: true });
-      } else {
-        // `avc: { format: "annexb" }` — o encoder manda SPS/PPS embutido em CADA keyframe
-        // (repeatSPSPPS=1 no EncoderCore), não precisa de `description` separada em AVCC.
-        //
-        // "avc1.64002a" = profile High (0x64) + level 4.2 (0x2a) — NÃO Baseline. O NVENC
-        // (CreateDefaultEncoderParams com preset P4+LOW_LATENCY) escolhe High profile sozinho por
-        // padrão; "avc1.42e01f" (Baseline) era resquício do SDP do caminho RTP antigo, nunca batia
-        // com o bitstream real (confirmado via `ffprobe` no dump: `profile=High level=42`). High
-        // usa CABAC + transform 8x8, Baseline usa só CAVLC — inicializar o decoder de hardware
-        // esperando Baseline enquanto os bytes são High não lança erro nenhum (o parser ainda lê a
-        // SPS real embutida), mas pode decodificar alguns blocos errado — bate com o sintoma
-        // medido em produção (bloco de cor errada, sem erro nenhum no VideoDecoder).
-        decoder.configure({ codec: "avc1.64002a", optimizeForLatency: true, avc: { format: "annexb" } });
-      }
+      let waitingKeyframe = true;
+      const decoderErrorTimes: number[] = [];
+
+      const configureDecoder = (target: VideoDecoder) => {
+        if (negotiatedCodec === "hevc") {
+          // Codec string genérica (Main profile/tier, level 4.0) — assim como no H.264 abaixo, o
+          // profile/level REAL vem do VPS/SPS embutido no bitstream Annex-B (`repeatSPSPPS`
+          // equivalente do EncoderCore pro HEVC), essa string só é o feature-gate grosseiro que o
+          // Chrome usa antes de sequer olhar os bytes.
+          target.configure({ codec: "hev1.1.6.L120.B0", optimizeForLatency: true, hevc: { format: "annexb" } });
+        } else if (negotiatedCodec === "av1") {
+          // "av01.0.04M.08" = profile Main (0) + level 4.0 (04) + tier Main (M) + 8-bit (08) —
+          // mesmo espírito de string genérica que HEVC/H.264 acima, o profile/level real vem do
+          // Sequence Header embutido no bitstream (`repeatSeqHdr=1` no EncoderCore). Diferente de
+          // avc/hevc, o WebCodecs não tem um sub-objeto `{format: "annexb"}` pro AV1 — o spec só
+          // conhece o formato "low overhead" (OBUs crus concatenados), que é exatamente o que
+          // `outputAnnexBFormat=0` no EncoderCore já produz.
+          target.configure({ codec: "av01.0.04M.08", optimizeForLatency: true });
+        } else {
+          // `avc: { format: "annexb" }` — o encoder manda SPS/PPS embutido em CADA keyframe
+          // (repeatSPSPPS=1 no EncoderCore), não precisa de `description` separada em AVCC.
+          //
+          // "avc1.64002a" = profile High (0x64) + level 4.2 (0x2a) — NÃO Baseline. O NVENC
+          // (CreateDefaultEncoderParams com preset P4+LOW_LATENCY) escolhe High profile sozinho por
+          // padrão; "avc1.42e01f" (Baseline) era resquício do SDP do caminho RTP antigo, nunca batia
+          // com o bitstream real (confirmado via `ffprobe` no dump: `profile=High level=42`).
+          target.configure({ codec: "avc1.64002a", optimizeForLatency: true, avc: { format: "annexb" } });
+        }
+      };
+
+      const createDecoder = (): VideoDecoder => {
+        const created = new VideoDecoder({
+          output: (frame) => {
+            if (!gotFirstFrame) {
+              gotFirstFrame = true;
+              clearTimeout(noFrameTimeout);
+              width = frame.displayWidth;
+              height = frame.displayHeight;
+              setStats({ resolution: `${width} × ${height}`, fps: 0, bitrateKbps: 0, latencyMs: 0, packetLossPercent: 0 });
+              setPhase("connected");
+            } else if (frame.displayWidth !== width || frame.displayHeight !== height) {
+              // Host trocou de fonte/redimensionou janela — atualiza o rótulo de resolução.
+              width = frame.displayWidth;
+              height = frame.displayHeight;
+              setStats((prev) => (prev ? { ...prev, resolution: `${width} × ${height}` } : prev));
+            }
+            framesDecoded++;
+            presentVideoFrame(writer, frame);
+          },
+          error: (e) => {
+            // No WebCodecs, `error` = decoder FECHADO de vez (spec: irrecuperável) — todo
+            // `decode()` seguinte falharia. Antes isso deixava a tela congelada pra sempre; agora
+            // recria o decoder e pede keyframe pro host (GOP infinito: sem pedir, só viria no
+            // próximo espectador entrando). Só desiste (erro visível) se repetir em sequência —
+            // aí é incompatibilidade real do decoder/dispositivo (ex.: iPhone, ver histórico).
+            // eslint-disable-next-line no-console
+            console.error("[native-stream] erro no VideoDecoder:", e);
+            const now = performance.now();
+            decoderErrorTimes.push(now);
+            while (decoderErrorTimes.length && now - decoderErrorTimes[0] > DECODER_ERROR_WINDOW_MS) decoderErrorTimes.shift();
+            if (cancelled) return;
+            if (decoderErrorTimes.length >= DECODER_ERROR_LIMIT) {
+              setError(
+                `Falha ao decodificar o vídeo neste navegador/dispositivo (${e instanceof Error ? e.message : String(e)}). Tente um Chrome/Edge em Windows, Mac ou Android.`,
+              );
+              setPhase("error");
+              return;
+            }
+            decoder = createDecoder();
+            waitingKeyframe = true;
+            lastKeyframeRequestAt = -Infinity;
+            requestKeyframe();
+          },
+        });
+        configureDecoder(created);
+        return created;
+      };
+      let decoder = createDecoder();
 
       channel.onmessage = (event) => {
         const buffer = event.data as ArrayBuffer;
@@ -396,19 +383,28 @@ export function useNativeStream(roomId: string, password?: string) {
         const payload = new Uint8Array(buffer, 9);
         bytesReceived += payload.byteLength;
 
-        // Âncora stream-time↔local-time no PRIMEIRO chunk de QUALQUER um dos 2 canais (ver
-        // `noteArrivalAndUpdateJitter` no topo do effect) — todo chunk seguinte (vídeo OU áudio)
-        // atualiza a MESMA estimativa de jitter compartilhada.
-        noteArrivalAndUpdateJitter(timestampUs);
+        try {
+          channel.send(new Uint8Array(buffer, 1, 8).slice());
+        } catch {
+          // canal fechando
+        }
 
-        if (!gotFirstFrame && !isKeyframe) return; // WebCodecs exige que o primeiro chunk seja "key"
+        if (waitingKeyframe) {
+          // WebCodecs exige que o primeiro chunk depois de (re)configurar seja "key".
+          if (!isKeyframe) {
+            requestKeyframe();
+            return;
+          }
+          waitingKeyframe = false;
+        }
+        if (decoder.state !== "configured") return;
 
         try {
-          decoder.decode(
-            new EncodedVideoChunk({ type: isKeyframe ? "key" : "delta", timestamp: timestampUs, data: payload }),
-          );
+          decoder.decode(new EncodedVideoChunk({ type: isKeyframe ? "key" : "delta", timestamp: timestampUs, data: payload }));
         } catch {
-          // Chunk rejeitado (raro) — próximo keyframe recupera.
+          // Chunk rejeitado — recupera no próximo keyframe.
+          waitingKeyframe = true;
+          requestKeyframe();
         }
       };
 
@@ -423,8 +419,7 @@ export function useNativeStream(roomId: string, password?: string) {
         // `latencyMs` aqui é o buffer de jitter ADAPTATIVO efetivo (piso manual ou auto, o que for
         // maior) — reaproveita o campo que já existia na UI (rótulo "buffer" no painel de
         // estatísticas do VideoPlayer), sem precisar de UI nova.
-        const effectiveDelayMs = Math.max(userFloorMsRef.current, autoDelayMs);
-        setStats((prev) => (prev ? { ...prev, fps, bitrateKbps, latencyMs: effectiveDelayMs } : prev));
+        setStats((prev) => (prev ? { ...prev, fps, bitrateKbps, latencyMs: playout.bufferMs } : prev));
       }, STATS_POLL_MS);
     };
 
@@ -444,6 +439,7 @@ export function useNativeStream(roomId: string, password?: string) {
         // ninguém mais ouvir de verdade (só o novo é dono dos handlers).
         pc?.close();
         pc = setupPeerConnection();
+        playout.reset();
         const activePc = pc;
         negotiatedCodec = msg.codec ?? "h264";
         (async () => {
@@ -484,6 +480,7 @@ export function useNativeStream(roomId: string, password?: string) {
       ws.close();
       if (statsInterval) clearInterval(statsInterval);
       pc?.close();
+      audioPlayer?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);

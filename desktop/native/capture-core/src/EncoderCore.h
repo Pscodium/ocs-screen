@@ -8,6 +8,7 @@
 #include <atomic>
 #include "../vendor/nvenc/NvEncoderD3D11.h"
 #include "SoftwareEncoderCore.h"
+#include "FramePacer.h"
 #include "VideoCodecType.h" // achado via include_dirs (binding.gyp já lista ../transport-core/src)
 
 // Encoder H.264 via NVENC (NVIDIA Video Codec SDK, vendorizado em vendor/nvenc/ — ver
@@ -92,12 +93,8 @@ private:
     std::unique_ptr<SoftwareEncoderCore> software_;
     ID3D11DeviceContext* context_ = nullptr; // referência emprestada do device (AddRef via GetImmediateContext), não é dona do device em si.
     int fps_ = 30;
-    // Grade FIXA de agendamento (não "última vez aceita") — soma o intervalo alvo a cada frame
-    // aceito, não relê o relógio a cada vez. Um frame individual atrasado (overhead pontual) não
-    // desloca o relógio inteiro pra frente permanentemente, autocorrige sozinho no próximo tick.
-    // Antes (baseado em `now - lastEncodeTime_` recalculado a cada aceite) acumulava jitter real
-    // medido em produção ("micro engasgadas" mesmo com fps médio bom).
-    std::chrono::steady_clock::time_point nextEncodeTime_{};
+    // Grade fixa de pacing pro fps alvo — ver FramePacer.h (tolerância a jitter de entrega).
+    FramePacer pacer_;
     std::atomic<bool> forceKeyframe_{false};
     // Guardados (não só locais em Initialize) pra SetBitrate() poder reusar/mutar em Reconfigure()
     // sem precisar reconstruir os parâmetros do zero.

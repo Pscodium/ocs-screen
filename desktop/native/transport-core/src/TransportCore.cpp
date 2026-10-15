@@ -3,10 +3,34 @@
 #include <sstream>
 #include <cstring>
 #include <cstdio>
+#include <algorithm>
+
+namespace {
+// Limites do controle de latência (ver comentário grande em TransportCore.h).
+// Fila acima do RTT mínimo a partir da qual a sessão começa a descartar frames — alto o bastante
+// pra um keyframe grande ou um soluço curto de Wi-Fi não disparar descarte, baixo o bastante pra
+// latência nunca ficar visivelmente "atrás" (jogo/suporte remoto, CLAUDE.md §Latência).
+constexpr double kDropExtraDelayMs = 150.0;
+// Fila precisa escoar até aqui antes de pedir o keyframe de volta — histerese, senão o keyframe
+// (grande) chegaria numa fila ainda cheia e já entraria descartado de novo.
+constexpr double kResumeExtraDelayMs = 40.0;
+// Fallback pra espectador sem ack (viewer antigo): só o que o libdatachannel enxerga na fila dele.
+constexpr size_t kDropBufferedBytes = 1024 * 1024;
+constexpr size_t kResumeBufferedBytes = 256 * 1024;
+constexpr auto kKeyframeRequestInterval = std::chrono::milliseconds(500);
+constexpr auto kMinRttWindow = std::chrono::seconds(5);
+// Teto da fila de frames sem ack — se o espectador parar de mandar ack (aba em segundo plano com
+// timers congelados, viewer antigo), não deixa a deque crescer pra sempre.
+constexpr size_t kMaxInflight = 1024;
+} // namespace
 
 TransportCore::TransportCore() {}
 
 TransportCore::~TransportCore() {
+    // Callbacks capturam `this` — solta antes de fechar pra nenhum disparar (thread do
+    // libdatachannel) depois que esse objeto já foi destruído.
+    if (videoChannel_) videoChannel_->resetCallbacks();
+    if (audioChannel_) audioChannel_->resetCallbacks();
     if (pc_) {
         pc_->close();
     }
@@ -81,6 +105,9 @@ bool TransportCore::AddVideoChannel() {
             fprintf(stderr, "[TransportCore] videoChannel_ ABRIU\n");
             if (channelOpenCallback_) channelOpenCallback_();
         });
+        // Canal de volta do espectador: acks de frame recebido e pedido de keyframe (ver
+        // TransportCore.h "Controle de latência"). Mensagem de texto não é usada nesse protocolo.
+        videoChannel_->onMessage([this](rtc::binary data) { HandleVideoChannelMessage(data); }, [](rtc::string) {});
 
         fprintf(stderr, "[TransportCore] AddVideoChannel() ok\n");
         return true;
@@ -229,16 +256,123 @@ bool TransportCore::SendVideoFrame(const uint8_t* data, size_t size, uint64_t ti
             ? ContainsKeyframeObu(data, size)
             : ContainsKeyframeNal(data, size, codec_ == VideoCodecType::HEVC);
 
+        const auto now = std::chrono::steady_clock::now();
+        bool hasFeedback = false;
+        bool congested = false;
+        bool drained = true;
+        {
+            std::lock_guard<std::mutex> lock(feedbackMutex_);
+            hasFeedback = feedbackSeen_;
+            if (hasFeedback) {
+                const double extra = ExtraDelayMsLocked(now);
+                congested = extra > kDropExtraDelayMs;
+                drained = extra < kResumeExtraDelayMs;
+            }
+        }
+        if (!hasFeedback) {
+            const size_t buffered = videoChannel_->bufferedAmount();
+            congested = buffered > kDropBufferedBytes;
+            drained = buffered < kResumeBufferedBytes;
+        }
+
+        if (congested || (waitingKeyframe_ && !isKeyframe)) {
+            // Descarta. Depois de descartar qualquer frame, o próximo que essa sessão recebe TEM
+            // que ser keyframe (P-frame seguinte referencia o que foi jogado fora).
+            waitingKeyframe_ = true;
+            // Só descarte POR CONGESTIONAMENTO conta pro AIMD — esperar o primeiro keyframe de uma
+            // sessão nova (ou depois de um pedido do decoder) não é sinal de rede ruim.
+            if (congested) droppedFrames_++;
+            if (drained && now - lastKeyframeRequestAt_ >= kKeyframeRequestInterval) {
+                pendingKeyframeRequest_ = true;
+                lastKeyframeRequestAt_ = now;
+            }
+            return false;
+        }
+        waitingKeyframe_ = false;
+
         rtc::binary message(9 + size);
         message[0] = static_cast<std::byte>(isKeyframe ? 0 : 1);
         std::memcpy(message.data() + 1, &timestampUs, 8);
         std::memcpy(message.data() + 9, data, size);
 
         videoChannel_->send(message);
+
+        std::lock_guard<std::mutex> lock(feedbackMutex_);
+        inflight_.push_back({timestampUs, now});
+        if (inflight_.size() > kMaxInflight) inflight_.pop_front();
         return true;
     } catch (const std::exception&) {
         return false;
     }
+}
+
+// `[8 bytes: timestamp µs]` = ack do frame com esse timestamp (o espectador manda 1 por frame
+// recebido, em ordem — SCTP ordenado); `[1 byte: 'K']` = pedido de keyframe.
+void TransportCore::HandleVideoChannelMessage(const rtc::binary& data) {
+    if (data.size() == 1 && static_cast<char>(data[0]) == 'K') {
+        viewerKeyframeRequest_.store(true);
+        return;
+    }
+    if (data.size() != 8) return;
+    uint64_t ackedTs = 0;
+    std::memcpy(&ackedTs, data.data(), 8);
+
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(feedbackMutex_);
+    feedbackSeen_ = true;
+    std::chrono::steady_clock::time_point ackedSentAt{};
+    bool matched = false;
+    while (!inflight_.empty() && inflight_.front().timestampUs <= ackedTs) {
+        if (inflight_.front().timestampUs == ackedTs) {
+            ackedSentAt = inflight_.front().sentAt;
+            matched = true;
+        }
+        inflight_.pop_front();
+    }
+    if (!matched) return;
+
+    const double rttMs = std::chrono::duration<double, std::milli>(now - ackedSentAt).count();
+    if (minRttWindowStart_.time_since_epoch().count() == 0) minRttWindowStart_ = now;
+    if (now - minRttWindowStart_ > kMinRttWindow) {
+        minRttPrevMs_ = minRttCurMs_;
+        minRttCurMs_ = 1e9;
+        minRttWindowStart_ = now;
+    }
+    minRttCurMs_ = std::min(minRttCurMs_, rttMs);
+}
+
+double TransportCore::ExtraDelayMsLocked(std::chrono::steady_clock::time_point now) const {
+    if (inflight_.empty()) return 0.0;
+    const double ageMs = std::chrono::duration<double, std::milli>(now - inflight_.front().sentAt).count();
+    const double minRtt = std::min(minRttCurMs_, minRttPrevMs_);
+    return std::max(0.0, ageMs - (minRtt < 1e8 ? minRtt : 0.0));
+}
+
+bool TransportCore::ConsumeKeyframeRequest() {
+    const auto now = std::chrono::steady_clock::now();
+    if (pendingKeyframeRequest_) {
+        pendingKeyframeRequest_ = false;
+        return true;
+    }
+    // Pedido do espectador fica guardado (não é perdido) até sair da janela de rate-limit.
+    if (viewerKeyframeRequest_.load() && now - lastKeyframeRequestAt_ >= kKeyframeRequestInterval) {
+        viewerKeyframeRequest_.store(false);
+        lastKeyframeRequestAt_ = now;
+        return true;
+    }
+    return false;
+}
+
+double TransportCore::GetQueueDelayMs() {
+    std::lock_guard<std::mutex> lock(feedbackMutex_);
+    if (!feedbackSeen_) return 0.0;
+    return ExtraDelayMsLocked(std::chrono::steady_clock::now());
+}
+
+uint32_t TransportCore::TakeDroppedFrames() {
+    const uint32_t n = droppedFrames_;
+    droppedFrames_ = 0;
+    return n;
 }
 
 // Formato no DataChannel: [8 bytes: timestamp µs, little-endian][payload: pacote Opus cru].

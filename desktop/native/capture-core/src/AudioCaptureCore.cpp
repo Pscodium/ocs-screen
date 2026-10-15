@@ -2,16 +2,21 @@
 
 #define NOMINMAX
 #include <mmdeviceapi.h>
+#include <audiopolicy.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <tlhelp32.h>
 #include <propvarutil.h>
 #include <wrl/client.h>
 #include <wrl/implements.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <vector>
+#include <cwctype>
+#include <unordered_map>
 #include <utility>
 #include <cmath>
+#include <avrt.h>
+#include "QpcClock.h"
 
 using Microsoft::WRL::ComPtr;
 using Microsoft::WRL::ClassicCom;
@@ -20,12 +25,142 @@ using Microsoft::WRL::RuntimeClass;
 
 namespace {
 
+constexpr int kSampleRate = 48000;
+constexpr int kChannels = 2;
+// 10ms @ 48kHz (não os 20ms padrão do Opus) — o espectador sincroniza o vídeo com o áudio, então
+// todo atraso do caminho do áudio vira atraso do vídeo também. Frame menor = 10ms a menos de
+// espera pra fechar cada pacote, por ~10% a mais de bitrate de áudio (irrelevante perto do vídeo).
+constexpr int64_t kSamplesPerOpusFrame = 480;
+// Quanto o mixer espera antes de fechar um trecho da linha do tempo — tem que cobrir o atraso
+// entre o áudio ser mixado pelo Windows e o pacote estar disponível no nosso poll (período do
+// engine ~10ms + período do poll — medido com o poll no loop JS antigo: atraso máximo 17-28ms,
+// ver `TakeMixStats`/log `audioLag` — era isso com o poll no loop JS; na thread própria, ~13-20ms).
+// Pacote que chega DEPOIS disso perde o trecho que já foi
+// fechado (vira um buraco curto, contado em `audioLate`) — por isso não dá pra ser muito apertado.
+constexpr int64_t kMixLatencySamples = kSampleRate * 25 / 1000;
+// Período da thread de áudio — o engine do Windows entrega pacotes a cada ~10ms; drenar a cada 5ms
+// mantém o atraso de chegada perto disso (medido: `audioLag` máx ~13-20ms) e a folga acima curta.
+constexpr auto kWorkerPeriod = std::chrono::milliseconds(5);
+// Pacote com timestamp mais de 2s à frente do que ainda não foi enviado = relógio absurdo, ignora.
+constexpr int64_t kMaxAheadSamples = kSampleRate * 2;
+constexpr auto kRefreshInterval = std::chrono::milliseconds(1000);
+
+// Processos de sistema que nunca devem entrar como fonte: o próprio serviço de áudio/host de
+// serviços (é aqui que efeitos de sistema e o "Escutar este dispositivo" do microfone costumam ser
+// processados — retorno de microfone na transmissão) e PIDs especiais.
+const wchar_t* const kSystemExes[] = {L"svchost.exe", L"audiodg.exe", L"system", L"registry", L"csrss.exe", L"wininit.exe", L"services.exe"};
+
+std::wstring ToLower(std::wstring s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+    return s;
+}
+
+struct ProcEntry {
+    DWORD parent = 0;
+    std::wstring exeLower;
+    std::wstring exe;
+};
+using ProcMap = std::unordered_map<DWORD, ProcEntry>;
+
+ProcMap SnapshotProcesses() {
+    ProcMap map;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return map;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry)) {
+        do {
+            map[entry.th32ProcessID] = {entry.th32ParentProcessID, ToLower(entry.szExeFile), entry.szExeFile};
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+    return map;
+}
+
+// `pid` == `ancestor` ou descende dele. Limite de profundidade: PID de pai morto pode ter sido
+// reciclado por outro processo, o que pode formar um "ciclo" falso no grafo.
+bool IsDescendantOrSelf(const ProcMap& map, DWORD pid, DWORD ancestor) {
+    for (int depth = 0; depth < 64; depth++) {
+        if (pid == ancestor) return true;
+        auto it = map.find(pid);
+        if (it == map.end()) return false;
+        const DWORD parent = it->second.parent;
+        if (parent == 0 || parent == pid) return false;
+        pid = parent;
+    }
+    return false;
+}
+
+// Sobe a árvore enquanto o pai for o MESMO executável — raiz de um app multi-processo
+// (Chromium/Electron: o áudio sai de um processo filho, mas INCLUDE da raiz pega todos).
+DWORD SameExeRoot(const ProcMap& map, DWORD pid) {
+    auto self = map.find(pid);
+    if (self == map.end()) return pid;
+    DWORD current = pid;
+    for (int depth = 0; depth < 64; depth++) {
+        auto it = map.find(current);
+        if (it == map.end()) break;
+        auto parent = map.find(it->second.parent);
+        if (parent == map.end() || parent->first == current || parent->second.exeLower != self->second.exeLower) break;
+        current = parent->first;
+    }
+    return current;
+}
+
+bool IsSystemProcess(const ProcMap& map, DWORD pid) {
+    if (pid == 0 || pid == 4) return true;
+    auto it = map.find(pid);
+    if (it == map.end()) return true;
+    for (const wchar_t* exe : kSystemExes) {
+        if (it->second.exeLower == exe) return true;
+    }
+    return false;
+}
+
+struct SessionInfo {
+    DWORD pid;
+    bool active;
+};
+
+// Todas as sessões de áudio de todos os dispositivos de SAÍDA ativos — não só o padrão: com um
+// proxy tipo NVIDIA Broadcast, o app de origem toca no dispositivo virtual do proxy.
+std::vector<SessionInfo> EnumerateRenderSessions() {
+    std::vector<SessionInfo> result;
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)))) return result;
+    ComPtr<IMMDeviceCollection> devices;
+    if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices))) return result;
+    UINT deviceCount = 0;
+    devices->GetCount(&deviceCount);
+    for (UINT i = 0; i < deviceCount; i++) {
+        ComPtr<IMMDevice> device;
+        if (FAILED(devices->Item(i, &device))) continue;
+        ComPtr<IAudioSessionManager2> manager;
+        if (FAILED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(manager.GetAddressOf())))) continue;
+        ComPtr<IAudioSessionEnumerator> sessions;
+        if (FAILED(manager->GetSessionEnumerator(&sessions))) continue;
+        int sessionCount = 0;
+        sessions->GetCount(&sessionCount);
+        for (int j = 0; j < sessionCount; j++) {
+            ComPtr<IAudioSessionControl> control;
+            if (FAILED(sessions->GetSession(j, &control))) continue;
+            ComPtr<IAudioSessionControl2> control2;
+            if (FAILED(control.As(&control2))) continue;
+            if (control2->IsSystemSoundsSession() == S_OK) continue;
+            DWORD pid = 0;
+            if (FAILED(control2->GetProcessId(&pid)) || pid == 0) continue;
+            AudioSessionState state = AudioSessionStateInactive;
+            control->GetState(&state);
+            result.push_back({pid, state == AudioSessionStateActive});
+        }
+    }
+    return result;
+}
+
 // Handler de conclusão da ativação assíncrona (`ActivateAudioInterfaceAsync` só existe em versão
-// assíncrona, mesmo pra loopback de processo síncrono na prática — chamado 1x na inicialização,
-// então esperar num evento aqui não trava nada em produção, mesmo padrão usado pelo Initialize()
-// de outras partes do addon). Precisa de `FtmBase` (marshaler livre de thread) — sem isso, mesma
-// classe de bug `RO_E_MUST_BE_AGILE` já corrigida em WindowCaptureCore.cpp (o callback dispara
-// numa thread MTA interna do Windows, não na thread que chamou `ActivateAudioInterfaceAsync`).
+// assíncrona) — esperado num evento logo em seguida. Precisa de `FtmBase` (marshaler livre de
+// thread) — sem isso, mesma classe de bug `RO_E_MUST_BE_AGILE` já corrigida em
+// WindowCaptureCore.cpp (o callback dispara numa thread MTA interna do Windows).
 class ActivationCompletionHandler
     : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IActivateAudioInterfaceCompletionHandler, Microsoft::WRL::FtmBase> {
 public:
@@ -59,146 +194,171 @@ AudioCaptureCore::~AudioCaptureCore() {
     Shutdown();
 }
 
-// Apps multi-processo (Discord, qualquer coisa baseada em Electron/Chromium — mesma arquitetura
-// desse próprio app) rodam VÁRIOS processos com o MESMO nome de executável (main + renderers + GPU
-// process etc.). `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` só cobre a árvore a partir do
-// PID passado pra baixo (descendentes) — se `TargetProcessId` fosse um processo filho qualquer (ex.:
-// um renderer) em vez da RAIZ da árvore, processos irmãos (outro renderer emitindo áudio) ficariam
-// FORA da exclusão. Por isso não basta achar "o primeiro PID com esse nome": precisa achar, entre
-// TODOS os processos com esse nome, aquele cujo PAI não é (ou não existe mais / não é o mesmo
-// nome) — esse é a raiz real da árvore, garantindo que a exclusão cubra todo mundo.
+// Apps multi-processo (Discord, qualquer coisa baseada em Electron/Chromium) rodam VÁRIOS
+// processos com o MESMO executável — a raiz é o que tem pai de outro executável.
 DWORD AudioCaptureCore::FindProcessIdByName(const wchar_t* exeName) {
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) return 0;
-
-    struct Entry { DWORD pid; DWORD parentPid; };
-    std::vector<Entry> matches;
-    std::vector<std::pair<DWORD, DWORD>> allPidParent; // pid -> parentPid, de TODOS os processos
-
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-    if (Process32FirstW(snapshot, &entry)) {
-        do {
-            allPidParent.emplace_back(entry.th32ProcessID, entry.th32ParentProcessID);
-            if (_wcsicmp(entry.szExeFile, exeName) == 0) {
-                matches.push_back({entry.th32ProcessID, entry.th32ParentProcessID});
-            }
-        } while (Process32NextW(snapshot, &entry));
+    const ProcMap map = SnapshotProcesses();
+    const std::wstring target = ToLower(exeName);
+    DWORD first = 0;
+    for (const auto& [pid, entry] : map) {
+        if (entry.exeLower != target) continue;
+        if (!first) first = pid;
+        auto parent = map.find(entry.parent);
+        if (parent == map.end() || parent->second.exeLower != target) return pid;
     }
-    CloseHandle(snapshot);
+    return first;
+}
 
-    if (matches.empty()) return 0;
+std::vector<AudioAppInfo> AudioCaptureCore::ListAudioApps() {
+    // COM pode não estar inicializado na thread chamadora (IPC do main process) — ou já estar, com
+    // outro apartment (RPC_E_CHANGED_MODE): WASAPI funciona nos dois, só não desinicializa o que não
+    // inicializou.
+    HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool uninit = SUCCEEDED(coHr) && coHr != RPC_E_CHANGED_MODE;
 
-    // Raiz = processo cujo pai NÃO está no próprio conjunto de matches (pai é outro app, ou já
-    // morreu/PID reciclado — de qualquer forma, não é outro processo da mesma árvore).
-    for (const auto& m : matches) {
-        bool parentIsAlsoMatch = false;
-        for (const auto& other : matches) {
-            if (other.pid == m.parentPid) {
-                parentIsAlsoMatch = true;
-                break;
+    std::vector<AudioAppInfo> apps;
+    const ProcMap map = SnapshotProcesses();
+    const DWORD self = GetCurrentProcessId();
+    for (const SessionInfo& session : EnumerateRenderSessions()) {
+        if (IsSystemProcess(map, session.pid) || IsDescendantOrSelf(map, session.pid, self)) continue;
+        auto it = map.find(session.pid);
+        if (it == map.end()) continue;
+        auto existing = std::find_if(apps.begin(), apps.end(), [&](const AudioAppInfo& a) { return ToLower(a.exeName) == it->second.exeLower; });
+        if (existing != apps.end()) {
+            existing->active = existing->active || session.active;
+        } else {
+            apps.push_back({it->second.exe, session.active});
+        }
+    }
+    if (uninit) CoUninitialize();
+    return apps;
+}
+
+bool AudioCaptureCore::InitializeForSystem(const std::vector<std::wstring>& excludedExeNames) {
+    Shutdown();
+    systemMode_ = true;
+    windowHwnd_ = nullptr;
+    return Start(excludedExeNames);
+}
+
+bool AudioCaptureCore::InitializeForWindow(HWND hwnd, const std::vector<std::wstring>& excludedExeNames) {
+    Shutdown();
+    systemMode_ = false;
+    windowHwnd_ = hwnd;
+    return Start(excludedExeNames);
+}
+
+// Sobe a thread e espera ela terminar a 1ª varredura de fontes (o chamador quer saber se deu certo
+// e o que está sendo capturado — e no caminho de janela, sem fonte = sem áudio).
+bool AudioCaptureCore::Start(const std::vector<std::wstring>& excludedExeNames) {
+    excludedLower_.clear();
+    for (const auto& name : excludedExeNames) excludedLower_.push_back(ToLower(name));
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        initDone_ = false;
+        initOk_ = false;
+        excludedChanged_ = false;
+    }
+    stop_ = false;
+    worker_ = std::thread([this] { WorkerMain(); });
+    std::unique_lock<std::mutex> lock(mutex_);
+    initCv_.wait_for(lock, std::chrono::seconds(10), [this] { return initDone_; });
+    const bool ok = initDone_ && initOk_;
+    lock.unlock();
+    if (!ok) Shutdown();
+    return ok;
+}
+
+void AudioCaptureCore::WorkerMain() {
+    // MTA própria da thread — os IAudioClient de process loopback são criados E usados só aqui.
+    const HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    DWORD taskIndex = 0;
+    HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+
+    bool ok = CreateEncoder();
+    if (ok) {
+        epochUs_ = QpcNowUs();
+        RefreshSources(true);
+        ok = systemMode_ || !sources_.empty();
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        initOk_ = ok;
+        initDone_ = true;
+        capturedNames_.clear();
+        for (const auto& source : sources_) capturedNames_.push_back(source.exeName);
+    }
+    initCv_.notify_all();
+
+    while (ok && !stop_) {
+        bool forceRefresh = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (excludedChanged_) {
+                excludedLower_ = pendingExcludedLower_;
+                excludedChanged_ = false;
+                forceRefresh = true;
             }
         }
-        if (!parentIsAlsoMatch) return m.pid;
+        RefreshSources(forceRefresh);
+        for (auto& source : sources_) DrainSource(source);
+        EncodeReadyFrames();
+        std::this_thread::sleep_for(kWorkerPeriod);
     }
-    // Não deveria acontecer (grafo de processos não tem ciclo), mas por segurança: primeiro match.
-    return matches.front().pid;
+
+    for (auto& source : sources_) ReleaseSource(source);
+    sources_.clear();
+    if (encoder_) {
+        opus_encoder_destroy(encoder_);
+        encoder_ = nullptr;
+    }
+    mix_.clear();
+    mixBaseSample_ = 0;
+    if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
+    if (SUCCEEDED(coHr)) CoUninitialize();
 }
 
-// Acha o nome do executável dono de um PID (`GetWindowThreadProcessId` já dá o PID a partir do
-// HWND — ver `InitializeForWindow`). Usado só pra reaproveitar `FindProcessIdByName` (achar a RAIZ
-// da árvore) sem duplicar aquela lógica de subida de árvore de processos.
-static std::wstring GetExeNameForPid(DWORD pid) {
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!process) return L"";
-
-    wchar_t buffer[MAX_PATH];
-    DWORD size = MAX_PATH;
-    std::wstring name;
-    if (QueryFullProcessImageNameW(process, 0, buffer, &size)) {
-        std::wstring full(buffer, size);
-        size_t pos = full.find_last_of(L"\\/");
-        name = pos == std::wstring::npos ? full : full.substr(pos + 1);
-    }
-    CloseHandle(process);
-    return name;
+void AudioCaptureCore::SetExcludedExeNames(const std::vector<std::wstring>& excludedExeNames) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pendingExcludedLower_.clear();
+    for (const auto& name : excludedExeNames) pendingExcludedLower_.push_back(ToLower(name));
+    excludedChanged_ = true;
 }
 
-bool AudioCaptureCore::EnsureComInitialized() {
-    // COM pode já estar inicializado pelo resto do processo Electron (ou não, se chamado via
-    // ELECTRON_RUN_AS_NODE/script isolado) — mesmo padrão de SoftwareEncoderCore.cpp:
-    // RPC_E_CHANGED_MODE (já inicializado com apartment diferente) não é erro fatal aqui, WASAPI
-    // funciona em qualquer um dos dois modos.
-    HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    comInitializedHere_ = SUCCEEDED(coHr) && coHr != RPC_E_CHANGED_MODE;
-    return SUCCEEDED(coHr) || coHr == RPC_E_CHANGED_MODE;
+void AudioCaptureCore::SetPacketCallback(PacketCallback callback) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    callback_ = std::move(callback);
+    queue_.clear();
 }
 
-bool AudioCaptureCore::Initialize(DWORD excludeProcessId) {
-    Shutdown();
-    EnsureComInitialized();
-
-    bool ok = excludeProcessId != 0
-        ? InitializeProcessLoopback(excludeProcessId, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE)
-        : InitializeDeviceLoopback();
-    if (!ok) {
-        Shutdown();
-        return false;
-    }
-
-    if (!CreateEncoder()) {
-        Shutdown();
-        return false;
-    }
-
-    pcmBuffer_.clear();
-    return true;
+std::vector<EncodedAudioPacket> AudioCaptureCore::PollEncodedPackets() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<EncodedAudioPacket> packets;
+    packets.swap(queue_);
+    return packets;
 }
 
-// Caminho de JANELA — INCLUDE em vez de EXCLUDE: só o áudio da árvore de processos dona da janela
-// compartilhada sai na transmissão, todo o resto do sistema (Discord incluído) fica de fora sem
-// precisar de exclusão nenhuma. `GetWindowThreadProcessId` dá o PID dono do HWND; esse PID pode
-// ser só um processo FILHO (ex.: o renderer de um app Electron/Chromium multi-processo) — resolve
-// o nome do executável dele e reaproveita `FindProcessIdByName` (mesma lógica de achar a RAIZ da
-// árvore) em vez de assumir que o PID da janela já é a raiz.
-bool AudioCaptureCore::InitializeForWindow(HWND hwnd) {
-    Shutdown();
-    EnsureComInitialized();
-
-    DWORD windowPid = 0;
-    GetWindowThreadProcessId(hwnd, &windowPid);
-    if (windowPid == 0) {
-        Shutdown();
-        return false;
-    }
-
-    std::wstring exeName = GetExeNameForPid(windowPid);
-    DWORD rootPid = exeName.empty() ? 0 : FindProcessIdByName(exeName.c_str());
-    if (rootPid == 0) rootPid = windowPid; // não achou pelo nome — usa o PID da janela mesmo
-
-    if (!InitializeProcessLoopback(rootPid, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE)) {
-        Shutdown();
-        return false;
-    }
-
-    if (!CreateEncoder()) {
-        Shutdown();
-        return false;
-    }
-
-    pcmBuffer_.clear();
-    return true;
+float AudioCaptureCore::LastRms() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return lastRms_;
 }
 
-// Loopback de PROCESSO (Win10 2004+) — `VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK` é um "dispositivo"
-// sintético que não existe no mixer normal, só serve pra essa ativação especial. `mode` decide se
-// é EXCLUDE (compartilhamento de MONITOR — exclui 1 app, resto do sistema todo entra) ou INCLUDE
-// (compartilhamento de JANELA — só a árvore daquele app entra, resto do sistema fica de fora).
-bool AudioCaptureCore::InitializeProcessLoopback(DWORD targetProcessId, PROCESS_LOOPBACK_MODE mode) {
+bool AudioCaptureCore::IsExcludedExe(const std::wstring& exeLower) const {
+    return std::find(excludedLower_.begin(), excludedLower_.end(), exeLower) != excludedLower_.end();
+}
+
+std::vector<std::wstring> AudioCaptureCore::CapturedExeNames() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return capturedNames_;
+}
+
+// Process loopback (Win10 2004+) — `VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK` é um "dispositivo"
+// sintético, só serve pra essa ativação especial. INCLUDE = só a árvore de `targetPid`.
+bool AudioCaptureCore::AddSource(DWORD targetPid, const std::wstring& exeName) {
     AUDIOCLIENT_ACTIVATION_PARAMS params{};
     params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
-    params.ProcessLoopbackParams.TargetProcessId = targetProcessId;
-    params.ProcessLoopbackParams.ProcessLoopbackMode = mode;
+    params.ProcessLoopbackParams.TargetProcessId = targetPid;
+    params.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
 
     PROPVARIANT propvariant{};
     propvariant.vt = VT_BLOB;
@@ -213,205 +373,263 @@ bool AudioCaptureCore::InitializeProcessLoopback(DWORD targetProcessId, PROCESS_
     HRESULT hr = ActivateAudioInterfaceAsync(
         VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &propvariant, handler.Get(), &asyncOp);
     if (asyncOp) asyncOp->Release();
-
     if (FAILED(hr)) {
         CloseHandle(doneEvent);
         fprintf(stderr, "[AudioCaptureCore] ActivateAudioInterfaceAsync falhou: 0x%08lx\n", (unsigned long)hr);
         return false;
     }
-
     WaitForSingleObject(doneEvent, 5000);
     CloseHandle(doneEvent);
-
     if (FAILED(handler->activateResult_) || !handler->audioClient_) {
-        fprintf(stderr, "[AudioCaptureCore] ativação de process-loopback falhou: 0x%08lx\n",
-                (unsigned long)handler->activateResult_);
+        fprintf(stderr, "[AudioCaptureCore] ativação de process-loopback (pid %lu) falhou: 0x%08lx\n",
+                (unsigned long)targetPid, (unsigned long)handler->activateResult_);
+        if (handler->audioClient_) handler->audioClient_->Release();
         return false;
     }
 
-    audioClient_ = handler->audioClient_;
+    Source source;
+    source.targetPid = targetPid;
+    source.exeName = exeName;
+    source.client = handler->audioClient_;
 
-    format_.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
-    format_.nChannels = 2;
-    format_.nSamplesPerSec = 48000;
-    format_.wBitsPerSample = 32;
-    format_.nBlockAlign = (format_.nChannels * format_.wBitsPerSample) / 8;
-    format_.nAvgBytesPerSec = format_.nSamplesPerSec * format_.nBlockAlign;
-    format_.cbSize = 0;
+    // O dispositivo virtual de process loopback converte pra qualquer formato pedido — float32
+    // estéreo 48kHz é exatamente o que o mixer/Opus usam, sem conversão nossa.
+    WAVEFORMATEX format{};
+    format.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
+    format.nChannels = kChannels;
+    format.nSamplesPerSec = kSampleRate;
+    format.wBitsPerSample = 32;
+    format.nBlockAlign = (format.nChannels * format.wBitsPerSample) / 8;
+    format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
 
-    // `AUDCLNT_STREAMFLAGS_LOOPBACK` é obrigatório mesmo pro dispositivo virtual de
-    // process-loopback (não é implícito pelo nome do device) — confirmado pela amostra oficial da
-    // Microsoft (`ApplicationLoopback`). Sem `EVENTCALLBACK`: polling simples a partir do loop JS
-    // existente (mesmo estilo do resto do addon, sem thread nativa própria).
-    hr = audioClient_->Initialize(
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 2000000 /* 200ms */, 0, &format_, nullptr);
+    // `AUDCLNT_STREAMFLAGS_LOOPBACK` é obrigatório mesmo pro dispositivo virtual (amostra oficial
+    // `ApplicationLoopback` da Microsoft). Sem EVENTCALLBACK: polling a partir do loop JS.
+    hr = source.client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 2000000 /* 200ms */, 0, &format, nullptr);
+    if (SUCCEEDED(hr)) hr = source.client->GetService(IID_PPV_ARGS(&source.capture));
+    if (SUCCEEDED(hr)) hr = source.client->Start();
     if (FAILED(hr)) {
-        fprintf(stderr, "[AudioCaptureCore] IAudioClient::Initialize (process loopback) falhou: 0x%08lx\n", (unsigned long)hr);
+        fprintf(stderr, "[AudioCaptureCore] inicialização da fonte (pid %lu) falhou: 0x%08lx\n", (unsigned long)targetPid, (unsigned long)hr);
+        ReleaseSource(source);
         return false;
     }
-
-    hr = audioClient_->GetService(IID_PPV_ARGS(&captureClient_));
-    if (FAILED(hr)) return false;
-
-    hr = audioClient_->Start();
-    return SUCCEEDED(hr);
-}
-
-// Caminho normal (sem exclusão) — loopback do dispositivo de renderização PADRÃO inteiro, mesma
-// técnica que o `chromeMediaSource:"desktop"` do caminho LiveKit já usa, só que direto via WASAPI
-// em vez de passar pelo Chromium. Serve de fallback se a API de process-loopback não existir
-// (Windows < 10 2004) ou se o usuário não pedir nenhuma exclusão.
-bool AudioCaptureCore::InitializeDeviceLoopback() {
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator));
-    if (FAILED(hr)) {
-        fprintf(stderr, "[AudioCaptureCore] CoCreateInstance(MMDeviceEnumerator) falhou: 0x%08lx\n", (unsigned long)hr);
-        return false;
-    }
-
-    ComPtr<IMMDevice> device;
-    hr = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device);
-    if (FAILED(hr)) {
-        fprintf(stderr, "[AudioCaptureCore] GetDefaultAudioEndpoint falhou: 0x%08lx\n", (unsigned long)hr);
-        return false;
-    }
-
-    hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&audioClient_));
-    if (FAILED(hr)) {
-        fprintf(stderr, "[AudioCaptureCore] IMMDevice::Activate falhou: 0x%08lx\n", (unsigned long)hr);
-        return false;
-    }
-
-    WAVEFORMATEX* mixFormat = nullptr;
-    hr = audioClient_->GetMixFormat(&mixFormat);
-    if (FAILED(hr) || !mixFormat) {
-        fprintf(stderr, "[AudioCaptureCore] GetMixFormat falhou: 0x%08lx\n", (unsigned long)hr);
-        return false;
-    }
-    // `GetMixFormat` quase sempre retorna um `WAVEFORMATEXTENSIBLE` (maior que `WAVEFORMATEX`,
-    // `cbSize` aponta pros bytes extras de extensão/subformat) — atribuir `*mixFormat` direto num
-    // `WAVEFORMATEX format_` truncava a struct nesses bytes extras só que MANTINHA o `cbSize`
-    // antigo (22), então `Initialize` lia lixo depois do fim do buffer alocado e falhava com
-    // `E_INVALIDARG` (0x80070057). Passa o ponteiro ORIGINAL (tamanho completo) pro `Initialize`,
-    // só extrai os campos escalares que o resto da classe (`CreateEncoder`) realmente precisa.
-    hr = audioClient_->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 2000000, 0, mixFormat, nullptr);
-    format_ = *mixFormat;
-    format_.cbSize = 0;
-    CoTaskMemFree(mixFormat);
-    if (FAILED(hr)) {
-        fprintf(stderr, "[AudioCaptureCore] IAudioClient::Initialize (device loopback) falhou: 0x%08lx (rate=%lu ch=%u bits=%u)\n",
-                (unsigned long)hr, (unsigned long)format_.nSamplesPerSec, format_.nChannels, format_.wBitsPerSample);
-        return false;
-    }
-
-    hr = audioClient_->GetService(IID_PPV_ARGS(&captureClient_));
-    if (FAILED(hr)) {
-        fprintf(stderr, "[AudioCaptureCore] GetService(IAudioCaptureClient) falhou: 0x%08lx\n", (unsigned long)hr);
-        return false;
-    }
-
-    hr = audioClient_->Start();
-    if (FAILED(hr)) {
-        fprintf(stderr, "[AudioCaptureCore] IAudioClient::Start falhou: 0x%08lx\n", (unsigned long)hr);
-        return false;
-    }
+    fprintf(stderr, "[AudioCaptureCore] fonte de áudio adicionada: %ls (pid %lu)\n", exeName.c_str(), (unsigned long)targetPid);
+    sources_.push_back(source);
     return true;
 }
 
-bool AudioCaptureCore::CreateEncoder() {
-    // Opus só aceita 8/12/16/24/48kHz — o mix format do Windows quase sempre já é 48kHz (padrão
-    // moderno), mas não validamos/reamostramos aqui: se vier diferente, a inicialização abaixo
-    // falha e a captura é abortada por inteiro (sem áudio) em vez de tocar velocidade errada em
-    // silêncio. Reamostragem fica pra se algum hardware real precisar (não visto ainda).
-    if (format_.nSamplesPerSec != 48000) {
-        fprintf(stderr, "[AudioCaptureCore] sample rate %lu não suportado (só 48000 por ora)\n",
-                (unsigned long)format_.nSamplesPerSec);
+void AudioCaptureCore::ReleaseSource(Source& source) {
+    if (source.client) source.client->Stop();
+    if (source.capture) source.capture->Release();
+    if (source.client) source.client->Release();
+    source.capture = nullptr;
+    source.client = nullptr;
+}
+
+void AudioCaptureCore::RefreshSources(bool force) {
+    const auto now = std::chrono::steady_clock::now();
+    if (!force && now - lastRefresh_ < kRefreshInterval) return;
+    lastRefresh_ = now;
+
+    const ProcMap map = SnapshotProcesses();
+    const DWORD self = GetCurrentProcessId();
+    // Processo "excluído" = executável na lista OU parte da árvore do próprio app (eco).
+    auto isExcluded = [&](DWORD pid) {
+        auto it = map.find(pid);
+        return (it != map.end() && IsExcludedExe(it->second.exeLower)) || IsDescendantOrSelf(map, pid, self);
+    };
+    auto treeContainsExcluded = [&](DWORD root) {
+        for (const auto& [pid, entry] : map) {
+            if (isExcluded(pid) && IsDescendantOrSelf(map, pid, root)) return true;
+        }
         return false;
+    };
+    // Raiz do mesmo executável quando seguro; senão só o próprio PID; 0 = nem isso é seguro.
+    auto safeTarget = [&](DWORD pid) -> DWORD {
+        const DWORD root = SameExeRoot(map, pid);
+        if (!treeContainsExcluded(root)) return root;
+        if (!treeContainsExcluded(pid)) return pid;
+        return 0;
+    };
+
+    // Remove fontes cujo processo morreu, que passaram a ser excluídas, ou cuja árvore ganhou um
+    // processo excluído (ex.: Discord aberto a partir de um app que já estava incluído).
+    for (size_t i = sources_.size(); i-- > 0;) {
+        const DWORD target = sources_[i].targetPid;
+        if (!map.count(target) || isExcluded(target) || treeContainsExcluded(target)) {
+            fprintf(stderr, "[AudioCaptureCore] fonte de áudio removida: %ls (pid %lu)\n", sources_[i].exeName.c_str(), (unsigned long)target);
+            ReleaseSource(sources_[i]);
+            sources_.erase(sources_.begin() + i);
+        }
     }
-    int channels = format_.nChannels >= 2 ? 2 : 1;
+
+    auto addTargetFor = [&](DWORD pid) {
+        if (IsSystemProcess(map, pid) || isExcluded(pid)) return;
+        for (const auto& source : sources_) {
+            if (IsDescendantOrSelf(map, pid, source.targetPid)) return; // já coberto por uma árvore incluída
+        }
+        const DWORD target = safeTarget(pid);
+        if (!target) return;
+        // Fonte já existente DENTRO da árvore nova seria capturada duas vezes (som dobrado).
+        for (size_t i = sources_.size(); i-- > 0;) {
+            if (IsDescendantOrSelf(map, sources_[i].targetPid, target)) {
+                ReleaseSource(sources_[i]);
+                sources_.erase(sources_.begin() + i);
+            }
+        }
+        auto it = map.find(target);
+        AddSource(target, it != map.end() ? it->second.exe : L"?");
+    };
+
+    if (systemMode_) {
+        for (const SessionInfo& session : EnumerateRenderSessions()) {
+            if (session.active) addTargetFor(session.pid);
+        }
+    } else if (sources_.empty() && windowHwnd_) {
+        DWORD windowPid = 0;
+        GetWindowThreadProcessId(windowHwnd_, &windowPid);
+        if (windowPid) addTargetFor(windowPid);
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    capturedNames_.clear();
+    for (const auto& source : sources_) capturedNames_.push_back(source.exeName);
+}
+
+int64_t AudioCaptureCore::SampleAtUs(int64_t us) const {
+    const int64_t delta = us - epochUs_;
+    return delta >= 0 ? (delta * kSampleRate) / 1000000 : -((-delta * kSampleRate) / 1000000);
+}
+
+void AudioCaptureCore::MixInto(int64_t startSample, const float* data, uint32_t frames, bool silent) {
+    const int64_t endSample = startSample + frames;
+    if (startSample < mixBaseSample_) mixStats_.lateSamples += std::min<int64_t>(frames, mixBaseSample_ - startSample);
+    if (endSample <= mixBaseSample_) return; // trecho já fechado e enviado — chegou tarde demais
+    const int64_t relEnd = endSample - mixBaseSample_;
+    if (relEnd > kMaxAheadSamples) return;
+    const size_t needed = static_cast<size_t>(relEnd) * kChannels;
+    if (mix_.size() < needed) mix_.resize(needed, 0.f);
+    if (silent || !data) return;
+    const int64_t skip = std::max<int64_t>(0, mixBaseSample_ - startSample);
+    for (int64_t i = skip; i < frames; i++) {
+        const size_t dst = static_cast<size_t>(startSample + i - mixBaseSample_) * kChannels;
+        mix_[dst] += data[i * kChannels];
+        mix_[dst + 1] += data[i * kChannels + 1];
+    }
+}
+
+void AudioCaptureCore::DrainSource(Source& source) {
+    if (!source.capture) return;
+    UINT32 packetLength = 0;
+    while (SUCCEEDED(source.capture->GetNextPacketSize(&packetLength)) && packetLength > 0) {
+        BYTE* data = nullptr;
+        UINT32 frames = 0;
+        DWORD flags = 0;
+        UINT64 devicePosition = 0;
+        UINT64 qpcPosition = 0; // unidades de 100ns
+        if (FAILED(source.capture->GetBuffer(&data, &frames, &flags, &devicePosition, &qpcPosition))) break;
+
+        const int64_t nowUs = QpcNowUs();
+        const int64_t durationUs = static_cast<int64_t>(frames) * 1000000 / kSampleRate;
+        int64_t packetUs = qpcPosition ? static_cast<int64_t>(qpcPosition / 10) : nowUs - durationUs;
+        // Timestamp fora de qualquer faixa plausível — estima pelo "agora" em vez de jogar o pacote
+        // num ponto absurdo da linha do tempo.
+        if (packetUs > nowUs + 100000 || packetUs < nowUs - 2000000) packetUs = nowUs - durationUs;
+
+        mixStats_.maxArrivalLagMs = std::max(mixStats_.maxArrivalLagMs, (nowUs - (packetUs + durationUs)) / 1000.0);
+
+        int64_t start = SampleAtUs(packetUs);
+        if (source.hasNext && !(flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) && std::llabs(start - source.nextSample) <= 96) {
+            start = source.nextSample;
+        }
+        MixInto(start, reinterpret_cast<const float*>(data), frames, (flags & AUDCLNT_BUFFERFLAGS_SILENT) != 0);
+        source.nextSample = start + frames;
+        source.hasNext = true;
+
+        source.capture->ReleaseBuffer(frames);
+    }
+}
+
+AudioCaptureCore::MixStats AudioCaptureCore::TakeMixStats() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    MixStats stats = sharedMixStats_;
+    sharedMixStats_ = {};
+    return stats;
+}
+
+bool AudioCaptureCore::CreateEncoder() {
     int error = 0;
-    encoder_ = opus_encoder_create(48000, channels, OPUS_APPLICATION_AUDIO, &error);
+    encoder_ = opus_encoder_create(kSampleRate, kChannels, OPUS_APPLICATION_AUDIO, &error);
     if (error != OPUS_OK || !encoder_) {
         encoder_ = nullptr;
         return false;
     }
-    // Bitrate de voz+música misto (áudio de sistema pode ser qualquer coisa — jogo, música,
-    // notificação), não só voz — mais alto que o preset "voip" padrão do Opus.
-    opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(64000 * channels));
-    samplesPerChannelPerFrame_ = 960; // 20ms @ 48kHz, tamanho de frame Opus padrão
+    // Áudio de sistema pode ser qualquer coisa (jogo, música, voz) — mais que o preset "voip".
+    opus_encoder_ctl(encoder_, OPUS_SET_BITRATE(64000 * kChannels));
     return true;
 }
 
-std::vector<std::vector<uint8_t>> AudioCaptureCore::PollEncodedPackets() {
-    std::vector<std::vector<uint8_t>> packets;
-    if (!captureClient_ || !encoder_) return packets;
+void AudioCaptureCore::EncodeReadyFrames() {
+    const int64_t readyUntil = SampleAtUs(QpcNowUs()) - kMixLatencySamples;
+    // Thread parada por muito tempo (suspensão, debugger) — pula pra perto do "agora" em vez de
+    // despejar segundos de silêncio de uma vez.
+    if (readyUntil - mixBaseSample_ > kSampleRate) {
+        const int64_t newBase = readyUntil - kSamplesPerOpusFrame * 5;
+        const size_t dropValues = static_cast<size_t>(newBase - mixBaseSample_) * kChannels;
+        if (mix_.size() > dropValues) mix_.erase(mix_.begin(), mix_.begin() + dropValues);
+        else mix_.clear();
+        mixBaseSample_ = newBase;
+    }
 
-    const int channels = format_.nChannels >= 2 ? 2 : 1;
-
-    UINT32 packetLength = 0;
-    while (SUCCEEDED(captureClient_->GetNextPacketSize(&packetLength)) && packetLength > 0) {
-        BYTE* data = nullptr;
-        UINT32 framesAvailable = 0;
-        DWORD flags = 0;
-        HRESULT hr = captureClient_->GetBuffer(&data, &framesAvailable, &flags, nullptr, nullptr);
-        if (FAILED(hr)) break;
-
-        size_t prevSize = pcmBuffer_.size();
-        pcmBuffer_.resize(prevSize + static_cast<size_t>(framesAvailable) * channels);
-        if (flags & AUDCLNT_BUFFERFLAGS_SILENT) {
-            std::memset(pcmBuffer_.data() + prevSize, 0, framesAvailable * channels * sizeof(float));
-        } else {
-            std::memcpy(pcmBuffer_.data() + prevSize, data, static_cast<size_t>(framesAvailable) * channels * sizeof(float));
+    const size_t frameValues = static_cast<size_t>(kSamplesPerOpusFrame) * kChannels;
+    unsigned char opusOut[4000]; // teto seguro pro maior pacote Opus possível
+    std::vector<EncodedAudioPacket> ready;
+    while (mixBaseSample_ + kSamplesPerOpusFrame <= readyUntil) {
+        if (mix_.size() < frameValues) mix_.resize(frameValues, 0.f);
+        // Soma de várias fontes pode passar de [-1, 1] — corta em vez de deixar o Opus distorcer.
+        for (size_t i = 0; i < frameValues; i++) {
+            mix_[i] = std::clamp(mix_[i], -1.f, 1.f);
+            rmsSumSquares_ += static_cast<double>(mix_[i]) * mix_[i];
         }
-
-        captureClient_->ReleaseBuffer(framesAvailable);
-    }
-
-    // RMS de diagnóstico sobre o que chegou NESSA chamada (antes de consumir pro encode) — dá pra
-    // comparar "com exclusão" vs "sem exclusão" enquanto uma fonte de áudio conhecida toca, pra
-    // confirmar de verdade se PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE tá filtrando o
-    // processo certo (em vez de assumir pelo retorno `ok:true`, que só confirma que a API aceitou
-    // os parâmetros, não que o filtro funciona na prática).
-    if (!pcmBuffer_.empty()) {
-        double sumSquares = 0.0;
-        for (float sample : pcmBuffer_) sumSquares += static_cast<double>(sample) * sample;
-        lastRms_ = static_cast<float>(std::sqrt(sumSquares / pcmBuffer_.size()));
-    } else {
-        lastRms_ = 0.f;
-    }
-
-    const size_t frameSamples = samplesPerChannelPerFrame_ * channels;
-    std::vector<unsigned char> opusOut(4000); // teto seguro pro maior pacote Opus possível
-    while (pcmBuffer_.size() >= frameSamples) {
-        int encodedBytes = opus_encode_float(
-            encoder_, pcmBuffer_.data(), static_cast<int>(samplesPerChannelPerFrame_), opusOut.data(),
-            static_cast<opus_int32>(opusOut.size()));
+        rmsSampleCount_ += frameValues;
+        const int encodedBytes = opus_encode_float(encoder_, mix_.data(), static_cast<int>(kSamplesPerOpusFrame), opusOut, sizeof(opusOut));
         if (encodedBytes > 0) {
-            packets.emplace_back(opusOut.begin(), opusOut.begin() + encodedBytes);
+            EncodedAudioPacket packet;
+            packet.data.assign(opusOut, opusOut + encodedBytes);
+            packet.ptsUs = epochUs_ + (mixBaseSample_ * 1000000) / kSampleRate;
+            ready.push_back(std::move(packet));
         }
-        pcmBuffer_.erase(pcmBuffer_.begin(), pcmBuffer_.begin() + frameSamples);
+        mix_.erase(mix_.begin(), mix_.begin() + frameValues);
+        mixBaseSample_ += kSamplesPerOpusFrame;
     }
 
-    return packets;
+    PacketCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sharedMixStats_.maxArrivalLagMs = std::max(sharedMixStats_.maxArrivalLagMs, mixStats_.maxArrivalLagMs);
+        sharedMixStats_.lateSamples += mixStats_.lateSamples;
+        mixStats_ = {};
+        // RMS por janela de ~100ms (não por pacote) — o log de 1s lê o valor mais recente.
+        if (rmsSampleCount_ >= static_cast<size_t>(kSampleRate / 10) * kChannels) {
+            lastRms_ = static_cast<float>(std::sqrt(rmsSumSquares_ / rmsSampleCount_));
+            rmsSumSquares_ = 0.0;
+            rmsSampleCount_ = 0;
+        }
+        callback = callback_;
+        if (!callback) {
+            for (auto& packet : ready) queue_.push_back(std::move(packet));
+            // Ninguém lendo (sem callback e sem poll) — não deixa crescer pra sempre.
+            if (queue_.size() > 500) queue_.erase(queue_.begin(), queue_.begin() + (queue_.size() - 500));
+            return;
+        }
+    }
+    for (const auto& packet : ready) callback(packet);
 }
 
 void AudioCaptureCore::Shutdown() {
-    if (audioClient_) {
-        audioClient_->Stop();
-        audioClient_->Release();
-        audioClient_ = nullptr;
-    }
-    if (captureClient_) {
-        captureClient_->Release();
-        captureClient_ = nullptr;
-    }
-    if (encoder_) {
-        opus_encoder_destroy(encoder_);
-        encoder_ = nullptr;
-    }
-    pcmBuffer_.clear();
-    if (comInitializedHere_) {
-        CoUninitialize();
-        comInitializedHere_ = false;
-    }
+    stop_ = true;
+    if (worker_.joinable()) worker_.join();
+    std::lock_guard<std::mutex> lock(mutex_);
+    queue_.clear();
+    capturedNames_.clear();
+    callback_ = nullptr;
 }

@@ -837,6 +837,17 @@ body {
   max-width: 260px;
 }
 
+/* Lista de apps do áudio da transmissão (AudioAppsSettings) — rola por dentro se tiver muitos apps
+   em vez de empurrar a grade de fontes pra fora da janela do picker. */
+.audio-apps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 120px;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
 .picker-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -1397,7 +1408,7 @@ body {
 /* Conteúdo vem como HTML de verdade (GitHub renderiza o markdown do release antes de entregar
    pelo feed) — estiliza os elementos que costumam aparecer num changelog normal, não só <li>. */
 .update-notes {
-  max-height: 180px;
+  max-height: 120px;
   overflow-y: auto;
   color: var(--text);
   font-size: 0.82rem;

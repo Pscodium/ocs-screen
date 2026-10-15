@@ -1,10 +1,115 @@
 # Roadmap execução
 
+## 📋 Pendências de compatibilidade de hardware (levantadas 2026-10-15, só análise — sem código)
+
+Pergunta do usuário: "qualquer um com placa NVIDIA vai rodar com NVENC?" — não. Só foi testado
+numa RTX 3060 em desktop. Achados (conferidos no código/binário, não em outras máquinas):
+
+- [ ] **[BUG] Addon nativo nem carrega em PC sem driver NVIDIA** — `capture_core.node` importa
+  `nvEncodeAPI64.dll` estaticamente (via `vendor/nvenc/Lib/nvencodeapi.lib` no `binding.gyp`;
+  confirmado com `strings` no `.node`). Sem driver NVIDIA (AMD/Intel), o `LoadLibrary` do addon
+  falha → o `require` em `main/index.ts` cai no catch → pipeline nativo INTEIRO indisponível
+  (captura DXGI/WGC, transporte, áudio por app), app volta pro LiveKit/`desktopCapturer`. O fallback
+  de software (`SoftwareEncoderCore`, Media Foundation) nunca roda nesses PCs — só quando o driver
+  NVIDIA existe mas o NVENC falha. **Fix proposto**: delay-load (`/DELAYLOAD:nvEncodeAPI64.dll` +
+  `delayimp.lib` no `binding.gyp`) e, em `EncoderCore::InitializeNvenc`, checar
+  `LoadLibraryW(L"nvEncodeAPI64.dll")` antes de qualquer chamada NVENC (falha de delay-load é
+  exceção SEH, não C++ — precisa checar antes, não dá pra só pegar no `catch`). Testar renomeando
+  a DLL/numa VM sem GPU NVIDIA.
+- [ ] **Notebook híbrido (Optimus: iGPU Intel/AMD + NVIDIA) cai pra encoder por software** —
+  `CaptureCore`/`WindowCaptureCore` criam o device com `D3D11CreateDevice(nullptr, ...)` (adaptador
+  padrão = normalmente a iGPU, onde a tela está ligada). DXGI Desktop Duplication EXIGE device no
+  adaptador dono do monitor; NVENC exige device na NVIDIA → sessão NVENC não abre no device da iGPU
+  → `SoftwareEncoderCore`. Pra usar NVENC: segundo device na NVIDIA + cópia entre adaptadores
+  (textura compartilhada `D3D11_RESOURCE_MISC_SHARED_NTHANDLE`/keyed mutex, ou staging) — custo extra
+  de cópia por frame, mas bem menor que encode por CPU. Maioria dos notebooks gamer cai aqui.
+  Alternativa mais barata a considerar antes: encoder por hardware da própria iGPU (Quick Sync/AMF
+  via MFT de hardware). **Achado**: `SoftwareEncoderCore` chama `MFTEnumEx` SEM
+  `MFT_ENUM_FLAG_HARDWARE` — MFT de hardware só é listado com essa flag, então hoje ele só pega o
+  encoder 100% CPU da Microsoft (o comentário no código diz que pegaria QuickSync/AMF "de graça" —
+  não pega). Ligar a flag exige tratar MFT de hardware direito (assíncrono + `IMFDXGIDeviceManager`
+  com o device D3D11 da captura). Isso também cobriria PCs só AMD/Intel depois do fix do delay-load
+  acima — hoje eles não teriam encoder por hardware nenhum.
+- [ ] **GPUs NVIDIA sem NVENC** (GT 1030, MX110/130/150/230/250/330/350…) → software. Esperado,
+  só documentar/avisar.
+- [ ] **Driver mínimo**: SDK vendorizado é NVENC 13.1 — exige driver recente (~570+, confirmar nas
+  release notes do SDK). Driver mais velho → `NvEncodeAPIGetMaxSupportedVersion` recusa → software.
+  Hoje o único aviso é o ⚠️ de encoder por software; considerar mensagem específica "atualize o
+  driver NVIDIA" quando o erro for de versão (a exceção do wrapper já diz isso no stderr).
+- [ ] **Limite de sessões NVENC** em GeForce (8 simultâneas nos drivers atuais) — app usa 2
+  (high+low). Com OBS/ShadowPlay junto raramente estoura; se estourar, o tier low falha em silêncio
+  (já tratado) e o high cai pra software.
+- [ ] Validar tudo acima em máquinas reais (AMD, Intel-only, notebook Optimus, GPU antiga).
+
+## Sprint 36 — Stutter/"aberração cromática", sincronia A/V, latência e áudio por app (2026-10-15)
+
+Relato do usuário: aberração cromática periódica com engasgo, áudio fora de sincronia, latência
+alta, falta polir mudo do Discord/retorno de microfone. Tudo medido com harness isolado do addon
+e E2E real (app desktop via Playwright `_electron` + viewer real no Chrome, mesma máquina, 1080p60).
+
+- [x] **NVENC segurava 3 frames antes de devolver cada pacote** — wrapper da NVIDIA usa
+  `nExtraOutputDelay=3` por padrão (pipelining de transcodificação). Medido: 1º pacote só na 4ª
+  chamada. Efeitos: +50ms@60fps (+200ms no tier low@15fps) de latência, vídeo atrasado em relação
+  ao áudio pelo mesmo tanto, e com a tela parada os últimos frames ficavam presos no encoder até a
+  tela mudar ("aos trancos"). `EncoderCore.cpp`: delay 0.
+- [x] **IDR a cada 2s em CBR com VBV de 3 frames** — causa mais provável da "aberração cromática
+  de tempos em tempos": o IDR (~3x um P-frame) cabe no mesmo orçamento, rate control derruba a
+  qualidade (croma primeiro) e o pico chega atrasado (engasgo). Transporte é SCTP confiável (não tem
+  perda pra recuperar) → **GOP infinito**, keyframe só sob demanda (espectador novo, troca de tier,
+  pedido do decoder, recuperação de congestionamento).
+- [x] **SPS sem `bitstream_restriction` + cor não sinalizada** (visto com `ffmpeg -bsf:v
+  trace_headers`) — o decoder do Chrome segurava ~67ms (4 frames) "pra reordenar" mesmo com
+  `optimizeForLatency`; com `max_num_reorder_frames=0` cai pra <1ms. NVENC converte em BT.709
+  (medido: PSNR 33.4dB vs 29.2dB com 601) mas o stream não dizia — agora sinaliza BT.709 limitado.
+- [x] **Pacing jogava fora ~1 em 6 frames** quando captura e alvo têm o mesmo ritmo (jitter de
+  0.1ms antes da grade = frame descartado) — `FramePacer.h` com tolerância de 1/4 de intervalo.
+- [x] **Timestamps** — vídeo e áudio usavam `Date.now()` do instante do ENVIO. Agora relógio QPC
+  único (`QpcClock.h`): vídeo = instante da captura, áudio = instante QPC real que o WASAPI dá pra
+  cada pacote.
+- [x] **Latência sem limite sob rede ruim** — SCTP confiável enfileira tudo, e com
+  `maxMessageSize`=4MB o usrsctp sobe o SO_SNDBUF pra 4MB (invisível no `bufferedAmount()`, até
+  segundos de vídeo represado). Espectador agora manda ack por frame; host mede a fila real (idade
+  do frame mais antigo sem ack − RTT mínimo), passa de 150ms → descarta frames daquela sessão até
+  escoar e pede keyframe. AIMD usa esse sinal (+ frames descartados). Viewer antigo sem ack cai no
+  `bufferedAmount` como antes. Validado no E2E atrasando acks em 400ms: host descartou ~40 fps,
+  bitrate 12→1.4 Mbps, espectador continuou sem erro de decoder e voltou a 60fps na hora.
+- [x] **Buffer de jitter do viewer crescia sozinho** — ancorava no 1º pacote e tratava desvio
+  absoluto como jitter (×4) + piso fixo de 150ms. Deriva de relógio/fila que cresceu viravam
+  latência permanente. `viewer/src/services/playoutClock.ts`: percentil 98 do trânsito numa janela
+  de 3s, sobe na hora, desce devagar; piso padrão 0. Simulação: antigo +150-750ms, novo ~10ms
+  (43ms em Wi-Fi com jitter de 40ms).
+- [x] **Áudio no viewer via Web Audio** (`nativeAudioPlayer.ts`) agendado no MESMO relógio do vídeo
+  (`getOutputTimestamp`), com correção de deriva por playbackRate (±1%). Antes ia por
+  `MediaStreamTrackGenerator` no `<video>`, cuja fila interna desacoplava o momento da escrita do
+  momento em que tocava. Volume/mudo continuam no `<video>` (espelhados num GainNode).
+- [x] **Áudio: "mixer por app"** (`AudioCaptureCore`) — em vez de 1 loopback do sistema com 1
+  processo excluído, 1 captura INCLUDE por app tocando áudio, mixadas, menos os silenciados. Resolve
+  o dilema do NVIDIA Broadcast (seção abaixo): o app de ORIGEM entra direto, o proxy fica de fora.
+  Árvore de processo só é incluída se não contiver processo silenciado (senão cai pro PID da sessão
+  — evita incluir explorer/lançadores e vazar o Discord junto). Processos de sistema (svchost/
+  audiodg — onde mora o "Escutar este dispositivo" do mic) e o próprio app nunca entram. Thread
+  própria (MMCSS "Pro Audio", 5ms) que manda direto pro transporte, frames Opus de 10ms.
+  Corrige também o loopback de dispositivo antigo que copiava 5.1/7.1 como estéreo (ruído).
+- [x] **UI "Áudio da transmissão"** no rodapé do picker (início e troca de fonte ao vivo): lista
+  apps tocando + silenciados, toggle aplica NA HORA e fica salvo (`userData/audio-settings.json`).
+  Padrão silenciado: Discord (+PTB/Canary) e NVIDIA Broadcast.
+- [x] Dump do bitstream (`%TEMP%/native-transport-debug.h264`) era gravado SEMPRE, inclusive em
+  produção — agora só com `OCS_DUMP_BITSTREAM=1`.
+- **Resultado E2E** (1080p60, mesma máquina): latência captura→tela p50 **96ms → ~33ms**, decode
+  67ms → <1ms, 58-60 fps apresentados (display 165Hz), 0 engasgos (>2.5x intervalo), 0 frames
+  descartados com rede boa, áudio sem amostra perdida.
+- [ ] **Não validado**: rede real entre máquinas/Wi-Fi ruim de verdade (só simulado), NVIDIA
+  Broadcast (não instalado aqui), retorno de mic via "Escutar este dispositivo" (não ligado aqui),
+  AV1 (sem GPU RTX 40), sincronia A/V percebida por ouvido humano (a conta fecha pelo relógio, mas
+  ninguém olhou boca/som). **Viewer precisa de deploy** (ack/relógio/áudio vivem lá) e o desktop
+  precisa de build novo.
+
 ## 📋 Pendências levantadas pelo usuário (2026-08-26 à noite) — pra pegar amanhã
 
 Sem investigação ainda, só a lista bruta do que foi notado testando hoje:
 
-- [ ] **NVIDIA Broadcast quebra a exclusão de áudio por processo dos dois lados** — relatado pelo
+- [x] **(Endereçado no Sprint 36 — "mixer por app", ver acima; falta validar com Broadcast real.)**
+  **NVIDIA Broadcast quebra a exclusão de áudio por processo dos dois lados** — relatado pelo
   usuário (2026-08-27), problema real de arquitetura, sem solução óbvia ainda. Contexto:
   `NATIVE_AUDIO_EXCLUDE_CANDIDATES` (`main/index.ts`) hoje inclui `"NVIDIA Broadcast.exe"` na
   lista de exclusão (achado no Sprint do áudio nativo — Broadcast é quem REALMENTE renderiza no

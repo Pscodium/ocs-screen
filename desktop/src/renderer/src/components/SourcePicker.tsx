@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { CaptureSource } from "../../../preload/index";
 import { isNativeCaptureAvailable } from "../services/nativeCapture";
 import { SettingsForm } from "./SettingsForm";
+import { AudioAppsSettings } from "./AudioAppsSettings";
 import type { StreamSettings } from "../types/stream";
 
 // `settings`/`slug` (+ callbacks) só existem no fluxo de "começar a compartilhar" (HomePage) — a
@@ -142,9 +143,10 @@ export function SourcePicker({ settings, onSettingsChange, slug, onSlugChange, o
             original de CLAUDE.md (Monitor/Janela/Qualidade/FPS juntos). Evita repetir esse formulário
             numa segunda janela de tamanho fixo e diferente (era a causa do "quebra o tamanho da
             tela": HomePage cramava tudo isso numa janela 440×720 fixa e não-redimensionável). */}
-        {settings && (
+        {settings ? (
           <div className="picker-footer">
             <SettingsForm settings={settings} onChange={onSettingsChange!} compact />
+            {settings.nativeTransport && <AudioAppsSettings />}
 
             <label className="settings-field room-slug-field">
               <span>Nome da sala (opcional)</span>
@@ -157,6 +159,12 @@ export function SourcePicker({ settings, onSettingsChange, slug, onSlugChange, o
                 maxLength={32}
               />
             </label>
+          </div>
+        ) : (
+          // Troca de fonte ao vivo: sem reconfigurar resolução/sala, mas dá pra ajustar quais apps
+          // entram no áudio (aplica na hora na transmissão no ar).
+          <div className="picker-footer">
+            <AudioAppsSettings />
           </div>
         )}
       </div>

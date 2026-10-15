@@ -66,7 +66,18 @@ bool EncoderCore::InitializeNvenc(ID3D11Device* device, int width, int height, i
         // ARGB (BGRA na memória, mesmo layout que o CaptureCore já produz) — evita converter pra
         // NV12 antes de encodar. NVENC aceita ARGB direto, só custa um pouco mais de banda de
         // memória interna que NV12 (não temos motivo pra otimizar isso agora).
-        encoder_ = std::make_unique<NvEncoderD3D11>(device, static_cast<uint32_t>(width), static_cast<uint32_t>(height), NV_ENC_BUFFER_FORMAT_ARGB);
+        //
+        // `nExtraOutputDelay = 0` — o padrão do wrapper da NVIDIA é 3: `EncodeFrame()` só devolve o
+        // pacote do frame N depois de receber o frame N+3 (pipelining pra throughput, pensado pra
+        // transcodificação de arquivo). Num stream ao vivo isso era um bug sério, medido com harness
+        // isolado (1º pacote só saía na 4ª chamada aceita): +3 frames de latência fixa (50ms@60fps,
+        // 100ms@30fps, 200ms no tier low@15fps), vídeo atrasado em relação ao áudio pelo mesmo tanto
+        // (áudio não passa por esse atraso — dessincronia que o viewer não tinha como corrigir), e
+        // com a tela PARADA (DXGI só entrega frame quando algo muda) os últimos 3 frames ficavam
+        // presos no encoder até a tela mudar de novo — digitar/mover algo aparecia "aos trancos".
+        // Com 0, cada chamada devolve o pacote do próprio frame (o lock do bitstream espera o encode
+        // terminar, ~1-3ms de GPU — custo bem menor que os 3 frames de espera).
+        encoder_ = std::make_unique<NvEncoderD3D11>(device, static_cast<uint32_t>(width), static_cast<uint32_t>(height), NV_ENC_BUFFER_FORMAT_ARGB, 0);
 
         initializeParams_ = { NV_ENC_INITIALIZE_PARAMS_VER };
         encodeConfig_ = { NV_ENC_CONFIG_VER };
@@ -110,10 +121,40 @@ bool EncoderCore::InitializeNvenc(ID3D11Device* device, int width, int height, i
         // Sem B-frames — cada B-frame depende de um frame FUTURO, o que obriga o encoder a
         // segurar frames antes de devolver, direto contra baixa latência (CLAUDE.md §Latência).
         encodeConfig_.frameIntervalP = 1;
-        // Keyframe a cada 2s — recuperação rápida de perda de pacote sem gerar keyframe (caro,
-        // gera pico de bitrate) toda hora.
-        encodeConfig_.gopLength = static_cast<uint32_t>(fps) * 2;
+        // GOP INFINITO — keyframe só sob demanda (`ForceKeyframe`: espectador novo, troca de tier,
+        // decoder do espectador pedindo recuperação, frames descartados por congestionamento).
+        // Antes era IDR fixo a cada 2s, pensado pra "recuperar de perda de pacote" — mas o vídeo
+        // vai por DataChannel SCTP confiável/ordenado, não existe perda de pacote pra recuperar.
+        // E o IDR periódico era a causa mais provável da "aberração cromática de tempos em tempos
+        // com stuttering": em CBR com VBV curto (3 frames), um IDR (~3x maior que um P-frame
+        // medido no harness) tem que caber no mesmo orçamento — o rate control derruba a
+        // qualidade bruscamente nesse frame (croma é o primeiro a sofrer: blocos de cor borrada) e
+        // ela vai se recompondo nos P-frames seguintes; e o pico de bytes chega atrasado no
+        // espectador (engasgo). A cada 2s, exatamente o padrão relatado. Bate também com HEVC ter
+        // "quase eliminado" o artefato (comprime IDR bem melhor no mesmo orçamento).
+        encodeConfig_.gopLength = NVENC_INFINITE_GOPLENGTH;
+        // VUI — dois problemas reais achados inspecionando o SPS (`ffmpeg -bsf:v trace_headers`):
+        // 1) `bitstream_restriction_flag = 0`: sem `max_num_reorder_frames`/`max_dec_frame_buffering`
+        //    no SPS, o decoder do espectador não tem como saber que não existe B-frame e segura
+        //    frames no DPB "pra reordenar" antes de entregar — medido no E2E (Chrome/WebCodecs,
+        //    mesmo com `optimizeForLatency`): ~67ms (4 frames@60fps) entre o chunk chegar e o frame
+        //    sair do decoder. Com a flag, o NVENC escreve reorder=0 e o decoder entrega na hora.
+        // 2) Cor não sinalizada (`video_signal_type_present_flag = 0`): o NVENC converte ARGB→YUV
+        //    em BT.709 limitado (medido: PSNR do decode com BT.709 33.4dB vs 29.2dB com BT.601), mas
+        //    sem isso no stream cada decoder chuta a matriz — BT.601 dá cor errada (vermelho/azul
+        //    deslocados, a "aberração cromática" mais visível em texto/UI colorida).
+        auto configureVui = [](NV_ENC_CONFIG_H264_VUI_PARAMETERS& vui) {
+            vui.bitstreamRestrictionFlag = 1;
+            vui.videoSignalTypePresentFlag = 1;
+            vui.videoFormat = NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
+            vui.videoFullRangeFlag = 0;
+            vui.colourDescriptionPresentFlag = 1;
+            vui.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES_BT709;
+            vui.transferCharacteristics = NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
+            vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS_BT709;
+        };
         if (codec == VideoCodecType::HEVC) {
+            configureVui(encodeConfig_.encodeCodecConfig.hevcConfig.hevcVUIParameters);
             encodeConfig_.encodeCodecConfig.hevcConfig.idrPeriod = encodeConfig_.gopLength;
             // Annex-B com VPS/SPS/PPS repetidos em cada keyframe — mesmo raciocínio do H.264
             // (repeatSPSPPS) logo abaixo, campo espelhado na struct de config do HEVC.
@@ -131,6 +172,7 @@ bool EncoderCore::InitializeNvenc(ID3D11Device* device, int width, int height, i
             // viewer também não precisa: `EncodedVideoChunk` só quer os OBUs crus.
             encodeConfig_.encodeCodecConfig.av1Config.outputAnnexBFormat = 0;
         } else {
+            configureVui(encodeConfig_.encodeCodecConfig.h264Config.h264VUIParameters);
             encodeConfig_.encodeCodecConfig.h264Config.idrPeriod = encodeConfig_.gopLength;
             // Annex-B (start code 0x00000001 antes de cada NAL) — formato que dá pra escrever direto
             // num arquivo .h264 puro ou empacotar em RTP sem reprocessar.
@@ -144,7 +186,7 @@ bool EncoderCore::InitializeNvenc(ID3D11Device* device, int width, int height, i
         context_ = ctx.Detach();
 
         fps_ = fps;
-        nextEncodeTime_ = std::chrono::steady_clock::time_point{};
+        pacer_.Reset(fps);
 
         return true;
     } catch (const std::exception& e) {
@@ -189,32 +231,10 @@ std::vector<std::vector<uint8_t>> EncoderCore::EncodeFrame(ID3D11Texture2D* fram
     std::vector<std::vector<uint8_t>> packets;
     if (!encoder_ || !context_ || !frame) return packets;
 
-    const auto now = std::chrono::steady_clock::now();
-    // Duração em ponto flutuante (não `milliseconds(1000/fps)`, que truncava 60fps pra 16ms em
-    // vez de 16.667ms real — erro pequeno mas sistemático) convertida pro tick nativo do
-    // steady_clock.
-    const auto interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-        std::chrono::duration<double>(1.0 / (fps_ > 0 ? fps_ : 30)));
-
-    if (nextEncodeTime_.time_since_epoch().count() != 0 && now < nextEncodeTime_) {
-        // Chamado rápido demais pro fps configurado — pula esse frame sem tocar no NVENC (nem
-        // GetNextInputFrame nem CopyResource), pra manter o pacing real batendo com o que o NVENC
-        // assume internamente pro cálculo de bitrate CBR.
-        return packets;
-    }
-
-    if (nextEncodeTime_.time_since_epoch().count() == 0 || now - nextEncodeTime_ > interval) {
-        // Primeira chamada, ou ficamos muito atrás da grade (stall grande) — resincroniza em vez
-        // de tentar recuperar o atraso de uma vez (isso geraria uma rajada de frames aceitos em
-        // sequência).
-        nextEncodeTime_ = now + interval;
-    } else {
-        // Soma o intervalo à grade FIXA, não reinicia contando do "agora" — um frame individual
-        // aceito um pouco atrasado não desloca o relógio inteiro pra frente permanentemente
-        // (isso era o que causava jitter acumulado, medido em produção como "micro engasgadas"
-        // mesmo com fps médio bom).
-        nextEncodeTime_ += interval;
-    }
+    // Chamado mais rápido que o fps configurado (monitor de alta taxa) — pula esse frame sem tocar
+    // no NVENC (nem GetNextInputFrame nem CopyResource), pra manter o ritmo real batendo com o que o
+    // NVENC assume internamente pro cálculo de bitrate CBR. Ver FramePacer.h.
+    if (!pacer_.ShouldEncode(std::chrono::steady_clock::now())) return packets;
 
     // TUDO que toca o NVENC/D3D11 daqui pra baixo entra no try — `GetNextInputFrame()` e
     // `CopyResource()` estavam FORA do try antes, sem proteção nenhuma. Sob contenção pesada de

@@ -12,6 +12,7 @@
 
 #include "CodecApiHelper.h" // não usa <codecapi.h> direto aqui — ver comentário no próprio header
 #include "VideoCodecType.h"
+#include "FramePacer.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -68,7 +69,7 @@ private:
     bool comInitializedByUs_ = false;
     bool needsInput_ = false;
     std::atomic<bool> forceKeyframe_{false};
-    std::chrono::steady_clock::time_point nextEncodeTime_{};
+    FramePacer pacer_; // ver FramePacer.h
     LONGLONG frameDuration100ns_ = 0; // duração de 1 frame em unidades de 100ns (MF usa isso pra timestamp/duration)
     LONGLONG sampleTime_ = 0;
     std::vector<uint8_t> nv12Scratch_; // reaproveitado frame a frame, evita realocar todo quadro

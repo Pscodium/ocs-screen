@@ -14,7 +14,7 @@ import {
   type MessagePortMain,
 } from "electron";
 import { join } from "path";
-import { createWriteStream, writeFileSync } from "fs";
+import { createWriteStream, readFileSync, writeFileSync, type WriteStream } from "fs";
 import { autoUpdater } from "electron-updater";
 import WebSocket from "ws";
 
@@ -581,6 +581,13 @@ interface NativeCaptureAddon {
   // "Simulcast" — cada tier tem AIMD independente agora). 0 = ninguém conectado nesse tier ou tudo
   // escoando bem.
   transportMaxBufferedAmount(tier?: "high" | "low"): number;
+  // Sinais de congestionamento de um tier (ver TransportCore.h "Controle de latência"):
+  // `maxQueueDelayMs` = fila acima do RTT mínimo medida por ack do espectador, `droppedFrames` =
+  // frames descartados por congestionamento desde a última leitura (zera ao ler).
+  transportGetTierStats(tier: "high" | "low"): { maxQueueDelayMs: number; droppedFrames: number; maxBufferedAmount: number };
+  // Relógio QPC (µs) — o MESMO dos `ptsUs` de áudio (ver QpcClock.h). Timestamps de vídeo saem
+  // daqui pra ficarem sincronizáveis com o áudio no espectador.
+  nowUs(): number;
   // `tier` diz de qual encoder veio esse frame — só é mandado pras sessões daquele tier.
   transportSendVideoFrame(tier: "high" | "low", data: Buffer, timestampUs: number): boolean;
   // Callbacks GLOBAIS (registrados 1x, não por sessão) — `viewerId` sempre vem primeiro, pra
@@ -589,19 +596,28 @@ interface NativeCaptureAddon {
   transportOnLocalCandidate(callback: (viewerId: string, candidate: string, mid: string) => void): void;
   transportOnStateChange(callback: (viewerId: string, state: string) => void): void;
 
-  // Áudio (WASAPI process-loopback + Opus, ver AudioCaptureCore.h) — `excludeProcessName`
-  // (opcional) = nome do executável a excluir da captura (ex.: "Discord.exe", pedido direto do
-  // usuário: já tá na call, ouviria a própria voz 2x se o áudio dele saísse pela transmissão
-  // também). Sem argumento, cai pro loopback normal (dispositivo padrão inteiro, sem exclusão).
-  initAudioCapture(excludeProcessName?: string): { ok: boolean; excludedPid: number };
-  // Caminho de JANELA — INCLUDE em vez de EXCLUDE: só a árvore de processos dona do HWND sai na
-  // transmissão (ver AudioCaptureCore::InitializeForWindow). Usado quando a fonte é uma janela
-  // específica, não o monitor inteiro (`ntHwnd` != null).
-  initAudioCaptureForWindow(hwnd: number): { ok: boolean };
+  // Áudio (WASAPI process-loopback + mixer + Opus, ver AudioCaptureCore.h "mixer por app") —
+  // caminho de MONITOR: mixa todo app tocando áudio, menos os executáveis de `excludedExeNames`
+  // (Discord: quem tá na call ouviria a própria voz 2x) e o próprio app. `sources` = executáveis
+  // sendo capturados agora.
+  initAudioCapture(excludedExeNames: string[]): { ok: boolean; sources: string[] };
+  // Caminho de JANELA — só a árvore de processos dona do HWND (ver
+  // AudioCaptureCore::InitializeForWindow). Usado quando a fonte é uma janela (`ntHwnd` != null).
+  initAudioCaptureForWindow(hwnd: number, excludedExeNames: string[]): { ok: boolean; sources: string[] };
   destroyAudioCapture(): void;
-  // 0+ pacotes Opus prontos (o core acumula PCM internamente até fechar um frame de 20ms) —
-  // chamado do mesmo loop que já poll vídeo.
-  pollAudioPackets(): Buffer[];
+  // Troca a lista de exclusão ao vivo, sem reiniciar a captura. Devolve as fontes atuais.
+  setAudioExcludedApps(excludedExeNames: string[]): string[];
+  getAudioSources(): string[];
+  // Apps com sessão de áudio agora (pra UI de silenciar) — `active` = tocando neste instante.
+  listAudioApps(): { exe: string; active: boolean }[];
+  // Diagnóstico do mixer desde a última leitura (ver AudioCaptureCore::TakeMixStats).
+  getAudioMixStats(): { maxArrivalLagMs: number; lateSamples: number };
+  // A partir daqui, cada pacote Opus vai da thread de áudio nativa DIRETO pras sessões conectadas,
+  // com timestamp = captura − `startUs` (mesma origem do vídeo).
+  startAudioForwarding(startUs: number): boolean;
+  // Só pra harness/diagnóstico (sem `startAudioForwarding`): pacotes acumulados desde a última
+  // chamada — `ptsUs` no relógio de `nowUs()`, instante real de captura.
+  pollAudioPackets(): { data: Buffer; ptsUs: number }[];
   transportAddAudioChannel(viewerId: string): boolean;
   // Áudio não tem tier — manda pra TODAS as sessões que abriram canal de áudio.
   transportSendAudioFrame(data: Buffer, timestampUs: number): boolean;
@@ -825,65 +841,88 @@ function startNativeCaptureSource(monitorIndex?: number, hwnd?: number): boolean
 // falhar — só fica sem áudio, mesmo comportamento de sempre.
 function startNativeAudioForSource(hwnd?: number): void {
   if (!nativeCapture) return;
-  if (hwnd !== undefined) {
-    const audioResult = nativeCapture.initAudioCaptureForWindow(hwnd);
-    ntAudioActive = audioResult.ok;
-    if (!ntAudioActive) {
-      console.warn("[native-transport] captura de áudio nativa (janela) não iniciou — transmissão segue sem áudio.");
-    } else {
-      console.log("[native-transport] áudio nativo ativo (só a janela compartilhada).");
-    }
+  const excluded = loadAudioExcludedApps();
+  const result =
+    hwnd !== undefined ? nativeCapture.initAudioCaptureForWindow(hwnd, excluded) : nativeCapture.initAudioCapture(excluded);
+  ntAudioActive = result.ok;
+  if (!ntAudioActive) {
+    console.warn("[native-transport] captura de áudio nativa não iniciou — transmissão segue sem áudio.");
     return;
   }
-  // Tenta cada candidato em ordem — o PRIMEIRO que resolver um PID de verdade é o usado.
-  // `initAudioCapture` recria a sessão a cada tentativa (barato, só ativa uma vez por troca de
-  // fonte) — não dá pra saber de antemão qual candidato tá rodando sem tentar.
-  let resolvedName: string | null = null;
-  let resolvedPid = 0;
-  for (const candidate of NATIVE_AUDIO_EXCLUDE_CANDIDATES) {
-    const attempt = nativeCapture.initAudioCapture(candidate);
-    if (attempt.ok && attempt.excludedPid !== 0) {
-      resolvedName = candidate;
-      resolvedPid = attempt.excludedPid;
-      break;
+  // Pacotes saem da thread de áudio nativa direto pro transporte (não passam pelo loop JS — ver
+  // AudioCaptureCore.h), com timestamp relativo à MESMA origem do vídeo.
+  nativeCapture.startAudioForwarding(ntStartUs);
+  console.log(
+    `[native-transport] áudio nativo ativo (${hwnd !== undefined ? "janela" : "monitor"}) — capturando [${result.sources.join(", ")}], silenciados [${excluded.join(", ")}].`,
+  );
+}
+
+// Lista de apps silenciados na transmissão (nome do executável) — persistida no `userData` porque
+// é preferência de máquina (que apps o usuário tem/usa), não de uma transmissão específica.
+// Padrão: Discord (todas as variantes — quem tá na call ouviria a própria voz/a dos outros 2x) e
+// NVIDIA Broadcast (proxy de áudio: o que ele renderiza é a call/retorno de microfone processados;
+// com o mixer por app o áudio de ORIGEM dos outros apps entra direto, sem passar por ele — ver
+// AudioCaptureCore.h).
+const DEFAULT_AUDIO_EXCLUDED_APPS = ["Discord.exe", "DiscordPTB.exe", "DiscordCanary.exe", "NVIDIA Broadcast.exe"];
+
+function audioSettingsPath(): string {
+  return join(app.getPath("userData"), "audio-settings.json");
+}
+
+function loadAudioExcludedApps(): string[] {
+  try {
+    const parsed = JSON.parse(readFileSync(audioSettingsPath(), "utf-8")) as { excludedApps?: unknown };
+    if (Array.isArray(parsed.excludedApps) && parsed.excludedApps.every((x) => typeof x === "string")) {
+      return parsed.excludedApps as string[];
     }
-    nativeCapture.destroyAudioCapture();
+  } catch {
+    // Arquivo não existe ainda (primeira execução) ou corrompido — cai no padrão.
   }
-  if (resolvedPid === 0) {
-    // Nenhum candidato resolveu (nenhum dos apps tava rodando nesse instante) — inicia sem
-    // exclusão mesmo assim (loopback normal), não bloqueia a transmissão por causa disso.
-    const fallback = nativeCapture.initAudioCapture();
-    ntAudioActive = fallback.ok;
-    if (ntAudioActive) {
-      console.warn(
-        `[native-transport] nenhum de [${NATIVE_AUDIO_EXCLUDE_CANDIDATES.join(", ")}] encontrado ao iniciar áudio — captura SEM exclusão (tudo incluído).`,
-      );
-    } else {
-      console.warn("[native-transport] captura de áudio nativa não iniciou — transmissão segue sem áudio.");
-    }
-  } else {
-    ntAudioActive = true;
-    console.log(`[native-transport] áudio nativo ativo, excluindo PID ${resolvedPid} (${resolvedName}).`);
+  return DEFAULT_AUDIO_EXCLUDED_APPS;
+}
+
+function saveAudioExcludedApps(excludedApps: string[]): void {
+  try {
+    writeFileSync(audioSettingsPath(), JSON.stringify({ excludedApps }, null, 2));
+  } catch (err) {
+    console.error("[native-audio] falha ao salvar apps silenciados:", err);
   }
 }
+
+// Apps com sessão de áudio agora + os já silenciados (mesmo que não estejam tocando), pra UI montar
+// a lista de "silenciar app" — ver SettingsForm.
+ipcMain.handle("native-audio:list-apps", () => {
+  const excluded = loadAudioExcludedApps();
+  const apps = nativeCapture?.listAudioApps() ?? [];
+  const byName = new Map<string, { exe: string; active: boolean; excluded: boolean }>();
+  for (const appInfo of apps) {
+    byName.set(appInfo.exe.toLowerCase(), { ...appInfo, excluded: excluded.some((e) => e.toLowerCase() === appInfo.exe.toLowerCase()) });
+  }
+  for (const exe of excluded) {
+    if (!byName.has(exe.toLowerCase())) byName.set(exe.toLowerCase(), { exe, active: false, excluded: true });
+  }
+  return [...byName.values()];
+});
+
+// Aplica AO VIVO se tiver transmissão nativa com áudio ativo (o mixer tira/põe a fonte na hora,
+// sem reiniciar nada) e salva pra próximas transmissões.
+ipcMain.handle("native-audio:set-excluded", (_event, excludedApps: unknown) => {
+  if (!Array.isArray(excludedApps) || !excludedApps.every((x) => typeof x === "string")) return false;
+  const list = (excludedApps as string[]).map((x) => x.trim()).filter((x) => x.length > 0 && x.length < 260);
+  saveAudioExcludedApps(list);
+  if (ntAudioActive) nativeCapture?.setAudioExcludedApps(list);
+  return true;
+});
 // Codec ATIVO agora (pode ter degradado de HEVC pra H.264 em qualquer momento — cascata de
 // fallback do encoder, ou fallback por decode do primeiro viewer). Toda sessão NOVA usa esse
 // valor. Só tenta o fallback HEVC→H.264 UMA vez por transmissão.
 let ntActiveCodec: "h264" | "hevc" | "av1" = "h264";
 let ntCodecFallbackDone = false;
 
-// Áudio nativo (ver AudioCaptureCore.h) — pedido do usuário: nome do processo cujo áudio NUNCA
-// deve sair pela transmissão (excluído do loopback de sistema). Discord é o caso de uso real
-// (compartilhar tela DURANTE uma call), mas usuário com "NVIDIA Broadcast" configurado como
-// dispositivo de SAÍDA do Discord (efeitos de áudio/remoção de eco) faz TODO o áudio do Discord
-// (incluindo voz de call) ser renderizado de verdade pelo processo do Broadcast, não pelo
-// Discord.exe — Discord só manda pro dispositivo VIRTUAL do Broadcast, quem realmente toca no
-// dispositivo físico (o que o loopback de sistema enxerga) é o Broadcast. Excluir só "Discord.exe"
-// nesse setup não pega nada (confirmado com log real: `audioRms` subia com a voz do amigo mesmo
-// com a exclusão "ativa"). Lista de candidatos tentados em ordem — primeiro que resolver um PID
-// de verdade é o usado; sem UI pra escolher ainda, próximo passo se precisar de mais casos.
-const NATIVE_AUDIO_EXCLUDE_CANDIDATES = ["NVIDIA Broadcast.exe", "Discord.exe"];
+// Áudio nativo ativo na transmissão atual (ver `startNativeAudioForSource`/AudioCaptureCore.h).
 let ntAudioActive = false;
+// Origem (QPC µs, `nativeCapture.nowUs()`) dos timestamps de vídeo e áudio da transmissão atual.
+let ntStartUs = 0;
 
 function stopNativeTransport(): void {
   ntActive = false;
@@ -966,6 +1005,9 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // resolve o caso Discord automaticamente, sem precisar de exclusão nenhuma nesse caminho).
   // Monitor inteiro continua no modo EXCLUDE (Discord), única opção que faz sentido quando a
   // transmissão é a tela toda.
+  // Origem dos timestamps de vídeo E áudio da transmissão inteira (inclusive depois de troca de
+  // fonte ao vivo) — ver o loop abaixo.
+  ntStartUs = nativeCapture.nowUs();
   startNativeAudioForSource(hwnd);
 
   // Encoder do tier "low" (Sprint 27/simulcast, ver docs/NATIVE_CAPTURE.md Fase 4 "Simulcast") —
@@ -1142,7 +1184,13 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // caso (sem frame nenhum) — quando o frame chega on-time, o `notify_one` acorda na hora, não
   // atrasa nada.
   const timeoutMs = ntHwnd !== null ? Math.round(baseTimeoutMs * 1.5) : baseTimeoutMs;
-  const startTime = Date.now();
+  // Origem dos timestamps de vídeo E áudio — relógio QPC do addon (ver QpcClock.h), o mesmo em
+  // que o WASAPI carimba as amostras capturadas. Antes era `Date.now()` no instante do ENVIO pros
+  // dois — dessincronia embutida (ver comentário em `nowUs` no addon.cpp).
+  const startUs = ntStartUs;
+  // Âncora relógio de mídia ↔ relógio de parede — permite medir latência ponta a ponta de fora
+  // (ex.: espectador na mesma máquina: `wallMs + timestamp/1000` = instante real da captura).
+  console.log(`[native-transport] relógio de mídia: startUs=${startUs} wallMs=${Date.now()}`);
 
   let dbgAcquired = 0;
   let dbgTimeouts = 0;
@@ -1181,16 +1229,27 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
 
   // `fps` aqui é o fps de PACING do tier (targetFps pro high, SIMULCAST_LOW_FPS pro low) — usado
   // só pra calcular o watermark (~3 frames de orçamento, igual o VBV do EncoderCore).
-  function tickAimd(state: AimdState, tier: "high" | "low", ceilingBps: number, fps: number): void {
-    if (!nativeCapture) return;
-    const maxBuffered = nativeCapture.transportMaxBufferedAmount(tier);
+  // Fila acima do RTT mínimo (ms, medida por ack do espectador — ver TransportCore.h "Controle de
+  // latência") a partir da qual o tier já é tratado como congestionado — bem antes do limite de
+  // descarte de frame do TransportCore (150ms), pra o bitrate cair antes de precisar descartar.
+  const CONGESTION_QUEUE_DELAY_MS = 60;
+
+  // `fps` aqui é o fps de PACING do tier (targetFps pro high, SIMULCAST_LOW_FPS pro low) — usado
+  // só pra calcular o watermark (~3 frames de orçamento, igual o VBV do EncoderCore) do sinal
+  // antigo (`bufferedAmount`), que continua valendo pra espectador sem ack.
+  function tickAimd(state: AimdState, tier: "high" | "low", ceilingBps: number, fps: number): number {
+    if (!nativeCapture) return 0;
+    const stats = nativeCapture.transportGetTierStats(tier);
     const highWatermarkBytes = (state.currentBitrateBps / 8 / Math.max(1, fps)) * 3;
-    const isHigh = maxBuffered > highWatermarkBytes;
+    // Frame descartado por congestionamento = sinal mais forte possível: a fila já passou do
+    // limite, reduz na hora em vez de esperar o 2º tick seguido.
+    const dropped = stats.droppedFrames > 0;
+    const isHigh = dropped || stats.maxQueueDelayMs > CONGESTION_QUEUE_DELAY_MS || stats.maxBufferedAmount > highWatermarkBytes;
     state.highStreak = isHigh ? state.highStreak + 1 : 0;
 
     if (isHigh) {
       state.lowStreak = 0;
-      if (state.highStreak >= CONGESTION_HIGH_STREAK_REQUIRED) {
+      if (dropped || state.highStreak >= CONGESTION_HIGH_STREAK_REQUIRED) {
         const next = Math.max(CONGESTION_MIN_BITRATE_BPS, Math.round(state.currentBitrateBps * CONGESTION_DECREASE_FACTOR));
         if (next < state.currentBitrateBps) {
           state.currentBitrateBps = next;
@@ -1198,7 +1257,9 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
           // represado piora em vez de ajudar (bug real corrigido — ver docs/NATIVE_CAPTURE.md
           // Fase 4 "Congestion control").
           nativeCapture.setEncoderBitrate(state.currentBitrateBps, false, tier);
-          console.warn(`[native-transport:${tier}] congestionamento detectado (buffer=${maxBuffered}B) — bitrate reduzido pra ${state.currentBitrateBps}bps.`);
+          console.warn(
+            `[native-transport:${tier}] congestionamento (fila=${stats.maxQueueDelayMs.toFixed(0)}ms buffer=${stats.maxBufferedAmount}B descartados=${stats.droppedFrames}) — bitrate reduzido pra ${state.currentBitrateBps}bps.`,
+          );
         }
       }
     } else if (state.currentBitrateBps < ceilingBps) {
@@ -1206,22 +1267,32 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       if (state.lowStreak >= CONGESTION_LOW_STREAK_REQUIRED) {
         state.lowStreak = 0;
         state.currentBitrateBps = Math.min(ceilingBps, state.currentBitrateBps + Math.round(ceilingBps * 0.1));
-        nativeCapture.setEncoderBitrate(state.currentBitrateBps, true, tier);
+        // `false` também na subida — com GOP infinito (EncoderCore.cpp) não tem IDR periódico, e
+        // um IDR a cada passo de recuperação reintroduziria o pico de bytes/queda de qualidade que
+        // o GOP infinito tirou. NVENC aplica bitrate novo sem IDR.
+        nativeCapture.setEncoderBitrate(state.currentBitrateBps, false, tier);
         console.log(`[native-transport:${tier}] rede recuperada — bitrate subindo pra ${state.currentBitrateBps}bps.`);
       }
     }
+    return stats.droppedFrames;
   }
 
-  // DEBUG temporário — grava o bitstream H.264 cru (mesmos bytes que vão pro DataChannel) num
-  // arquivo, pra validar com ffprobe/ffplay FORA do WebCodecs inteiro. Isola se a corrupção
-  // visual já vem do encoder (aparece no dump também) ou só surge no decode/transporte (dump
-  // limpo, artefato só no lado do espectador).
-  const dumpPath = join(app.getPath("temp"), "native-transport-debug.h264");
-  const dumpStream = createWriteStream(dumpPath);
-  console.log(`[native-transport] gravando bitstream de debug em: ${dumpPath}`);
+  // Dump do bitstream cru do tier "high" (mesmos bytes que vão pro DataChannel), pra validar com
+  // ffprobe/ffplay fora do WebCodecs. Só com `OCS_DUMP_BITSTREAM=1` — antes gravava SEMPRE, em
+  // produção também: escrita em disco a cada frame no mesmo loop da captura (+ arquivo crescendo
+  // sem limite no %TEMP%, ~8MB/s a 60fps alta), sem ninguém nunca ler.
+  let dumpStream: WriteStream | null = null;
+  if (process.env.OCS_DUMP_BITSTREAM === "1") {
+    const dumpPath = join(app.getPath("temp"), "native-transport-debug.h264");
+    dumpStream = createWriteStream(dumpPath);
+    console.log(`[native-transport] gravando bitstream de debug em: ${dumpPath}`);
+  }
 
   function runNativeTransportLoop(): void {
-    if (!ntActive || !nativeCapture) return;
+    if (!ntActive || !nativeCapture) {
+      dumpStream?.end();
+      return;
+    }
 
     const frame = nativeCapture.acquireFrameGpuOnly(timeoutMs);
     if (frame?.deviceLost) {
@@ -1265,10 +1336,10 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
         console.warn("[native-transport] falha ao reiniciar encoder do tier 'low' após resize — simulcast fica só com 'high'.");
       }
     }
-    // Microssegundos reais desde o início (relógio real, não passo fixo por frame) — vídeo E
-    // áudio vão por DataChannel, não RTP, então não precisa de unidade de clock 90kHz nem de
-    // relógios separados entre os dois.
-    const timestampUs = (Date.now() - startTime) * 1000;
+    // Instante da captura (logo depois do acquire, antes do encode) no relógio QPC — mesmo relógio
+    // dos `ptsUs` de áudio. Encoder sem atraso de saída (EncoderCore.cpp), então o pacote que sai
+    // nessa volta É o frame capturado agora.
+    const timestampUs = Math.max(0, Math.round(nativeCapture.nowUs() - startUs));
 
     if (frame?.accessLost) {
       // Só o backend de monitor (DXGI) dá accessLost — o de janela (WGC) nunca. `ntMonitorIndex`
@@ -1290,7 +1361,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       for (const packet of packetsHigh) {
         dbgEncodedPackets++;
         dbgBytes += packet.length;
-        dumpStream.write(packet); // dump de debug só do tier "high" (investigação de aberração cromática já em andamento)
+        dumpStream?.write(packet);
         const ok = nativeCapture.transportSendVideoFrame("high", packet, timestampUs);
         if (ok) dbgSendOk++;
         else dbgSendFail++;
@@ -1302,35 +1373,28 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       dbgTimeouts++;
     }
 
-    // Áudio poll a cada volta do loop (mesmo ritmo do vídeo, sem timer/thread própria) — o
-    // `AudioCaptureCore` já acumula PCM internamente e só devolve pacote quando fecha um frame
-    // Opus de 20ms, então isso pode devolver 0, 1 ou vários pacotes por chamada.
-    if (ntAudioActive) {
-      const audioPackets = nativeCapture.pollAudioPackets();
-      for (const packet of audioPackets) {
-        nativeCapture.transportSendAudioFrame(packet, timestampUs);
-      }
-    }
-
     const now = Date.now();
     if (now - dbgLastLog >= 1000) {
-      const maxBufferedHigh = nativeCapture.transportMaxBufferedAmount("high");
-      // `audioRms` só existe se a captura de áudio nativa tá ativa (`ntAudioActive`) — diagnóstico
-      // pra confirmar AO VIVO se o filtro de processo (exclude/include) tá cortando de verdade:
-      // deveria ficar perto de 0 quando só a voz excluída/fora-da-inclusão toca, e subir quando
-      // uma fonte DENTRO do filtro toca.
-      const audioRms = ntAudioActive ? nativeCapture.getAudioRms().toFixed(5) : "off";
+      // AIMD: decréscimo multiplicativo rápido sob congestionamento, recuperação aditiva lenta —
+      // mesmo espírito de TCP/qualquer congestion control clássico. Cada tier roda o SEU (Sprint
+      // 27/simulcast) — `tickAimd` lê os sinais do tier certo por dentro.
+      const dbgDroppedHigh = tickAimd(ntAimdHigh, "high", bitrateBps, targetFps);
+      tickAimd(ntAimdLow, "low", SIMULCAST_LOW_BITRATE_BPS, SIMULCAST_LOW_FPS);
+
+      // `audioRms`/`audioSources` só existem com áudio nativo ativo — diagnóstico pra confirmar AO
+      // VIVO quais apps o mixer tá capturando e se tem som passando (ver AudioCaptureCore.h).
+      // `audioLag`/`audioLate` = folga do mixer (se `audioLate` > 0, `kMixLatency` tá curto).
+      let audioInfo = "audio=off";
+      if (ntAudioActive) {
+        const mix = nativeCapture.getAudioMixStats();
+        audioInfo = `audioRms=${nativeCapture.getAudioRms().toFixed(5)} audioSources=[${nativeCapture.getAudioSources().join(",")}] audioLag=${mix.maxArrivalLagMs.toFixed(1)}ms audioLate=${mix.lateSamples}`;
+      }
       console.log(
-        `[native-transport] acquired=${dbgAcquired} timeouts=${dbgTimeouts} encodedPackets=${dbgEncodedPackets} emptyEncodeCalls=${dbgEncodedEmptyCalls} sendOk=${dbgSendOk} sendFail=${dbgSendFail} bytes=${dbgBytes} viewersConnected=${nativeCapture.transportConnectedCount()} bitrateHighBps=${ntAimdHigh.currentBitrateBps} bitrateLowBps=${ntAimdLow.currentBitrateBps} maxBufferedHigh=${maxBufferedHigh} audioRms=${audioRms}`,
+        `[native-transport] acquired=${dbgAcquired} timeouts=${dbgTimeouts} encodedPackets=${dbgEncodedPackets} emptyEncodeCalls=${dbgEncodedEmptyCalls} sendOk=${dbgSendOk} sendFail=${dbgSendFail} bytes=${dbgBytes} viewersConnected=${nativeCapture.transportConnectedCount()} bitrateHighBps=${ntAimdHigh.currentBitrateBps} bitrateLowBps=${ntAimdLow.currentBitrateBps} droppedHigh=${dbgDroppedHigh} ${audioInfo}`,
       );
       dbgAcquired = dbgTimeouts = dbgEncodedPackets = dbgEncodedEmptyCalls = dbgSendOk = dbgSendFail = dbgBytes = 0;
       dbgLastLog = now;
 
-      // AIMD: decréscimo multiplicativo rápido sob congestionamento, recuperação aditiva lenta —
-      // mesmo espírito de TCP/qualquer congestion control clássico. Cada tier roda o SEU (Sprint
-      // 27/simulcast) — `tickAimd` já lê `transportMaxBufferedAmount` do tier certo por dentro.
-      tickAimd(ntAimdHigh, "high", bitrateBps, targetFps);
-      tickAimd(ntAimdLow, "low", SIMULCAST_LOW_BITRATE_BPS, SIMULCAST_LOW_FPS);
     }
 
     setImmediate(runNativeTransportLoop);
