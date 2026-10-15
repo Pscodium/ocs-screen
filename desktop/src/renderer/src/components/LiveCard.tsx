@@ -182,6 +182,19 @@ export function LiveCard({
             </span>
           )}
           {info.hasAudio && <span className="live-stats-badge">🔊</span>}
+          {(info.hasPassword || info.isPrivate) && (
+            <span
+              className="live-stats-badge"
+              title={[
+                info.hasPassword ? "Protegida por senha — mande a senha junto com o link." : null,
+                info.isPrivate ? "Sala privada — não aparece na lista, só entra quem tem o link." : null,
+              ]
+                .filter(Boolean)
+                .join("\n")}
+            >
+              🔒
+            </span>
+          )}
         </span>
       </div>
 

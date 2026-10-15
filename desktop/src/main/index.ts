@@ -103,7 +103,8 @@ const NORMAL_SIZE = { width: 440, height: 420 };
 // só existe em `import.meta.env.DEV` no renderer, então em produção o widget continua 340×140.
 const WIDGET_SIZE = app.isPackaged ? { width: 340, height: 140 } : { width: 340, height: 320 };
 const WIDGET_MARGIN = 24;
-const PICKER_SIZE = { width: 720, height: 640 };
+// Configurações numa barra lateral (290px) + grade de fontes com 3 colunas ao lado.
+const PICKER_SIZE = { width: 960, height: 680 };
 
 // `mainWindow` continua existindo só pra coisas que são inerentemente singulares (tray
 // mostrar/focar, mensagens de update) — a primeira janela criada. Comandos que agem "na janela
@@ -918,6 +919,9 @@ ipcMain.handle("native-audio:set-excluded", (_event, excludedApps: unknown) => {
 // valor. Só tenta o fallback HEVC→H.264 UMA vez por transmissão.
 let ntActiveCodec: "h264" | "hevc" | "av1" = "h264";
 let ntCodecFallbackDone = false;
+// Espectadores com sessão aberta agora e o tier de cada um — necessário pra renegociar TODO MUNDO
+// quando o codec da transmissão cai pra H.264 (ver handler de "answer").
+const ntViewerTiers = new Map<string, "high" | "low">();
 
 // Áudio nativo ativo na transmissão atual (ver `startNativeAudioForSource`/AudioCaptureCore.h).
 let ntAudioActive = false;
@@ -926,6 +930,7 @@ let ntStartUs = 0;
 
 function stopNativeTransport(): void {
   ntActive = false;
+  ntViewerTiers.clear();
   ntWs?.close();
   ntWs = null;
   if (ntStatsInterval) clearInterval(ntStatsInterval);
@@ -1029,11 +1034,11 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       connectedCount: nativeCapture?.transportConnectedCount() ?? 0,
     });
     if (state === "failed" || state === "closed" || state === "disconnected") {
-      // Só derruba a sessão DESSE espectador — os outros continuam recebendo o stream. Diferente
-      // do V1 (sessão global única), não tem "renegociação da transmissão inteira" mais: se esse
+      // Só derruba a sessão DESSE espectador — os outros continuam recebendo o stream. Se esse
       // mesmo espectador voltar (F5), o WS dele reconecta com um `viewerId` NOVO e o backend
       // manda `viewer-joined` de novo sozinho.
       nativeCapture?.transportCloseSession(viewerId);
+      ntViewerTiers.delete(viewerId);
     }
   });
   nativeCapture.transportOnLocalDescription((viewerId, sdp, type) => {
@@ -1114,14 +1119,26 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // Fase 4 "Simulcast".
       if (!createViewerSession(msg.viewerId, "high")) {
         console.error(`[native-transport] falha ao criar sessão pro espectador ${msg.viewerId}`);
+      } else {
+        ntViewerTiers.set(msg.viewerId, "high");
       }
     } else if (msg.type === "set-quality" && (msg.tier === "high" || msg.tier === "low")) {
       // Espectador trocou de qualidade manualmente (Sprint 27/simulcast) — não recria a conexão
       // WebRTC, só religa qual encoder essa sessão passa a receber (força keyframe sozinho, ver
       // TransportSetViewerTier em addon.cpp).
       nativeCapture?.transportSetViewerTier(msg.viewerId, msg.tier);
+      if (ntViewerTiers.has(msg.viewerId)) ntViewerTiers.set(msg.viewerId, msg.tier);
     } else if (msg.type === "viewer-left") {
       nativeCapture?.transportCloseSession(msg.viewerId);
+      ntViewerTiers.delete(msg.viewerId);
+      // O "closed" da sessão fechada aqui não chega mais no `transportOnStateChange` (eventos de
+      // sessão que já saiu do mapa são descartados no addon — ver `ViewerSession::generation`), então
+      // o contador de espectadores do LiveCard é atualizado aqui direto.
+      activeWin.webContents.send("native-transport:state", {
+        viewerId: msg.viewerId,
+        state: "closed",
+        connectedCount: nativeCapture?.transportConnectedCount() ?? 0,
+      });
     } else if (msg.type === "answer" && msg.sdp) {
       // Viewer checou `VideoDecoder.isConfigSupported()` ANTES de responder e reportou que não
       // consegue decodificar HEVC (Chrome só decodifica com suporte de hardware do dispositivo,
@@ -1132,25 +1149,32 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // fica sem vídeo — limitação conhecida do encoder único (SVC/encode duplo resolveria, fora
       // de escopo agora).
       if (ntActiveCodec !== "h264" && msg.decoderOk === false && !ntCodecFallbackDone) {
-        const connectedCount = nativeCapture?.transportConnectedCount() ?? 0;
-        if (connectedCount === 0) {
-          ntCodecFallbackDone = true;
-          console.warn(`[native-transport] viewer não decodifica ${ntActiveCodec.toUpperCase()} — reiniciando encoder em H.264.`);
-          nativeCapture?.transportCloseSession(msg.viewerId);
-          nativeCapture?.destroyEncoder();
-          nativeCapture?.initEncoder(ntTargetFps, ntBitrateBps, "h264");
-          ntActiveCodec = nativeCapture?.getActiveCodec() ?? "h264";
-          activeWin.webContents.send("native-transport:encoder", {
-            software: nativeCapture?.isUsingSoftwareEncoder() ?? false,
-            codec: ntActiveCodec,
-          });
-          createViewerSession(msg.viewerId);
-          return;
-        }
+        // Espectador não decodifica o codec da transmissão (HEVC/AV1 dependem do hardware/navegador
+        // dele) → a transmissão INTEIRA cai pra H.264, que todo navegador decodifica. Antes isso só
+        // acontecia se ninguém estivesse conectado ainda; com alguém já assistindo, o espectador
+        // novo ficava em "conectando..." pra sempre. Agora os encoders reiniciam em H.264 e todo
+        // espectador renegocia (sessão nova = offer novo — o viewer recria a conexão sozinho a
+        // cada offer, ver useNativeStream.ts): quem já assistia sofre uma reconexão de ~1s, em
+        // troca de ninguém ficar de fora. Uma vez só por transmissão.
+        ntCodecFallbackDone = true;
         console.warn(
-          `[native-transport] viewer ${msg.viewerId} não decodifica ${ntActiveCodec.toUpperCase()}, mas já tem espectador(es) recebendo ${ntActiveCodec.toUpperCase()} — não dá pra trocar o codec agora.`,
+          `[native-transport] viewer ${msg.viewerId} não decodifica ${ntActiveCodec.toUpperCase()} — transmissão inteira caindo pra H.264 (${ntViewerTiers.size} espectador(es) renegociando).`,
         );
-        nativeCapture?.transportCloseSession(msg.viewerId);
+        for (const viewerId of ntViewerTiers.keys()) nativeCapture?.transportCloseSession(viewerId);
+        nativeCapture?.destroyEncoder();
+        nativeCapture?.initEncoder(ntTargetFps, ntBitrateBps, "h264");
+        ntActiveCodec = nativeCapture?.getActiveCodec() ?? "h264";
+        // Tier "low" também — continuava no codec antigo, e quem trocasse pra qualidade baixa
+        // receberia bitstream HEVC/AV1.
+        nativeCapture?.destroyEncoderLow();
+        nativeCapture?.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, ntActiveCodec);
+        activeWin.webContents.send("native-transport:encoder", {
+          software: nativeCapture?.isUsingSoftwareEncoder() ?? false,
+          codec: ntActiveCodec,
+        });
+        for (const [viewerId, tier] of ntViewerTiers) {
+          if (!createViewerSession(viewerId, tier)) ntViewerTiers.delete(viewerId);
+        }
         return;
       }
       nativeCapture?.transportSetRemoteDescription(msg.viewerId, msg.sdp, "answer");

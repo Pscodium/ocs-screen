@@ -65,7 +65,10 @@ export function RoomsBrowser({ onSelect }: RoomsBrowserProps) {
         <button key={room.roomId} className="room-row" onClick={() => onSelect(room.roomId)}>
           <span className="room-row-dot" />
           <span className="room-row-info">
-            <span className="room-row-name">{room.roomId}</span>
+            <span className="room-row-name">
+              {room.hasPassword && <span title="Protegida por senha">🔒 </span>}
+              {room.roomId}
+            </span>
             <span className="room-row-meta">{timeAgo(room.createdAt)}</span>
           </span>
           <span className="room-row-cta">Assistir</span>

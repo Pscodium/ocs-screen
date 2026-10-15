@@ -37,9 +37,9 @@ constexpr int64_t kSamplesPerOpusFrame = 480;
 // ver `TakeMixStats`/log `audioLag` — era isso com o poll no loop JS; na thread própria, ~13-20ms).
 // Pacote que chega DEPOIS disso perde o trecho que já foi
 // fechado (vira um buraco curto, contado em `audioLate`) — por isso não dá pra ser muito apertado.
-constexpr int64_t kMixLatencySamples = kSampleRate * 25 / 1000;
+constexpr int64_t kMixLatencySamples = kSampleRate * 15 / 1000;
 // Período da thread de áudio — o engine do Windows entrega pacotes a cada ~10ms; drenar a cada 5ms
-// mantém o atraso de chegada perto disso (medido: `audioLag` máx ~13-20ms) e a folga acima curta.
+// mantém o atraso de chegada perto disso (medido: `audioLag` máx ~7ms com a ativação de fontes fora desta thread) e a folga acima curta.
 constexpr auto kWorkerPeriod = std::chrono::milliseconds(5);
 // Pacote com timestamp mais de 2s à frente do que ainda não foi enviado = relógio absurdo, ignora.
 constexpr int64_t kMaxAheadSamples = kSampleRate * 2;
@@ -253,8 +253,12 @@ bool AudioCaptureCore::InitializeForWindow(HWND hwnd, const std::vector<std::wst
 bool AudioCaptureCore::Start(const std::vector<std::wstring>& excludedExeNames) {
     excludedLower_.clear();
     for (const auto& name : excludedExeNames) excludedLower_.push_back(ToLower(name));
+    targets_.clear();
+    lastRefresh_ = {};
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        pendingAdd_.clear();
+        pendingRemove_.clear();
         initDone_ = false;
         initOk_ = false;
         excludedChanged_ = false;
@@ -277,8 +281,10 @@ void AudioCaptureCore::WorkerMain() {
 
     bool ok = CreateEncoder();
     if (ok) {
-        epochUs_ = QpcNowUs();
         RefreshSources(true);
+        ApplyPendingSources();
+        // Depois das ativações iniciais (que bloqueiam) — senão o mixer já começaria atrasado.
+        epochUs_ = QpcNowUs();
         ok = systemMode_ || !sources_.empty();
     }
     {
@@ -290,22 +296,16 @@ void AudioCaptureCore::WorkerMain() {
     }
     initCv_.notify_all();
 
+    if (ok) refresher_ = std::thread([this] { RefreshMain(); });
     while (ok && !stop_) {
-        bool forceRefresh = false;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (excludedChanged_) {
-                excludedLower_ = pendingExcludedLower_;
-                excludedChanged_ = false;
-                forceRefresh = true;
-            }
-        }
-        RefreshSources(forceRefresh);
+        ApplyPendingSources();
         for (auto& source : sources_) DrainSource(source);
         EncodeReadyFrames();
         std::this_thread::sleep_for(kWorkerPeriod);
     }
+    if (refresher_.joinable()) refresher_.join(); // `stop_` já setado — sai em até ~100ms
 
+    ApplyPendingSources(); // solta o que a de refresh ativou e ninguém aplicou
     for (auto& source : sources_) ReleaseSource(source);
     sources_.clear();
     if (encoder_) {
@@ -316,6 +316,47 @@ void AudioCaptureCore::WorkerMain() {
     mixBaseSample_ = 0;
     if (mmcss) AvRevertMmThreadCharacteristics(mmcss);
     if (SUCCEEDED(coHr)) CoUninitialize();
+}
+
+void AudioCaptureCore::RefreshMain() {
+    const HRESULT coHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    auto last = std::chrono::steady_clock::now();
+    while (!stop_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        bool force = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (excludedChanged_) {
+                excludedLower_ = pendingExcludedLower_;
+                excludedChanged_ = false;
+                force = true;
+            }
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (force || now - last >= kRefreshInterval) {
+            last = now;
+            RefreshSources(true);
+        }
+    }
+    if (SUCCEEDED(coHr)) CoUninitialize();
+}
+
+void AudioCaptureCore::ApplyPendingSources() {
+    std::vector<Source> add;
+    std::vector<DWORD> remove;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        add.swap(pendingAdd_);
+        remove.swap(pendingRemove_);
+    }
+    for (DWORD pid : remove) {
+        for (size_t i = sources_.size(); i-- > 0;) {
+            if (sources_[i].targetPid != pid) continue;
+            ReleaseSource(sources_[i]);
+            sources_.erase(sources_.begin() + i);
+        }
+    }
+    for (auto& source : add) sources_.push_back(source);
 }
 
 void AudioCaptureCore::SetExcludedExeNames(const std::vector<std::wstring>& excludedExeNames) {
@@ -354,7 +395,7 @@ std::vector<std::wstring> AudioCaptureCore::CapturedExeNames() {
 
 // Process loopback (Win10 2004+) — `VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK` é um "dispositivo"
 // sintético, só serve pra essa ativação especial. INCLUDE = só a árvore de `targetPid`.
-bool AudioCaptureCore::AddSource(DWORD targetPid, const std::wstring& exeName) {
+bool AudioCaptureCore::ActivateSource(DWORD targetPid, const std::wstring& exeName, Source& out) {
     AUDIOCLIENT_ACTIVATION_PARAMS params{};
     params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
     params.ProcessLoopbackParams.TargetProcessId = targetPid;
@@ -413,7 +454,7 @@ bool AudioCaptureCore::AddSource(DWORD targetPid, const std::wstring& exeName) {
         return false;
     }
     fprintf(stderr, "[AudioCaptureCore] fonte de áudio adicionada: %ls (pid %lu)\n", exeName.c_str(), (unsigned long)targetPid);
-    sources_.push_back(source);
+    out = source;
     return true;
 }
 
@@ -429,6 +470,8 @@ void AudioCaptureCore::RefreshSources(bool force) {
     const auto now = std::chrono::steady_clock::now();
     if (!force && now - lastRefresh_ < kRefreshInterval) return;
     lastRefresh_ = now;
+    std::vector<Source> added;
+    std::vector<DWORD> removed;
 
     const ProcMap map = SnapshotProcesses();
     const DWORD self = GetCurrentProcessId();
@@ -453,46 +496,53 @@ void AudioCaptureCore::RefreshSources(bool force) {
 
     // Remove fontes cujo processo morreu, que passaram a ser excluídas, ou cuja árvore ganhou um
     // processo excluído (ex.: Discord aberto a partir de um app que já estava incluído).
-    for (size_t i = sources_.size(); i-- > 0;) {
-        const DWORD target = sources_[i].targetPid;
+    for (size_t i = targets_.size(); i-- > 0;) {
+        const DWORD target = targets_[i].pid;
         if (!map.count(target) || isExcluded(target) || treeContainsExcluded(target)) {
-            fprintf(stderr, "[AudioCaptureCore] fonte de áudio removida: %ls (pid %lu)\n", sources_[i].exeName.c_str(), (unsigned long)target);
-            ReleaseSource(sources_[i]);
-            sources_.erase(sources_.begin() + i);
+            fprintf(stderr, "[AudioCaptureCore] fonte de áudio removida: %ls (pid %lu)\n", targets_[i].exeName.c_str(), (unsigned long)target);
+            removed.push_back(target);
+            targets_.erase(targets_.begin() + i);
         }
     }
 
     auto addTargetFor = [&](DWORD pid) {
         if (IsSystemProcess(map, pid) || isExcluded(pid)) return;
-        for (const auto& source : sources_) {
-            if (IsDescendantOrSelf(map, pid, source.targetPid)) return; // já coberto por uma árvore incluída
+        for (const auto& t : targets_) {
+            if (IsDescendantOrSelf(map, pid, t.pid)) return; // já coberto por uma árvore incluída
         }
         const DWORD target = safeTarget(pid);
         if (!target) return;
         // Fonte já existente DENTRO da árvore nova seria capturada duas vezes (som dobrado).
-        for (size_t i = sources_.size(); i-- > 0;) {
-            if (IsDescendantOrSelf(map, sources_[i].targetPid, target)) {
-                ReleaseSource(sources_[i]);
-                sources_.erase(sources_.begin() + i);
+        for (size_t i = targets_.size(); i-- > 0;) {
+            if (IsDescendantOrSelf(map, targets_[i].pid, target)) {
+                removed.push_back(targets_[i].pid);
+                targets_.erase(targets_.begin() + i);
             }
         }
         auto it = map.find(target);
-        AddSource(target, it != map.end() ? it->second.exe : L"?");
+        const std::wstring exe = it != map.end() ? it->second.exe : L"?";
+        Source source;
+        if (ActivateSource(target, exe, source)) {
+            added.push_back(source);
+            targets_.push_back({target, exe});
+        }
     };
 
     if (systemMode_) {
         for (const SessionInfo& session : EnumerateRenderSessions()) {
             if (session.active) addTargetFor(session.pid);
         }
-    } else if (sources_.empty() && windowHwnd_) {
+    } else if (targets_.empty() && windowHwnd_) {
         DWORD windowPid = 0;
         GetWindowThreadProcessId(windowHwnd_, &windowPid);
         if (windowPid) addTargetFor(windowPid);
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& source : added) pendingAdd_.push_back(source);
+    for (DWORD pid : removed) pendingRemove_.push_back(pid);
     capturedNames_.clear();
-    for (const auto& source : sources_) capturedNames_.push_back(source.exeName);
+    for (const auto& t : targets_) capturedNames_.push_back(t.exeName);
 }
 
 int64_t AudioCaptureCore::SampleAtUs(int64_t us) const {

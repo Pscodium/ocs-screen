@@ -5,6 +5,7 @@ import type { ConnectionPhase, StreamStats } from "./useRoomStream";
 import { PLAYOUT_DELAY_MAX_MS } from "./useRoomStream";
 import { PlayoutClock } from "../services/playoutClock";
 import { NativeAudioPlayer } from "../services/nativeAudioPlayer";
+import { VideoPresenter } from "../services/videoPresenter";
 
 const STATS_POLL_MS = 2000;
 // Piso de "suavização" do caminho nativo — 0 = só o buffer adaptativo (`PlayoutClock` já cobre o
@@ -89,11 +90,12 @@ export function useNativeStream(roomId: string, password?: string) {
     const playout = playoutClockRef.current;
     playout.reset();
 
+    // Frames saem alinhados ao vsync (ver services/videoPresenter.ts), não por `setTimeout`.
+    const presenter = new VideoPresenter();
     function presentVideoFrame(writer: WritableStreamDefaultWriter<VideoFrame>, frame: VideoFrame): void {
-      const waitMs = playout.schedule(frame.timestamp, performance.now(), "video");
-      const write = () => writer.write(frame).catch(() => frame.close());
-      if (waitMs <= 1) write();
-      else setTimeout(write, waitMs);
+      const now = performance.now();
+      const waitMs = playout.schedule(frame.timestamp, now, "video");
+      presenter.enqueue(writer, frame, now + Math.max(0, waitMs));
     }
 
     // Setado ANTES do canal de vídeo abrir de verdade (só abre depois do SDP fechar) — o handler
@@ -481,6 +483,7 @@ export function useNativeStream(roomId: string, password?: string) {
       if (statsInterval) clearInterval(statsInterval);
       pc?.close();
       audioPlayer?.close();
+      presenter.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId]);

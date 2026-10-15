@@ -5,6 +5,14 @@
 #include <cstdio>
 #include <algorithm>
 
+// Toda chamada à libdatachannel aqui tem `catch (...)` além do `catch (const std::exception&)` —
+// bug real (crash do host com espectador sem suporte a HEVC/AV1): no fallback de codec o espectador
+// recria a conexão e ainda manda candidatos ICE da conexão ANTIGA, que caem na sessão nova;
+// `addRemoteCandidate` lança e o `catch (const std::exception&)` NÃO pegava (a exceção vem da
+// datachannel.dll, que usa a CRT dinâmica, e o addon é compilado com CRT estática e
+// `_HAS_EXCEPTIONS=0` pelo node-gyp — o tipo não casa) → exceção C++ não tratada (0xE06D7363)
+// derrubando o app. Achado com dump do Crashpad + `catch (...)` com log por método.
+
 namespace {
 // Limites do controle de latência (ver comentário grande em TransportCore.h).
 // Fila acima do RTT mínimo a partir da qual a sessão começa a descartar frames — alto o bastante
@@ -28,11 +36,13 @@ TransportCore::TransportCore() {}
 
 TransportCore::~TransportCore() {
     // Callbacks capturam `this` — solta antes de fechar pra nenhum disparar (thread do
-    // libdatachannel) depois que esse objeto já foi destruído.
-    if (videoChannel_) videoChannel_->resetCallbacks();
-    if (audioChannel_) audioChannel_->resetCallbacks();
-    if (pc_) {
-        pc_->close();
+    // libdatachannel) depois que esse objeto já foi destruído. Destrutor não pode deixar exceção
+    // escapar (ver comentário no topo sobre o `catch (...)`).
+    try {
+        if (videoChannel_) videoChannel_->resetCallbacks();
+        if (audioChannel_) audioChannel_->resetCallbacks();
+        if (pc_) pc_->close();
+    } catch (...) {
     }
 }
 
@@ -54,6 +64,10 @@ bool TransportCore::Initialize(const std::vector<std::string>& stunUrls, VideoCo
         pc_ = std::make_shared<rtc::PeerConnection>(config);
         return true;
     } catch (const std::exception&) {
+        pc_.reset();
+        return false;
+    } catch (...) {
+        fprintf(stderr, "[TransportCore] Initialize: exceção da libdatachannel (ignorada)\n");
         pc_.reset();
         return false;
     }
@@ -115,6 +129,10 @@ bool TransportCore::AddVideoChannel() {
         fprintf(stderr, "[TransportCore] AddVideoChannel() lançou: %s\n", e.what());
         videoChannel_.reset();
         return false;
+    } catch (...) {
+        fprintf(stderr, "[TransportCore] AddVideoChannel: exceção da libdatachannel (ignorada)\n");
+        videoChannel_.reset();
+        return false;
     }
 }
 
@@ -132,6 +150,10 @@ bool TransportCore::AddAudioChannel() {
         fprintf(stderr, "[TransportCore] AddAudioChannel() lançou: %s\n", e.what());
         audioChannel_.reset();
         return false;
+    } catch (...) {
+        fprintf(stderr, "[TransportCore] AddAudioChannel: exceção da libdatachannel (ignorada)\n");
+        audioChannel_.reset();
+        return false;
     }
 }
 
@@ -144,6 +166,9 @@ bool TransportCore::CreateOffer() {
     } catch (const std::exception& e) {
         fprintf(stderr, "[TransportCore] setLocalDescription() lançou: %s\n", e.what());
         return false;
+    } catch (...) {
+        fprintf(stderr, "[TransportCore] CreateOffer: exceção da libdatachannel (ignorada)\n");
+        return false;
     }
 }
 
@@ -154,6 +179,9 @@ bool TransportCore::SetRemoteDescription(const std::string& sdp, const std::stri
         return true;
     } catch (const std::exception&) {
         return false;
+    } catch (...) {
+        fprintf(stderr, "[TransportCore] SetRemoteDescription: exceção da libdatachannel (ignorada)\n");
+        return false;
     }
 }
 
@@ -163,6 +191,9 @@ bool TransportCore::AddRemoteCandidate(const std::string& candidate, const std::
         pc_->addRemoteCandidate(rtc::Candidate(candidate, mid));
         return true;
     } catch (const std::exception&) {
+        return false;
+    } catch (...) {
+        fprintf(stderr, "[TransportCore] AddRemoteCandidate: exceção da libdatachannel (ignorada)\n");
         return false;
     }
 }
@@ -303,6 +334,9 @@ bool TransportCore::SendVideoFrame(const uint8_t* data, size_t size, uint64_t ti
         return true;
     } catch (const std::exception&) {
         return false;
+    } catch (...) {
+        fprintf(stderr, "[TransportCore] SendVideoFrame: exceção da libdatachannel (ignorada)\n");
+        return false;
     }
 }
 
@@ -398,6 +432,9 @@ bool TransportCore::SendAudioFrame(const uint8_t* data, size_t size, uint64_t ti
         return true;
     } catch (const std::exception&) {
         return false;
+    } catch (...) {
+        fprintf(stderr, "[TransportCore] SendAudioFrame: exceção da libdatachannel (ignorada)\n");
+        return false;
     }
 }
 
@@ -410,6 +447,9 @@ size_t TransportCore::GetBufferedAmount() const {
     try {
         return videoChannel_->bufferedAmount();
     } catch (const std::exception&) {
+        return 0;
+    } catch (...) {
+        fprintf(stderr, "[TransportCore] GetBufferedAmount: exceção da libdatachannel (ignorada)\n");
         return 0;
     }
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState } from "livekit-client";
 import { captureScreen, type CaptureResult } from "../services/capture";
-import { createRoom, endRoom, backendUrl } from "../services/backend";
+import { createRoom, endRoom, backendUrl, type RoomAccess } from "../services/backend";
 import {
   startBroadcast,
   readPublishStats,
@@ -56,6 +56,9 @@ export interface BroadcastInfo {
   // cursor por conta do próprio SO, sem toggle possível).
   nativeMode: boolean;
   cursorEnabled: boolean;
+  // Mostrado no LiveCard (cadeado) — quem transmite precisa lembrar de mandar a senha junto do link.
+  isPrivate: boolean;
+  hasPassword: boolean;
 }
 
 const STATS_POLL_MS = 2000;
@@ -97,7 +100,8 @@ export function useBroadcast() {
     });
   }, []);
 
-  const start = useCallback(async (settings: StreamSettings, source: CaptureSource, slug?: string) => {
+  const start = useCallback(async (settings: StreamSettings, source: CaptureSource, slug?: string, access: RoomAccess = { isPrivate: false }) => {
+    const accessInfo = { isPrivate: access.isPrivate, hasPassword: !!access.password };
     setState("starting");
     setError(null);
     settingsRef.current = settings;
@@ -123,7 +127,7 @@ export function useBroadcast() {
 
     if (settings.nativeTransport && nativeSource && nativeAvailable) {
       try {
-        const room = await createRoom(settings, slug, true);
+        const room = await createRoom(settings, slug, true, access);
         roomIdRef.current = room.roomId;
 
         const ok = await startNativeTransport(room.roomId, backendUrl, nativeSource, settings);
@@ -174,6 +178,7 @@ export function useBroadcast() {
           nativeFallbackReason: null,
           nativeMode: true,
           cursorEnabled: settings.showCursor,
+          ...accessInfo,
         });
         setState("live");
       } catch (err) {
@@ -195,7 +200,7 @@ export function useBroadcast() {
       stopCaptureRef.current = stopAll;
       subscribeCaptureStats(onCaptureStats);
 
-      const room = await createRoom(settings, slug);
+      const room = await createRoom(settings, slug, false, access);
       roomIdRef.current = room.roomId;
 
       const session = await startBroadcast(
@@ -229,6 +234,7 @@ export function useBroadcast() {
         nativeFallbackReason,
         nativeMode: false,
         cursorEnabled: settings.showCursor,
+        ...accessInfo,
       });
       setState("live");
 

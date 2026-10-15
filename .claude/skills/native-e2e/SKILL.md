@@ -92,6 +92,23 @@ CODEC=hevc NODE_PATH=... node .../e2e-run.js 15 60          # outro codec
 ACK_DELAY_TEST=1 NODE_PATH=... node .../e2e-run.js 15 60    # congestionamento simulado
 ```
 
+Outras variantes:
+
+```sh
+NO_DECODE=hevc CODEC=hevc NODE_PATH=... node .../e2e-run.js 8 60   # espectador sem suporte → fallback
+NODE_PATH=... node .../codec-fallback-test.js hevc                  # A assistindo + B sem suporte
+E2E_ALL_LOGS=1 E2E_HOST_LOG=<scratch>/host.log ...                  # log inteiro do host em arquivo
+```
+
+Saída do `e2e-run.js`: `judderMs` = |intervalo exibido − intervalo capturado| (fluidez — p95 ~3-6ms
+é o normal com display de 165Hz; p99 alto = solavanco visível), `latencyLastQuarterP50Ms` (regime) e
+"latência por segundo" (transitório do começo). Se o host morrer, o script imprime o `exit code` e o
+log; `0xE06D7363` (3765269347) = exceção C++ não tratada → dump em
+`%APPDATA%/ocs-screen-desktop/Crashpad/reports/*.dmp` (lib Python `minidump`; tipo/módulo que
+lançou sai dos parâmetros da exceção; pra nome de função, gere map file do linker temporário —
+`VCLinkerTool: GenerateMapFile` no binding.gyp — e reproduza). Exceção da libdatachannel NÃO é pega
+por `catch (const std::exception&)` no addon (CRT diferente) — sempre `catch (...)`.
+
 Usa o Chrome instalado (`channel: "chrome"`), não baixa browser. Referência (2026-10-15, 1080p60,
 mesma máquina, RTX 3060): fps 58-60, `stutters 0`, latência p50 ~33ms, `droppedHigh=0`,
 `audioLate=0`. Com `ACK_DELAY_TEST`: host descarta ~40 frames/s entre t=5-10s, bitrate cai, viewer

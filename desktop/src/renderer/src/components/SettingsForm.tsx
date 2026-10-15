@@ -1,11 +1,14 @@
 import { FPS_OPTIONS, QUALITY_OPTIONS, RESOLUTION_OPTIONS, type StreamSettings } from "../types/stream";
 
-interface SettingsFormProps {
+// Configurações de transmissão do seletor de fonte, em duas partes (barra lateral do SourcePicker):
+// - `SettingsPrimary`: o que muda a cara da transmissão e todo mundo mexe (resolução, FPS,
+//   qualidade) — sempre visível.
+// - `SettingsAdvanced`: ajustes finos e de diagnóstico (texto nítido, cursor, pipeline/codec) —
+//   dentro de "Avançado".
+
+interface SettingsProps {
   settings: StreamSettings;
   onChange: (settings: StreamSettings) => void;
-  // Usado no rodapé do SourcePicker: resolução/FPS/qualidade viram uma linha de 3 colunas em vez
-  // de empilhados, já que ali disputam espaço com a grade de fontes.
-  compact?: boolean;
 }
 
 const resolutionLabels: Record<string, string> = {
@@ -24,9 +27,9 @@ const qualityLabels: Record<string, string> = {
   max: "Máxima",
 };
 
-export function SettingsForm({ settings, onChange, compact }: SettingsFormProps) {
+export function SettingsPrimary({ settings, onChange }: SettingsProps) {
   return (
-    <div className={`settings-form ${compact ? "settings-form-row" : ""}`}>
+    <>
       <label className="settings-field">
         <span>Resolução</span>
         <select
@@ -41,39 +44,47 @@ export function SettingsForm({ settings, onChange, compact }: SettingsFormProps)
         </select>
       </label>
 
-      <label className="settings-field">
-        <span>FPS</span>
-        <select
-          value={settings.fps}
-          onChange={(e) =>
-            onChange({
-              ...settings,
-              fps: e.target.value === "auto" ? "auto" : (Number(e.target.value) as StreamSettings["fps"]),
-            })
-          }
-        >
-          {FPS_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {option === "auto" ? "Automático" : `${option} FPS`}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="settings-pair">
+        <label className="settings-field">
+          <span>FPS</span>
+          <select
+            value={settings.fps}
+            onChange={(e) =>
+              onChange({
+                ...settings,
+                fps: e.target.value === "auto" ? "auto" : (Number(e.target.value) as StreamSettings["fps"]),
+              })
+            }
+          >
+            {FPS_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {option === "auto" ? "Automático" : `${option} FPS`}
+              </option>
+            ))}
+          </select>
+        </label>
 
-      <label className="settings-field">
-        <span>Qualidade</span>
-        <select
-          value={settings.quality}
-          onChange={(e) => onChange({ ...settings, quality: e.target.value as StreamSettings["quality"] })}
-        >
-          {QUALITY_OPTIONS.map((option) => (
-            <option key={option} value={option}>
-              {qualityLabels[option]}
-            </option>
-          ))}
-        </select>
-      </label>
+        <label className="settings-field">
+          <span>Qualidade</span>
+          <select
+            value={settings.quality}
+            onChange={(e) => onChange({ ...settings, quality: e.target.value as StreamSettings["quality"] })}
+          >
+            {QUALITY_OPTIONS.map((option) => (
+              <option key={option} value={option}>
+                {qualityLabels[option]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+    </>
+  );
+}
 
+export function SettingsAdvanced({ settings, onChange }: SettingsProps) {
+  return (
+    <>
       <label className="toggle-row">
         <span className="toggle-row-label">
           Melhorar texto
@@ -82,11 +93,7 @@ export function SettingsForm({ settings, onChange, compact }: SettingsFormProps)
           </span>
         </span>
         <span className="toggle-switch">
-          <input
-            type="checkbox"
-            checked={settings.sharpText}
-            onChange={(e) => onChange({ ...settings, sharpText: e.target.checked })}
-          />
+          <input type="checkbox" checked={settings.sharpText} onChange={(e) => onChange({ ...settings, sharpText: e.target.checked })} />
           <span className="toggle-slider" />
         </span>
       </label>
@@ -94,82 +101,64 @@ export function SettingsForm({ settings, onChange, compact }: SettingsFormProps)
       <label className="toggle-row">
         <span className="toggle-row-label">
           Mostrar cursor
-          <span className="toggle-row-hint">Só afeta captura de tela inteira (monitor)</span>
+          <span className="toggle-row-hint">Dá pra ligar/desligar ao vivo no widget</span>
+        </span>
+        <span className="toggle-switch">
+          <input type="checkbox" checked={settings.showCursor} onChange={(e) => onChange({ ...settings, showCursor: e.target.checked })} />
+          <span className="toggle-slider" />
+        </span>
+      </label>
+
+      <label className="toggle-row">
+        <span className="toggle-row-label">
+          Pipeline nativo
+          <span className="toggle-row-hint">Captura + encoder NVENC próprios (recomendado com GPU NVIDIA)</span>
         </span>
         <span className="toggle-switch">
           <input
             type="checkbox"
-            checked={settings.showCursor}
-            onChange={(e) => onChange({ ...settings, showCursor: e.target.checked })}
+            checked={settings.nativeTransport}
+            onChange={(e) => onChange({ ...settings, nativeTransport: e.target.checked })}
           />
           <span className="toggle-slider" />
         </span>
       </label>
 
-      <details className="settings-advanced">
-        <summary className="settings-advanced-summary">Avançado</summary>
-
-        <label className="toggle-row">
-          <span className="toggle-row-label">
-            Pipeline nativo (beta)
-            <span className="toggle-row-hint">
-              Encode NVENC nativo em vez do encoder por software do navegador — monitor ou janela,
-              sem troca de fonte ao vivo ainda
+      {/* Sempre no DOM — só a altura anima via grid-template-rows (0fr↔1fr), sem empurrar o resto
+          de golpe ao ligar/desligar "Pipeline nativo". */}
+      <div className={`settings-advanced-extra ${settings.nativeTransport ? "settings-advanced-extra-open" : ""}`}>
+        <div className="settings-advanced-extra-inner">
+          <label className="toggle-row">
+            <span className="toggle-row-label">
+              Usar HEVC
+              <span className="toggle-row-hint">Mais qualidade na mesma banda. Cai pra H.264 sozinho se algum espectador não suportar</span>
             </span>
-          </span>
-          <span className="toggle-switch">
-            <input
-              type="checkbox"
-              checked={settings.nativeTransport}
-              onChange={(e) => onChange({ ...settings, nativeTransport: e.target.checked })}
-            />
-            <span className="toggle-slider" />
-          </span>
-        </label>
+            <span className="toggle-switch">
+              <input
+                type="checkbox"
+                checked={settings.preferHevc}
+                onChange={(e) => onChange({ ...settings, preferHevc: e.target.checked, preferAv1: false })}
+              />
+              <span className="toggle-slider" />
+            </span>
+          </label>
 
-        {/* Sempre no DOM (não condicional) — só a altura anima via grid-template-rows (0fr↔1fr).
-            Antes essas 2 linhas entravam/saíam de repente ao ligar "Pipeline nativo", empurrando
-            o resto do formulário (e o botão "Compartilhar tela" embaixo) de golpe. */}
-        <div className={`settings-advanced-extra ${settings.nativeTransport ? "settings-advanced-extra-open" : ""}`}>
-          <div className="settings-advanced-extra-inner">
-            <label className="toggle-row">
-              <span className="toggle-row-label">
-                Usar HEVC (beta)
-                <span className="toggle-row-hint">
-                  Só com pipeline nativo. Cai pra H.264 sozinho se a GPU/navegador do espectador não
-                  suportar
-                </span>
-              </span>
-              <span className="toggle-switch">
-                <input
-                  type="checkbox"
-                  checked={settings.preferHevc}
-                  onChange={(e) => onChange({ ...settings, preferHevc: e.target.checked, preferAv1: false })}
-                />
-                <span className="toggle-slider" />
-              </span>
-            </label>
-
-            <label className="toggle-row">
-              <span className="toggle-row-label">
-                Usar AV1 (beta)
-                <span className="toggle-row-hint">
-                  Só com pipeline nativo. Precisa de GPU NVIDIA RTX 40+ pra encoder por hardware
-                  (raro) — cai pra H.264 sozinho se a GPU/navegador do espectador não suportar
-                </span>
-              </span>
-              <span className="toggle-switch">
-                <input
-                  type="checkbox"
-                  checked={settings.preferAv1}
-                  onChange={(e) => onChange({ ...settings, preferAv1: e.target.checked, preferHevc: false })}
-                />
-                <span className="toggle-slider" />
-              </span>
-            </label>
-          </div>
+          <label className="toggle-row">
+            <span className="toggle-row-label">
+              Usar AV1
+              <span className="toggle-row-hint">Só GPU NVIDIA RTX 40+ — nas outras transmite H.264</span>
+            </span>
+            <span className="toggle-switch">
+              <input
+                type="checkbox"
+                checked={settings.preferAv1}
+                onChange={(e) => onChange({ ...settings, preferAv1: e.target.checked, preferHevc: false })}
+              />
+              <span className="toggle-slider" />
+            </span>
+          </label>
         </div>
-      </details>
-    </div>
+      </div>
+    </>
   );
 }

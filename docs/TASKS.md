@@ -1,5 +1,127 @@
 # Roadmap execução
 
+## 🎯 Próxima rodada (levantado 2026-10-15) — em ordem de prioridade
+
+### A. Validação em uso real (usuário — bloqueia dar como "pronto" o que já foi feito)
+- [ ] **A1** Gerar build do desktop (`npm run dist`) e publicar o viewer (latência, sincronia,
+  fluidez, ack/keyframe e áudio Web Audio vivem no viewer — sem deploy nada disso aparece).
+- [ ] **A2** Rede real entre duas máquinas, incluindo Wi-Fi ruim (só simulado até agora):
+  latência (painel 📊 "buffer"), `droppedHigh` no log do host, recuperação após congestionamento.
+- [ ] **A3** Call real no Discord transmitindo monitor: voz da call NÃO pode vazar; retorno de
+  microfone (Escutar este dispositivo / NVIDIA Broadcast) tem que sumir. Se vazar algo, abrir
+  "Áudio da transmissão" no picker e ver qual app aparece tocando.
+- [ ] **A4** Estalos de áudio sob oscilação de latência sumiram? (Sprint 37 — só simulado)
+- [ ] **A5** Sincronia A/V a olho/ouvido (vídeo com fala, jogo com tiro/impacto).
+- [ ] **A6** Fallback de codec com espectador real sem HEVC (iPhone não serve — usar PC/Android sem
+  decode HEVC) — Sprint 38 validado só com espectador simulado.
+
+### B. Bugs conhecidos
+- [ ] **B1** Addon nativo não carrega em PC sem driver NVIDIA → app inteiro cai pro LiveKit (ver
+  "Pendências de compatibilidade de hardware" abaixo): delay-load do `nvEncodeAPI64.dll` +
+  checar `LoadLibraryW` antes do NVENC. Testar renomeando a DLL ou em VM sem GPU NVIDIA.
+- [ ] **B2** Tela cheia EXCLUSIVA não é capturável (Sprint 37): no mínimo detectar "monitor/janela
+  sem frame novo há X s enquanto um app está em tela cheia" e avisar no LiveCard ("coloque o jogo
+  em janela sem bordas"). Captura por hook no jogo (como OBS/Discord) só se virar requisito —
+  grande e com risco de anti-cheat.
+- [ ] **B3** Firewall/rede diferente (Sprint 26, parado): app fechava quando outro dispositivo
+  conectava. Reproduzir com o build atual e ler `{userData}/uncaught-exception.log`.
+- [x] **B4** ~~Picker: scrollbar de ~2px na grade~~ — resolvido pelo redesenho do picker (Sprint 39).
+- [ ] **B5** Aba "Assistir" do desktop só assiste salas LiveKit — sala nativa e sala com senha
+  não abrem por ali (lista mostra 🔒 nas com senha). Ou implementar o player nativo + senha no
+  desktop, ou esconder/avisar essas salas.
+
+### C. Compatibilidade de hardware
+- [ ] **C1** Notebook híbrido (Optimus) cai pra encode por CPU. Opção barata primeiro: ligar
+  `MFT_ENUM_FLAG_HARDWARE` no `SoftwareEncoderCore` (Quick Sync/AMF da iGPU — exige MFT assíncrono +
+  `IMFDXGIDeviceManager` com o device da captura). Opção completa: device na NVIDIA + cópia entre
+  adaptadores (textura compartilhada NT handle + keyed mutex) pra usar NVENC.
+- [ ] **C2** Corrigir o comentário do `SoftwareEncoderCore` que diz que pega QuickSync/AMF "de
+  graça" (hoje só pega o encoder de CPU) — junto com C1.
+- [ ] **C3** Aviso específico "atualize o driver NVIDIA" quando o NVENC recusar por versão de API
+  (hoje só o ⚠️ genérico de encoder por software).
+- [ ] **C4** Testar em máquinas reais: só AMD, só Intel, notebook Optimus, GPU antiga (GTX 900/10),
+  RTX 40/50 (AV1 por hardware nunca rodou).
+
+### D. Melhorias de transmissão
+- [ ] **D1** Encoder H.264 PARALELO pros espectadores sem suporte a HEVC/AV1 (Sprint 38): quem
+  decodifica o codec principal não precisa reconectar. Tier por par (qualidade × codec), AIMD e
+  troca de qualidade por par, NVENC lazy (só cria quando aparece espectador incompatível).
+- [ ] **D2** Recuperação de device-lost (TDR) sem derrubar as sessões: recriar device → captura →
+  encoders e forçar keyframe; sessões `TransportCore` sobrevivem (não dependem do device).
+- [ ] **D3** Recuperação de bitrate mais rápida depois de congestionamento (hoje ~45s pra voltar
+  ao teto: +10%/5s). Ex.: degraus maiores enquanto a fila continua vazia, ou sondagem.
+
+### E. Distribuição / repositório
+- [ ] **E1** Assinatura de código do `.exe` (SmartScreen avisa no primeiro uso) — ver
+  `docs/DISTRIBUTION.md`.
+- [ ] **E2** Tirar `desktop/native/capture-core/build/` do git (binários, `.obj`, `.pdb`, tlogs em
+  todo commit) e gerar o addon no build (`npm run dist` chamando `node-gyp rebuild`) — conferir que
+  o `electron-builder.yml` continua achando `.node` + DLLs.
+
+## Sprint 39 — Picker de janelas, senha/sala privada no desktop (2026-10-15)
+
+- [x] **Aba "Janelas" escondia tiles** — `.picker-body` usava `justify-content: center`; com a grade
+  mais alta que a área, o flexbox empurrava a 1ª linha pra cima do início do scroll (inalcançável).
+  Trocado por `safe center`. Além disso o rodapé (config + áudio) espremia a grade em 152px de 640:
+  grade agora tem `min-height: 240px`, rodapé rola por dentro (`max-height: 46%`), janela do picker
+  640 → 720px. Validado com Playwright: 8/8 janelas visíveis, última inteira depois do scroll.
+- [x] **Senha e sala privada no app desktop** (o backend e o viewer web já tinham) — componente
+  `AccessOptions` no rodapé do picker (mesmo visual do viewer), repassado até `createRoom` nos dois
+  caminhos (nativo e LiveKit). Senha ligada e vazia bloqueia escolher a fonte (um clique já
+  transmite). 🔒 no LiveCard (lembrete de mandar a senha junto do link) e na lista "Assistir".
+- [x] **Redesenho do picker** (pedido do usuário: dois scrolls empilhados ficavam feios) —
+  configurações numa barra lateral esquerda (290px) e fontes à direita, cada coluna rolando
+  sozinha; janela do picker 960×680. Em evidência: Transmissão (resolução, FPS+qualidade lado a
+  lado) e Sala (nome, privada, senha). Em "Avançado": melhorar texto, cursor, pipeline nativo,
+  HEVC/AV1 e "Áudio da transmissão" (subseção, só monta/consulta os apps quando aberto). Na troca
+  de fonte ao vivo a lateral mostra só o áudio. `SettingsForm` virou `SettingsPrimary` +
+  `SettingsAdvanced`; CSS morto do rodapé antigo removido; scrollbars finas.
+- [x] **Botão "Voltar" só funcionava na ponta de baixo** — o overlay do picker cobria a barra de
+  título, que é região de arrastar a janela (`-webkit-app-region: drag`); no Electron essa região
+  engole o clique mesmo coberta por outro elemento. Overlay agora começa abaixo da barra (36px) —
+  validado com Playwright clicando no centro do botão.
+
+## Sprint 38 — Crash no fallback HEVC/AV1, fluidez, qualidade H.264 vs HEVC (2026-10-15)
+
+Relato: H.264 parecia com menos qualidade/fluidez que HEVC/AV1; HEVC/AV1 derrubavam o app quando
+entrava espectador sem suporte. Reproduzido no E2E com espectador que finge não decodificar
+(`NO_DECODE=hevc`, `codec-fallback-test.js`).
+
+- [x] **Crash do host (0xE06D7363) no fallback** — o espectador recria a conexão e ainda manda
+  candidatos ICE da conexão antiga pra sessão nova; `addRemoteCandidate` lança e o
+  `catch (const std::exception&)` NUNCA pegou (exceção vem da datachannel.dll com CRT dinâmica; o
+  addon é CRT estática + `_HAS_EXCEPTIONS=0` do node-gyp — tipo não casa). Achado com dump do
+  Crashpad + `catch (...)` com log por método. Todo ponto que chama a libdatachannel no
+  `TransportCore` agora tem `catch (...)` (destrutor incluído).
+- [x] **Sessão nova derrubada pelo "closed" da velha** — fallback fecha a sessão e cria outra com o
+  MESMO `viewerId`; o evento de estado da velha chegava depois (TSFN assíncrono) e o handler fechava
+  por `viewerId` → espectador em "conectando" pra sempre. Sessões têm geração; evento de geração
+  antiga é descartado no addon. Contador de espectadores atualizado direto no `viewer-left`.
+- [x] **Fallback com gente já assistindo** — antes só trocava pra H.264 se ninguém estivesse
+  conectado (senão o espectador novo ficava preso). Agora a transmissão INTEIRA cai pra H.264 e
+  todo mundo renegocia (~1s de reconexão pra quem já assistia); tier "low" também reinicia no codec
+  novo (antes ficava no antigo). Validado: A em HEVC + B sem suporte → os dois a 60fps, host vivo.
+- [x] **Fluidez (judder)** — métrica nova no E2E: |intervalo exibido − intervalo capturado|. H.264 e
+  HEVC medidos iguais (a diferença percebida não era o codec). ~1-2% dos frames saíam 12-25ms fora do
+  ritmo por causa do `setTimeout` por frame no espectador; agora um loop de `requestAnimationFrame`
+  entrega no vsync (`viewer/src/services/videoPresenter.ts`). p95 de ~6-8ms pra ~3-6ms.
+- [x] **Latência no começo da sessão** — o 1º keyframe chega atrasado enquanto a conexão sobe
+  (+85ms só nele) e prendia o buffer em ~120ms por ~8s. Primeiro 1s de acomodação fora da
+  estatística + aquecimento seguindo o alvo (`playoutClock.ts`). Agora começa em ~25-40ms.
+- [x] **Ativar fonte de áudio travava a thread de áudio** (dezenas de ms a cada app que começa a
+  tocar → pacotes atrasados → buffer do espectador sobe). Varredura/ativação de fontes foi pra
+  thread própria; atraso de chegada no mixer 15-20ms → ~7ms, folga do mixer 25 → 15ms.
+- **Qualidade H.264 vs HEVC** (mesmo NVENC, 12 Mbps, 1080p60, VBV 3 frames, clipe sintético,
+  VMAF): H.264 P4 88.7 · H.264 + AQ/multipass/P5-P7 88.3-88.4 (preset mais lento NÃO ajuda) ·
+  HEVC P4 89.5. Ganho do HEVC é real mas pequeno nesse conteúdo; em jogo real costuma ser maior
+  (~20-30% de bitrate). Em RTX 20/30 "AV1" codifica H.264 de verdade (sem encoder AV1) — não tem
+  como ser diferente do H.264.
+- [ ] **Alternativa melhor pro fallback**: encoder H.264 PARALELO só pros espectadores sem suporte
+  (mesmo frame capturado, mais uma sessão NVENC) — quem decodifica HEVC/AV1 continua nele sem
+  reconexão. Não feito (mais código: tier por codec, AIMD/troca de qualidade por par tier×codec).
+  Transcodificar no servidor não é viável (custo e latência — o backend não toca em vídeo por
+  arquitetura).
+
 ## Sprint 37 — Captura de janela de jogo a 60fps, GPU saturada, estalos de áudio (2026-10-15)
 
 Relato do usuário (testando o build do Sprint 36): janela de jogo travada em ~55fps; áudio

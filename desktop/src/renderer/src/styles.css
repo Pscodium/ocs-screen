@@ -143,15 +143,6 @@ body {
   font-size: 0.88rem;
 }
 
-/* Settings form */
-.settings-form {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-}
-
 .settings-field {
   display: flex;
   flex-direction: column;
@@ -160,25 +151,6 @@ body {
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--muted);
-}
-
-/* Rodapé compacto do SourcePicker (resolução/FPS/qualidade lado a lado em vez de empilhados) —
-   ver comentário em SourcePicker.tsx sobre por que essas configs moraram pra lá. */
-.settings-form-row {
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-bottom: 0;
-}
-
-.settings-form-row > .settings-field {
-  flex: 1 1 140px;
-  gap: 0.3rem;
-}
-
-.settings-form-row .toggle-row,
-.settings-form-row .settings-advanced {
-  flex-basis: 100%;
 }
 
 .settings-field select {
@@ -202,18 +174,6 @@ body {
 .settings-field select:focus-visible {
   outline: none;
   border-color: var(--accent);
-}
-
-.settings-hint {
-  margin: -0.4rem 0 0;
-  padding: 0.6rem 0.7rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 0.75rem;
-  line-height: 1.45;
-  text-align: left;
 }
 
 /* Linha de toggle estilo Discord — label+descrição curta à esquerda, switch à direita. */
@@ -291,26 +251,6 @@ body {
   outline-offset: 2px;
 }
 
-/* Configurações beta (pipeline nativo/HEVC/AV1) recolhidas por padrão — não devem competir
-   visualmente com resolução/FPS/qualidade, que são o caminho normal do usuário. */
-.settings-advanced {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.15rem 0.7rem;
-}
-
-.settings-advanced[open] {
-  padding-bottom: 0.85rem;
-}
-
-.settings-advanced[open] .settings-advanced-summary {
-  margin-bottom: 0.6rem;
-}
-
-.settings-advanced .toggle-row + .toggle-row {
-  margin-top: 0.85rem;
-}
-
 /* Trick de grid-template-rows (0fr↔1fr) — anima altura de um conteúdo de altura variável sem JS
    medindo pixels. O wrapper externo é sempre display:grid com 1 linha/coluna implícita; o interno
    precisa de min-height:0 (senão o item do grid não respeita o 0fr) + overflow:hidden (esconde o
@@ -335,35 +275,6 @@ body {
 
 .settings-advanced-extra-open .settings-advanced-extra-inner {
   margin-top: 0.85rem;
-}
-
-.settings-advanced-summary {
-  cursor: pointer;
-  list-style: none;
-  padding: 0.7rem 0;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--muted);
-  user-select: none;
-}
-
-.settings-advanced-summary::-webkit-details-marker {
-  display: none;
-}
-
-.settings-advanced-summary::before {
-  content: "▸";
-  display: inline-block;
-  width: 0.9em;
-  transition: transform 0.15s ease;
-}
-
-.settings-advanced[open] .settings-advanced-summary::before {
-  transform: rotate(90deg);
-}
-
-.settings-advanced-summary:hover {
-  color: var(--text);
 }
 
 /* Buttons */
@@ -679,7 +590,11 @@ body {
    aberto, ver window:set-picker-mode no main process). */
 .picker-overlay {
   position: fixed;
-  inset: 0;
+  /* Começa ABAIXO da barra de título (36px) — bug real: cobrindo a barra, o botão "Voltar" ficava
+     em cima da região de arrastar a janela (`-webkit-app-region: drag`), e no Electron região de
+     arrastar engole o clique mesmo coberta por outro elemento: só a ponta de baixo do botão
+     (fora dos 36px) funcionava. Também deixa minimizar/fechar acessíveis com o seletor aberto. */
+  inset: 36px 0 0 0;
   background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
@@ -820,32 +735,202 @@ body {
      preenche/excede (muitas janelas), o scroll (`overflow-y:auto`) continua funcionando normal. */
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  /* `safe center`, não `center` — bug real (aba "Janelas" com muitas janelas): com `center`, quando
+     o grid fica MAIS ALTO que o corpo, o flexbox centraliza mesmo assim e empurra a primeira linha
+     pra CIMA do início da área de scroll — região que o scroll nunca alcança (tiles cortados/
+     escondidos, parecia que o scroll "não contemplava" todas as janelas). `safe` volta pro início
+     quando não cabe, e continua centralizando quando sobra espaço (poucas fontes). */
+  justify-content: safe center;
 }
 
-.picker-footer {
-  flex-shrink: 0;
+/* Seletor em 2 colunas: configurações (lateral) + fontes. */
+.picker-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
   border-top: 1px solid var(--border);
-  padding: 0.9rem 1.25rem;
+}
+
+.picker-sidebar {
+  width: 290px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 1rem 1rem 1.25rem;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 1.1rem;
   text-align: left;
 }
 
-.picker-footer .room-slug-field {
-  max-width: 260px;
+.picker-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
-/* Lista de apps do áudio da transmissão (AudioAppsSettings) — rola por dentro se tiver muitos apps
-   em vez de empurrar a grade de fontes pra fora da janela do picker. */
+.picker-section-title {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.picker-sidebar .settings-field select,
+.picker-sidebar .slug-input {
+  width: 100%;
+  background-color: var(--bg);
+}
+
+/* FPS + Qualidade lado a lado (Resolução fica sozinha, rótulos maiores). */
+.settings-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.picker-sidebar .access-options {
+  background: var(--bg);
+}
+
+.picker-advanced {
+  border-top: 1px solid var(--border);
+  padding-top: 0.9rem;
+}
+
+.picker-advanced-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.picker-advanced-summary::-webkit-details-marker {
+  display: none;
+}
+
+.picker-advanced-summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  transition: transform 0.15s ease;
+}
+
+.picker-advanced[open] .picker-advanced-summary::before {
+  transform: rotate(90deg);
+}
+
+.picker-advanced-summary:hover {
+  color: var(--text);
+}
+
+.picker-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-top: 0.85rem;
+}
+
+.picker-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-top: 0.85rem;
+  border-top: 1px dashed var(--border);
+}
+
+.picker-subsection-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.picker-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.picker-main .picker-tabs {
+  padding-top: 0.9rem;
+}
+
+.picker-error {
+  margin: 0 1.25rem 0.5rem;
+}
+
+.picker-hint {
+  margin: 0;
+  padding: 0.6rem 1.25rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-align: left;
+}
+
+/* Sala privada / senha (mesmo visual do viewer web, ver viewer/src/styles.css). */
+.access-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.8rem 0.9rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  animation: password-reveal-in 0.18s ease;
+}
+
+.password-input-wrap .password-input {
+  flex: 1;
+  padding-right: 4.8rem;
+  background: var(--surface);
+}
+
+.password-reveal {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.password-reveal:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+@keyframes password-reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Lista de apps do áudio da transmissão (AudioAppsSettings) — dentro da barra lateral, que já rola. */
 .audio-apps {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  max-height: 120px;
-  overflow-y: auto;
-  padding-right: 0.25rem;
 }
 
 .picker-grid {
@@ -1022,13 +1107,6 @@ body {
 .mode-tab-active:hover {
   background: var(--surface-2);
   color: var(--text);
-}
-
-.room-slug-field {
-  /* Vive no rodapé do SourcePicker (`.picker-footer`) — sem width:100% aqui, o label encolhe pro
-     tamanho do próprio conteúdo e o input fica mais estreito que os selects de cima. */
-  width: 100%;
-  margin: 0 0 1.1rem;
 }
 
 .slug-input {
@@ -1565,4 +1643,27 @@ body {
   background: black;
   border-radius: 6px;
   object-fit: contain;
+}
+
+/* Barras de rolagem finas e discretas nas áreas que rolam do seletor (a padrão do Windows, grossa e
+   com setas, destoava do tema escuro). */
+.picker-sidebar::-webkit-scrollbar,
+.picker-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.picker-sidebar::-webkit-scrollbar-track,
+.picker-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.picker-sidebar::-webkit-scrollbar-thumb,
+.picker-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.picker-sidebar::-webkit-scrollbar-thumb:hover,
+.picker-body::-webkit-scrollbar-thumb:hover {
+  background: #3a3e4a;
 }

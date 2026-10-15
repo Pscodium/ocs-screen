@@ -125,10 +125,17 @@ private:
 
     bool Start(const std::vector<std::wstring>& excludedExeNames);
     void WorkerMain();
-    // Tudo abaixo (até `mixStats_`) só é tocado pela thread de áudio.
-    bool AddSource(DWORD targetPid, const std::wstring& exeName);
-    void ReleaseSource(Source& source);
+    void RefreshMain();
+    // Varredura de fontes — roda na thread de REFRESH (não na de áudio): ativar uma fonte nova
+    // (`ActivateAudioInterfaceAsync`) bloqueia dezenas de ms, e na thread de áudio isso atrasava os
+    // pacotes de todo mundo — bug medido no E2E: cada app que começava a tocar subia o buffer do
+    // espectador (~+50ms que só desciam devagar). Decide/ativa aqui e entrega pronto pra thread de
+    // áudio via `pendingAdd_`/`pendingRemove_`; `targets_` é o espelho do que está ativo.
     void RefreshSources(bool force);
+    bool ActivateSource(DWORD targetPid, const std::wstring& exeName, Source& out);
+    void ApplyPendingSources(); // thread de áudio
+    // Tudo abaixo (até `mixStats_`) só é tocado pela thread de áudio.
+    void ReleaseSource(Source& source);
     void DrainSource(Source& source);
     void MixInto(int64_t startSample, const float* data, uint32_t frames, bool silent);
     void EncodeReadyFrames();
@@ -165,6 +172,17 @@ private:
     float lastRms_ = 0.f;
     MixStats sharedMixStats_;
 
+    // Só a thread de refresh (e a de áudio na inicialização, antes da de refresh existir).
+    struct Target {
+        DWORD pid;
+        std::wstring exeName;
+    };
+    std::vector<Target> targets_;
+    // Thread de refresh → thread de áudio, com `mutex_`.
+    std::vector<Source> pendingAdd_;
+    std::vector<DWORD> pendingRemove_;
+
     std::thread worker_;
+    std::thread refresher_;
     std::atomic<bool> stop_{false};
 };

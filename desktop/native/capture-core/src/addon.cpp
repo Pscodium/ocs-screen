@@ -48,7 +48,19 @@ static const char* CodecToString(VideoCodecType codec) {
 struct ViewerSession {
     std::unique_ptr<TransportCore> transport;
     std::string tier = "high";
+    // Identifica ESTA sessão entre recriações com o mesmo `viewerId` (fallback de codec fecha a
+    // sessão HEVC/AV1 e cria outra H.264 pro mesmo espectador). Bug real: o evento "closed" da
+    // sessão velha chegava no JS (assíncrono, via TSFN) DEPOIS da nova existir, e o handler de
+    // estado fechava por `viewerId` — derrubando a sessão nova; o espectador ficava em
+    // "conectando" pra sempre. Eventos de geração antiga agora são descartados antes de chegar no JS.
+    uint64_t generation = 0;
 };
+
+static uint64_t g_nextSessionGeneration = 1;
+
+// Chamar na thread JS (callback de TSFN) — a sessão desse `viewerId` ainda é a mesma que gerou o
+// evento?
+static bool IsCurrentSession(const std::string& viewerId, uint64_t generation);
 
 static std::unique_ptr<CaptureCore> g_core;
 // Backend WGC (janela) — alternativa ao `g_core` (DXGI, monitor). Nunca os dois ativos ao mesmo
@@ -721,35 +733,42 @@ Napi::Value TransportCreateSession(const Napi::CallbackInfo& info) {
     // `g_encoderMutex`) em vez de tocar `g_encoder`/`g_encoderLow` direto. Ver comentário grande
     // em `g_encoderMutex` — bug real de concorrência achado via dump de crash.
     transport->OnChannelOpen([tier]() { ForceKeyframeForTierLocked(tier); });
+    const uint64_t generation = g_nextSessionGeneration++;
 
     if (g_onLocalDescriptionSet) {
-        transport->OnLocalDescription([viewerId](const std::string& sdp, const std::string& type) {
-            auto* data = new std::tuple<std::string, std::string, std::string>(viewerId, sdp, type);
+        transport->OnLocalDescription([viewerId, generation](const std::string& sdp, const std::string& type) {
+            auto* data = new std::tuple<std::string, std::string, std::string, uint64_t>(viewerId, sdp, type, generation);
             g_onLocalDescriptionTsfn.NonBlockingCall(
-                data, [](Napi::Env env, Napi::Function cb, std::tuple<std::string, std::string, std::string>* d) {
-                    cb.Call({Napi::String::New(env, std::get<0>(*d)), Napi::String::New(env, std::get<1>(*d)),
-                             Napi::String::New(env, std::get<2>(*d))});
+                data, [](Napi::Env env, Napi::Function cb, std::tuple<std::string, std::string, std::string, uint64_t>* d) {
+                    if (IsCurrentSession(std::get<0>(*d), std::get<3>(*d))) {
+                        cb.Call({Napi::String::New(env, std::get<0>(*d)), Napi::String::New(env, std::get<1>(*d)),
+                                 Napi::String::New(env, std::get<2>(*d))});
+                    }
                     delete d;
                 });
         });
     }
     if (g_onLocalCandidateSet) {
-        transport->OnLocalCandidate([viewerId](const std::string& candidate, const std::string& mid) {
-            auto* data = new std::tuple<std::string, std::string, std::string>(viewerId, candidate, mid);
+        transport->OnLocalCandidate([viewerId, generation](const std::string& candidate, const std::string& mid) {
+            auto* data = new std::tuple<std::string, std::string, std::string, uint64_t>(viewerId, candidate, mid, generation);
             g_onLocalCandidateTsfn.NonBlockingCall(
-                data, [](Napi::Env env, Napi::Function cb, std::tuple<std::string, std::string, std::string>* d) {
-                    cb.Call({Napi::String::New(env, std::get<0>(*d)), Napi::String::New(env, std::get<1>(*d)),
-                             Napi::String::New(env, std::get<2>(*d))});
+                data, [](Napi::Env env, Napi::Function cb, std::tuple<std::string, std::string, std::string, uint64_t>* d) {
+                    if (IsCurrentSession(std::get<0>(*d), std::get<3>(*d))) {
+                        cb.Call({Napi::String::New(env, std::get<0>(*d)), Napi::String::New(env, std::get<1>(*d)),
+                                 Napi::String::New(env, std::get<2>(*d))});
+                    }
                     delete d;
                 });
         });
     }
     if (g_onStateChangeSet) {
-        transport->OnStateChange([viewerId](const std::string& state) {
-            auto* data = new std::pair<std::string, std::string>(viewerId, state);
+        transport->OnStateChange([viewerId, generation](const std::string& state) {
+            auto* data = new std::tuple<std::string, std::string, uint64_t>(viewerId, state, generation);
             g_onStateChangeTsfn.NonBlockingCall(
-                data, [](Napi::Env env, Napi::Function cb, std::pair<std::string, std::string>* d) {
-                    cb.Call({Napi::String::New(env, d->first), Napi::String::New(env, d->second)});
+                data, [](Napi::Env env, Napi::Function cb, std::tuple<std::string, std::string, uint64_t>* d) {
+                    if (IsCurrentSession(std::get<0>(*d), std::get<2>(*d))) {
+                        cb.Call({Napi::String::New(env, std::get<0>(*d)), Napi::String::New(env, std::get<1>(*d))});
+                    }
                     delete d;
                 });
         });
@@ -758,8 +777,15 @@ Napi::Value TransportCreateSession(const Napi::CallbackInfo& info) {
     ViewerSession vs;
     vs.transport = std::move(transport);
     vs.tier = tier;
+    vs.generation = generation;
     g_transportSessions[viewerId] = std::move(vs);
     return Napi::Boolean::New(env, true);
+}
+
+static bool IsCurrentSession(const std::string& viewerId, uint64_t generation) {
+    std::lock_guard<std::mutex> lock(g_sessionsMutex);
+    auto it = g_transportSessions.find(viewerId);
+    return it != g_transportSessions.end() && it->second.generation == generation;
 }
 
 // `info[0]` = viewerId, `info[1]` = "high"/"low" — troca a qualidade de uma sessão JÁ ATIVA

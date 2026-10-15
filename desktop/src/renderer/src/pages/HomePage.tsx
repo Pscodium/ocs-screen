@@ -6,6 +6,7 @@ import { RoomsBrowser } from "../components/RoomsBrowser";
 import { RoomViewer } from "../components/RoomViewer";
 import type { useBroadcast } from "../hooks/useBroadcast";
 import { defaultStreamSettings } from "../types/stream";
+import { type AccessSettings, defaultAccessSettings } from "../components/AccessOptions";
 
 interface HomePageProps {
   broadcast: ReturnType<typeof useBroadcast>;
@@ -16,6 +17,7 @@ type Tab = "share" | "watch";
 export function HomePage({ broadcast }: HomePageProps) {
   const [settings, setSettings] = useState(defaultStreamSettings);
   const [slug, setSlug] = useState("");
+  const [access, setAccess] = useState<AccessSettings>(defaultAccessSettings);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("share");
   const [watchingRoomId, setWatchingRoomId] = useState<string | null>(null);
@@ -73,10 +75,15 @@ export function HomePage({ broadcast }: HomePageProps) {
           onSettingsChange={setSettings}
           slug={slug}
           onSlugChange={setSlug}
+          access={access}
+          onAccessChange={setAccess}
           onCancel={() => setPickerOpen(false)}
           onSelect={(source) => {
             setPickerOpen(false);
-            start(settings, source, slug);
+            start(settings, source, slug, {
+              isPrivate: access.isPrivate,
+              password: access.usePassword ? access.password : undefined,
+            });
           }}
         />
       )}

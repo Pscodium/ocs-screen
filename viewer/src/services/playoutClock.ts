@@ -15,6 +15,10 @@
 //   pacote de áudio atrasado é um buraco/estalo audível (bug relatado: com o percentil 98, qualquer
 //   oscilação de latência virava "ruído de travamento" no áudio até o espectador subir o buffer à
 //   mão). A janela longa segura o offset alto enquanto a rede continua oscilando.
+// Aquecimento: nos primeiros `warmupMs` depois do reset o áudio entra na regra do vídeo (percentil),
+// sem subida imediata — os primeiros pacotes chegam/processam atrasados enquanto o espectador ainda
+// monta decoders/Web Audio (medido no E2E: pico de ~150ms no começo), e com a regra do máximo esse
+// pico ficava preso na janela de 10s e só descia a 10ms/s (latência alta nos primeiros ~25s).
 // Sobe na hora quando precisa, desce devagar quando a rede melhora (descida brusca aceleraria o
 // vídeo visivelmente; o player de áudio corrige no máximo ~10ms/s sem estalo).
 //
@@ -28,6 +32,8 @@ export interface PlayoutClockOptions {
   videoWindowMs: number;
   audioWindowMs: number;
   videoPercentile: number;
+  settleMs: number;
+  warmupMs: number;
   marginMs: number;
   maxExtraMs: number;
   decayMsPerSecond: number;
@@ -38,6 +44,8 @@ const DEFAULT_OPTIONS: PlayoutClockOptions = {
   videoWindowMs: 3000,
   audioWindowMs: 10000,
   videoPercentile: 0.98,
+  settleMs: 1000,
+  warmupMs: 3000,
   marginMs: 8,
   maxExtraMs: 1000,
   decayMsPerSecond: 10,
@@ -59,6 +67,7 @@ export class PlayoutClock {
   private offsetMs: number | null = null;
   private minTransitMs = 0;
   private lastRecomputeMs = 0;
+  private startedAtMs: number | null = null;
 
   constructor(options: Partial<PlayoutClockOptions> = {}) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -68,6 +77,7 @@ export class PlayoutClock {
     this.samples = [];
     this.offsetMs = null;
     this.minTransitMs = 0;
+    this.startedAtMs = null;
   }
 
   // Registra um item pronto (decodificado) agora e devolve quantos ms esperar até apresentá-lo
@@ -75,6 +85,18 @@ export class PlayoutClock {
   schedule(timestampUs: number, nowMs: number, kind: MediaKind = "video"): number {
     const timestampMs = timestampUs / 1000;
     const transitMs = nowMs - timestampMs;
+    if (this.startedAtMs === null) this.startedAtMs = nowMs;
+    const sinceStartMs = nowMs - this.startedAtMs;
+    if (sinceStartMs < this.options.settleMs) {
+      // Acomodação: o 1º keyframe (e o que veio enfileirado atrás dele) chega atrasado enquanto a
+      // conexão sobe (medido: +85ms só nele, o resto chega com ~5ms de variação). Se entrasse na
+      // estatística, prendia o buffer alto pela janela inteira e depois na descida lenta (~120ms de
+      // latência nos primeiros ~8s). Toca na hora e não registra; o buffer começa do zero depois.
+      return 0;
+    }
+    // Durante o aquecimento o áudio conta como "vídeo" (percentil, sem subida imediata).
+    const warmingUp = sinceStartMs < this.options.settleMs + this.options.warmupMs;
+    if (warmingUp) kind = "video";
     this.samples.push({ atMs: nowMs, transitMs, kind });
     const cutoff = nowMs - Math.max(this.options.videoWindowMs, this.options.audioWindowMs);
     let expired = 0;
@@ -121,7 +143,10 @@ export class PlayoutClock {
     let desired = Math.max(high + this.options.marginMs, minTransit + this.floorMs);
     desired = Math.min(desired, minTransit + this.options.maxExtraMs);
 
-    if (this.offsetMs === null || desired > this.offsetMs) {
+    const warmingUp = this.startedAtMs !== null && nowMs - this.startedAtMs < this.options.settleMs + this.options.warmupMs;
+    if (this.offsetMs === null || desired > this.offsetMs || warmingUp) {
+      // No aquecimento segue o alvo nos DOIS sentidos — o 1º keyframe/decoder subindo chega
+      // atrasado e, com a descida lenta normal, prendia ~120ms de latência por ~8s (medido no E2E).
       this.offsetMs = desired;
     } else {
       const elapsedS = (nowMs - this.lastRecomputeMs) / 1000;
