@@ -1,5 +1,46 @@
 # Roadmap execução
 
+## Sprint 37 — Captura de janela de jogo a 60fps, GPU saturada, estalos de áudio (2026-10-15)
+
+Relato do usuário (testando o build do Sprint 36): janela de jogo travada em ~55fps; áudio
+sincronizado mas com "ruído de travamento" a cada oscilação de latência até o espectador subir o
+buffer à mão. Testado com o **gamesim** (jogo sintético novo, `.claude/skills/native-e2e/gamesim/`:
+D3D11 flip model, frame cap preciso, carga de GPU em vários draws, contador de frame desenhado em
+cada frame pra contar frame perdido/duplicado na captura).
+
+- [x] **Teto de ~55fps na captura de janela (WGC)** — o WGC tem intervalo mínimo entre frames
+  (~16.7ms por padrão) e só entrega em fronteira de composição do DWM; com monitor de 165Hz
+  (6.06ms) o primeiro instante ≥16.7ms é 18.2ms → ~55fps (medido 46fps com ffplay). Fix:
+  `MinUpdateInterval` = 1ms (`IGraphicsCaptureSession5`, Win11 24H2+). Monitor (DXGI) não tinha
+  isso.
+- [x] **Pacing descartava frame único de fonte irregular** — frames de jogo via WGC chegam com
+  espaçamento tipo 10ms/23ms; a grade com tolerância podava o de 10ms. `FramePacer` virou token
+  bucket (crédito no ritmo do alvo, teto 2): fonte abaixo do alvo nunca perde frame, fonte acima
+  continua limitada à média.
+- [x] **Frame do WGC devolvido ao pool antes da cópia** — o handler soltava o
+  `IDirect3D11CaptureFrame` antes do `CopyResource` do consumidor → o WGC podia escrever o frame
+  seguinte na mesma superfície (frame rasgado/trocado). Agora o frame vive até a cópia.
+- [x] **Captura passava fome com a GPU saturada** (jogo GPU-bound) — encode de 180ms (p50) a 1.2s,
+  captura a ~4fps: o escalonador da GPU deixava nossa cópia captura→NVENC atrás do jogo. Prioridade
+  de GPU do processo main em "tempo real" (`D3DKMTSetProcessSchedulingPriorityClass`, mesmo recurso
+  do OBS; "alta" não resolveu): encode 1.7ms, todos os frames do jogo capturados, fps do jogo
+  idêntico. Funcionou sem admin.
+- **Resultado (harness, janela do gamesim 1280×720@60)**: GPU livre 60.4 fps codificados, 302/302
+  frames únicos do jogo, 0 duplicado, 0 pulado; GPU saturada (jogo a 33fps) 33/33, 0 pulado.
+  E2E (app + viewer no Chrome): 60.1 fps apresentados, latência ~39ms.
+- [x] **Estalos de áudio com oscilação de latência** — o relógio de apresentação cobria o percentil
+  98 do trânsito de vídeo+áudio juntos: com a latência subindo (rampa/degrau), 2-4% dos pacotes de
+  áudio chegavam depois do horário (cada um = estalo) — simulado. Agora o áudio é coberto pelo
+  MÁXIMO dos últimos 10s e um pacote atrasado sobe o buffer na hora (`playoutClock.ts`); vídeo
+  continua no p98/3s. Simulação: 0% de áudio atrasado nos mesmos cenários, custo +6-14ms de buffer.
+  **Não validado em rede real** — usuário confirma.
+- [ ] **Tela cheia EXCLUSIVA não é capturável** — medido com `gamesim --fullscreen`: nem DXGI
+  Desktop Duplication (monitor) nem WGC (janela, e WGC de monitor testado e descartado) recebem
+  frame — flip independente, o DWM não compõe. OBS/Discord resolvem com "captura de jogo" (DLL
+  injetada no processo do jogo hookando `Present`) — trabalho grande e com risco de anti-cheat.
+  Por ora: orientar a usar modo **janela sem bordas** (a maioria dos jogos modernos já usa ou
+  oferece). Considerar detectar "monitor sem frame novo por X s com app em tela cheia" e avisar.
+
 ## 📋 Pendências de compatibilidade de hardware (levantadas 2026-10-15, só análise — sem código)
 
 Pergunta do usuário: "qualquer um com placa NVIDIA vai rodar com NVENC?" — não. Só foi testado

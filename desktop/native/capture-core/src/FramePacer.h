@@ -1,49 +1,46 @@
 #pragma once
 
+#include <algorithm>
 #include <chrono>
 
-// Pacing de grade fixa compartilhado pelos dois encoders (NVENC e Media Foundation) — decide se
-// um frame capturado AGORA deve ser codificado ou pulado pra manter o fps alvo.
+// Pacing compartilhado pelos dois encoders (NVENC e Media Foundation) — decide se um frame
+// capturado AGORA deve ser codificado ou pulado pra manter o fps alvo (NVENC assume taxa constante
+// pro cálculo de bitrate CBR; fonte mais rápida que o alvo, ex. monitor 165Hz, precisa ser podada).
 //
-// Bug real corrigido (medido com harness isolado: monitor entregando ~64 frames/s, alvo 60, só
-// ~50 codificados): a versão antiga exigia `now >= nextEncodeTime_` ESTRITO. Com a fonte e a grade
-// no mesmo ritmo (60Hz capturado, 60fps alvo), qualquer frame que chegasse 0.1ms ANTES do ponto da
-// grade (jitter normal de scheduler/compositor) era descartado e o próximo só vinha 16.7ms depois
-// — ~1 em cada 6 frames jogado fora de forma irregular, que é exatamente "engasgo" visível mesmo
-// com fps médio alto. Agora aceita até `kEarlyTolerance` do intervalo adiantado. A grade continua
-// FIXA (soma o intervalo, não reancora no "agora"), então a tolerância não faz o fps médio subir
-// acima do alvo — só deixa de punir jitter.
+// Token bucket: crédito acumula no ritmo do fps alvo (teto `kMaxTokens`), cada frame aceito gasta 1.
+// Histórico de bugs reais que isso resolve:
+// - Grade fixa estrita (`now >= próximo ponto`): fonte e alvo no mesmo ritmo, frame chegando 0.1ms
+//   antes do ponto = descartado — ~1 em 6 jogado fora (medido: 64 capturados/s, só ~50 codificados).
+// - Grade com tolerância de 1/4 de intervalo: ainda descartava frame ÚNICO de fonte irregular — jogo
+//   a 60fps capturado por WGC chega com espaçamento tipo 10ms/23ms (quantizado pela composição do
+//   DWM); o de 10ms era podado e o seguinte só vinha 23ms depois (medido: 56 entregues/s, 52
+//   codificados). Com crédito acumulado, uma fonte que está ABAIXO do alvo nunca perde frame; uma
+//   acima do alvo continua limitada à média do alvo.
 class FramePacer {
 public:
     void Reset(int fps) {
-        interval_ = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(1.0 / (fps > 0 ? fps : 30)));
-        next_ = {};
+        fps_ = fps > 0 ? fps : 30;
+        tokens_ = kMaxTokens;
+        last_ = {};
     }
 
-    // true = codifica esse frame (e avança a grade); false = pula.
+    // true = codifica esse frame (gasta crédito); false = pula.
     bool ShouldEncode(std::chrono::steady_clock::time_point now) {
-        if (next_.time_since_epoch().count() == 0) {
-            next_ = now + interval_;
-            return true;
+        if (last_.time_since_epoch().count() != 0) {
+            const double elapsedS = std::chrono::duration<double>(now - last_).count();
+            tokens_ = std::min(kMaxTokens, tokens_ + elapsedS * fps_);
         }
-        if (now + interval_ / kEarlyToleranceDivisor < next_) return false;
-
-        if (now - next_ > interval_) {
-            // Ficou muito pra trás da grade (stall, tela parada sem frame novo) — reancora em vez de
-            // tentar compensar com uma rajada de frames aceitos em sequência.
-            next_ = now + interval_;
-        } else {
-            next_ += interval_;
-        }
+        last_ = now;
+        if (tokens_ < 1.0) return false;
+        tokens_ -= 1.0;
         return true;
     }
 
 private:
-    // 1/4 do intervalo (~4ms a 60fps) — grande o bastante pra absorver jitter de entrega, pequeno o
-    // bastante pra que uma fonte em taxa MAIOR que o alvo (monitor 120/144Hz) ainda pule os frames
-    // intermediários em vez de aceitar dois seguidos.
-    static constexpr int kEarlyToleranceDivisor = 4;
-    std::chrono::steady_clock::duration interval_{};
-    std::chrono::steady_clock::time_point next_{};
+    // Teto do crédito: 2 frames — absorve jitter de entrega da fonte sem deixar uma rajada longa
+    // passar depois de tela parada (no máximo 2 frames colados).
+    static constexpr double kMaxTokens = 2.0;
+    int fps_ = 30;
+    double tokens_ = kMaxTokens;
+    std::chrono::steady_clock::time_point last_{};
 };

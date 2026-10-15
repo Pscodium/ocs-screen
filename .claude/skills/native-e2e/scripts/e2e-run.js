@@ -13,6 +13,7 @@
 //   ACK_DELAY_TEST=1      atrasa os acks do espectador em 400ms entre t=5s e t=10s (simula fila de
 //                         rede) — valida descarte de frame + keyframe + AIMD
 //   BACKEND=http://127.0.0.1:4100  VIEWER=http://localhost:5199  MONITOR=0
+//   HWND=<handle>         transmite essa JANELA (WGC) em vez do monitor — ex.: a do gamesim
 const path = require("path");
 const { _electron, chromium } = require("playwright-core");
 
@@ -60,7 +61,7 @@ const VIEWER = process.env.VIEWER ?? "http://localhost:5199";
   const ok = await win.evaluate((args) => window.screenshare.nativeTransport.start(args), {
     roomId: room.roomId,
     backendUrl: BACKEND,
-    monitorIndex: Number(process.env.MONITOR ?? 0),
+    ...(process.env.HWND ? { hwnd: Number(process.env.HWND) } : { monitorIndex: Number(process.env.MONITOR ?? 0) }),
     targetFps: FPS,
     bitrateBps: 12_000_000,
     stunUrls: [],

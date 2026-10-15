@@ -144,6 +144,23 @@ Napi::Value NowUs(const Napi::CallbackInfo& info) {
     return Napi::Number::New(info.Env(), static_cast<double>(QpcNowUs()));
 }
 
+// Prioridade de escalonamento de GPU do PROCESSO inteiro (não só de um device, diferente de
+// `SetGPUThreadPriority`) — `D3DKMTSetProcessSchedulingPriorityClass` (gdi32, sem header público no
+// SDK de user-mode, por isso via GetProcAddress). Valores: 0 idle, 1 abaixo do normal, 2 normal,
+// 3 acima do normal, 4 alta, 5 tempo real (exige admin). Retorna o NTSTATUS (0 = ok).
+static long SetProcessGpuPriorityClass(int priorityClass) {
+    using Fn = LONG(APIENTRY*)(HANDLE, int);
+    static Fn fn = reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"gdi32.dll"), "D3DKMTSetProcessSchedulingPriorityClass"));
+    if (!fn) return -1;
+    return fn(GetCurrentProcess(), priorityClass);
+}
+
+// Diagnóstico/ajuste: `info[0]` = classe de prioridade de GPU do processo (ver acima).
+Napi::Value SetGpuPriorityClass(const Napi::CallbackInfo& info) {
+    if (info.Length() < 1 || !info[0].IsNumber()) return Napi::Number::New(info.Env(), -1);
+    return Napi::Number::New(info.Env(), static_cast<double>(SetProcessGpuPriorityClass(info[0].As<Napi::Number>().Int32Value())));
+}
+
 Napi::Value Initialize(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     g_core = std::make_unique<CaptureCore>();
@@ -158,6 +175,21 @@ Napi::Value Initialize(const Napi::CallbackInfo& info) {
     if (ok && !g_mmcssHandle) {
         DWORD taskIndex = 0;
         g_mmcssHandle = AvSetMmThreadCharacteristicsW(L"Capture", &taskIndex);
+    }
+
+    // Prioridade de GPU "tempo real" pro processo main (onde vivem os devices de captura/NVENC — o
+    // processo de GPU do Chromium é outro e não é afetado). Bug real medido com o gamesim saturando
+    // a GPU (jogo GPU-bound a ~33fps, carga dividida em 64 draws como jogo de verdade): na prioridade
+    // normal o escalonador da GPU deixava a cópia captura→NVENC esperando atrás do jogo — encode
+    // levando 180ms (p50) a 1.2s, captura a ~4fps. "Alta" (4) não mudou nada; "tempo real" (5):
+    // encode 1.7ms, captura pegando TODOS os frames do jogo, e o fps do jogo idêntico (nosso
+    // trabalho de GPU por frame é minúsculo — uma cópia e o NVENC, que é motor separado). Mesmo
+    // recurso que o OBS usa pra não engasgar em jogo GPU-bound. Funcionou sem admin (Win11, conta
+    // comum); se o sistema recusar, cai pra "alta".
+    if (ok) {
+        const long status = SetProcessGpuPriorityClass(5);
+        if (status != 0) SetProcessGpuPriorityClass(4);
+        fprintf(stderr, "[capture-core] prioridade de GPU do processo: %s\n", status == 0 ? "tempo real" : "alta (tempo real recusado)");
     }
 
     return Napi::Boolean::New(env, ok);
@@ -973,6 +1005,7 @@ Napi::Value TransportOnStateChange(const Napi::CallbackInfo& info) {
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("initialize", Napi::Function::New(env, Initialize));
     exports.Set("nowUs", Napi::Function::New(env, NowUs));
+    exports.Set("setGpuPriorityClass", Napi::Function::New(env, SetGpuPriorityClass));
     exports.Set("listMonitors", Napi::Function::New(env, ListMonitors));
     exports.Set("start", Napi::Function::New(env, Start));
     exports.Set("startWindow", Napi::Function::New(env, StartWindow));

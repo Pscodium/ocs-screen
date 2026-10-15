@@ -56,6 +56,12 @@ public:
     std::condition_variable cv;
     bool hasNewFrame = false;
     bool closed = false;
+    // O FRAME em si (não só a textura) fica guardado até o consumidor copiar — enquanto o
+    // `IDirect3D11CaptureFrame` vive, o WGC não reaproveita aquela superfície do pool. Bug real
+    // corrigido: antes só a textura era guardada e o frame era solto no fim deste handler, então o
+    // WGC podia escrever o frame SEGUINTE na mesma superfície antes do `CopyResource` do consumidor
+    // (frame rasgado/trocado). Padrão das amostras da Microsoft: copiar, depois soltar o frame.
+    ComPtr<IDirect3D11CaptureFrame> pendingFrame;
     ComPtr<ID3D11Texture2D> pendingTexture;
     int pendingWidth = 0;
     int pendingHeight = 0;
@@ -94,6 +100,7 @@ public:
 
         {
             std::lock_guard<std::mutex> lock(mutex);
+            pendingFrame = frame; // solta o anterior (se o consumidor não pegou, é descartado)
             pendingTexture = texture;
             pendingWidth = contentSize.Width;
             pendingHeight = contentSize.Height;
@@ -305,6 +312,20 @@ bool WindowCaptureCore::Start(HWND hwnd) {
 
     SetCaptureCursor(captureCursor_);
 
+    // Bug real (FPS travado em ~55 capturando janela de jogo, medido 46fps com harness num monitor
+    // de 165Hz): o WGC tem um intervalo MÍNIMO entre frames entregues (~16.7ms por padrão) e só
+    // entrega em fronteira de composição do DWM — num monitor de 165Hz (6.06ms por composição), o
+    // primeiro instante ≥16.7ms é 18.2ms → teto de ~55fps, e qualquer atraso pula pra 24.2ms. O
+    // monitor (DXGI) não tem essa trava, por isso só a janela sofria. `MinUpdateInterval`
+    // (IGraphicsCaptureSession5, Windows 11 24H2+) baixa essa trava; quem escolhe quais frames
+    // codificar é o nosso pacing (`FramePacer`). Em Windows mais antigo a QI falha e fica o padrão.
+    ComPtr<IGraphicsCaptureSession5> session5;
+    if (SUCCEEDED(impl_->session.As(&session5))) {
+        ABI::Windows::Foundation::TimeSpan minInterval{};
+        minInterval.Duration = 10000; // 1ms em unidades de 100ns
+        session5->put_MinUpdateInterval(minInterval);
+    }
+
     if (FAILED(impl_->session->StartCapture())) {
         impl_.reset();
         return false;
@@ -342,6 +363,7 @@ void WindowCaptureCore::Stop() {
 WindowAcquireResult WindowCaptureCore::AcquireFrameGpuOnly(uint32_t timeoutMs) {
     if (!impl_ || !impl_->started) return WindowAcquireResult::Error;
 
+    ComPtr<IDirect3D11CaptureFrame> frame;
     ComPtr<ID3D11Texture2D> texture;
     int w = 0, h = 0;
     {
@@ -352,7 +374,8 @@ WindowAcquireResult WindowCaptureCore::AcquireFrameGpuOnly(uint32_t timeoutMs) {
         if (impl_->frameHandler->closed) return WindowAcquireResult::ItemClosed;
         if (!got) return WindowAcquireResult::Timeout;
 
-        texture = impl_->frameHandler->pendingTexture;
+        frame = std::move(impl_->frameHandler->pendingFrame);
+        texture = std::move(impl_->frameHandler->pendingTexture);
         w = impl_->frameHandler->pendingWidth;
         h = impl_->frameHandler->pendingHeight;
         impl_->frameHandler->hasNewFrame = false;
@@ -362,5 +385,6 @@ WindowAcquireResult WindowCaptureCore::AcquireFrameGpuOnly(uint32_t timeoutMs) {
     if (!EnsureComposeTexture(w, h)) return WindowAcquireResult::Error;
 
     context_->CopyResource(composeTexture_.Get(), texture.Get());
+    // `frame` sai de escopo aqui — superfície volta pro pool DEPOIS da cópia ter sido enfileirada.
     return WindowAcquireResult::Ok;
 }

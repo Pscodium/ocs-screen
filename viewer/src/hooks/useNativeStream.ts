@@ -90,7 +90,7 @@ export function useNativeStream(roomId: string, password?: string) {
     playout.reset();
 
     function presentVideoFrame(writer: WritableStreamDefaultWriter<VideoFrame>, frame: VideoFrame): void {
-      const waitMs = playout.schedule(frame.timestamp, performance.now());
+      const waitMs = playout.schedule(frame.timestamp, performance.now(), "video");
       const write = () => writer.write(frame).catch(() => frame.close());
       if (waitMs <= 1) write();
       else setTimeout(write, waitMs);
@@ -220,7 +220,7 @@ export function useNativeStream(roomId: string, password?: string) {
           output: (audioData) => {
             // `videoRef` pode ter montado depois do canal abrir — liga o volume/mudo assim que der.
             if (videoRef.current) player.attachVideoElement(videoRef.current);
-            const waitMs = playout.schedule(audioData.timestamp, performance.now());
+            const waitMs = playout.schedule(audioData.timestamp, performance.now(), "audio");
             player.play(audioData, performance.now() + Math.max(0, waitMs));
           },
           error: () => {

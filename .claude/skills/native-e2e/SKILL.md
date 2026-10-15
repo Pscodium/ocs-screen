@@ -49,6 +49,30 @@ ELECTRON_RUN_AS_NODE=1 $E $S/audio-test.js ffplay.exe
   mesmo frame com `encodeCurrentFrame()`, depois compare com o filtro `psnr` do ffmpeg decodificando
   com `scale=in_color_matrix=bt601` vs `bt709` (o certo dá PSNR bem maior; hoje é BT.709).
 
+## 1b. Jogo sintético (gamesim) — captura de jogo sem precisar de jogo
+
+`gamesim/gamesim.cpp`: D3D11 flip model, frame cap preciso, carga de GPU dividida em vários draws,
+contador binário do nº do frame desenhado em cada frame. Compilar (uma vez; o .exe é ignorado):
+`powershell -NoProfile -c "cmd /c 'E:\dev\ocs-screen\.claude\skills\native-e2e\gamesim\build.cmd'"`.
+
+```sh
+G=.claude/skills/native-e2e/gamesim/gamesim.exe
+($G --fps 60 --load 4000 --seconds 12 > <scratch>/gs.log &) ; sleep 2   # imprime "gamesim fps=N" 1x/s
+H=$(powershell -NoProfile -c "(Get-Process gamesim | Select-Object -First 1).MainWindowHandle")
+DUMP=<scratch>/w.h264 ELECTRON_RUN_AS_NODE=1 $E $S/win-capture-test.js $H 60 5
+node $S/frame-counter.js <scratch>/w.h264          # janela com barra de título: offset padrão 1,31
+```
+
+- `--load`: 0 leve, ~4000 pesado, ~12000 satura uma RTX 3060 (~33fps). `--draws 1` é patológico
+  (1 draw gigante não preempta — não representa jogo real).
+- `--fullscreen --width 1920 --height 1080`: tela cheia exclusiva (use a resolução nativa senão troca
+  o modo de vídeo do monitor). Hoje NADA captura esse modo (ver TASKS.md Sprint 37). Toma a tela
+  do usuário enquanto roda — avise.
+- `frame-counter`: `unique == gameFramesInSpan`, `skipped 0`, `duplicates 0` = captura perfeita.
+  Pra captura de monitor/tela cheia passe o offset da janela na tela (`0 0` em tela cheia).
+- E2E com a janela do jogo: `HWND=$H` no `e2e-run.js`.
+- Referência (2026-10-15): GPU livre 60/60 fps sem perda; saturada (jogo a 33fps) 33/33.
+
 ## 2. E2E real (app desktop + viewer no Chrome)
 
 Subir backend e viewer em portas próprias (em background), a partir de um diretório de scratch:
