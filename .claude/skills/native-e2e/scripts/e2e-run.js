@@ -16,6 +16,7 @@
 //   NO_DECODE=hevc,av1   espectador finge NÃO decodificar esses codecs (isConfigSupported → false) —
 //                         testa o fallback de codec do host
 //   E2E_HOST_LOG=<arquivo> grava o log inteiro do host (com E2E_ALL_LOGS=1, sem filtro)
+//   UNMUTE=1              desmuta o espectador (áudio tocando de verdade no Chrome do viewer)
 //   HWND=<handle>         transmite essa JANELA (WGC) em vez do monitor — ex.: a do gamesim
 const path = require("path");
 const { _electron, chromium } = require("playwright-core");
@@ -121,6 +122,16 @@ let hostExit = null;
     return v && v.videoWidth > 0;
   }, null, { timeout: 30000 });
   console.log("espectador recebendo vídeo");
+  if (process.env.UNMUTE) {
+    // Clique real (gesto do usuário) + desmuta — sem isso o AudioContext do viewer fica suspenso e
+    // nada toca (o áudio do espectador pode ser gravado por loopback do processo do Chrome).
+    await page.mouse.click(450, 300);
+    await page.evaluate(() => {
+      const v = document.querySelector("video");
+      v.muted = false;
+      v.volume = 1;
+    });
+  }
 
   await page.evaluate(() => {
     const v = document.querySelector("video");

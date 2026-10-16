@@ -16,7 +16,18 @@
   microfone (Escutar este dispositivo / NVIDIA Broadcast) tem que sumir. Se vazar algo, abrir
   "Áudio da transmissão" no picker e ver qual app aparece tocando.
   (teste funcionou)
-- [x] **A4** Estalos de áudio sob oscilação de latência sumiram? (Sprint 37 — só simulado)
+- [~] **A4** Estalos de áudio sob oscilação de latência sumiram? (Sprint 37 — só simulado)
+  **Reaberto (2026-10-16)**: usuário ainda ouvia estalos, principalmente em janela (Chrome com vídeo
+  de fala). Medido gravando a saída do Chrome do ESPECTADOR por process loopback com seno puro: o
+  host estava limpo (0 descontinuidades), o defeito era no viewer — o alvo de cada pacote caía
+  ~32ms NO PASSADO do relógio de render do AudioContext (`outputLatency` 40ms > espera do relógio
+  de apresentação ~12ms), então todo pacote caía no "toca agora": cada BufferSource de 10ms começava
+  na fronteira de quantum seguinte, não encostado no anterior → sobreposição de ~32 amostras (seno
+  0.3 virava pico 0.56) ou buraco em toda emenda. **Fix**: `nativeAudioPlayer.ts` virou AudioWorklet
+  com fila contínua (reamostragem ±1% pra deriva, silêncio/pulo com fade só em salto > 30ms, folga
+  mínima de 15ms). Medido: janela 0 estalos (antes ~125/s), janela + congestionamento simulado
+  (`ACK_DELAY_TEST`) 0 estalos. Monitor não deu pra medir na mesma máquina (o loopback do sistema
+  captura o próprio viewer → realimentação). Revalidar de ouvido (janela, monitor e troca de fonte).
 (testei e parou, mas parece que da um pouco ainda quando tem uma troca de origem de transmissão, quando troquei de um a tela inteira para uma janela, deu um pouco, mas parece ser aquela interferencia de 8 segundos que eu acho que você mencionou)
 - [x] **A5** Sincronia A/V a olho/ouvido (vídeo com fala, jogo com tiro/impacto).
 (teste realizado, até com internet fraca parece estar fazendo o trabalho correto)

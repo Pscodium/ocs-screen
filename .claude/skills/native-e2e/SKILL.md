@@ -116,6 +116,16 @@ sem erro de decoder e volta a ~60fps em t=11s.
 
 No fim, pare os servidores: `netstat -ano | grep -E ":(4100|5199) " | grep LISTEN` → `taskkill //PID <pid> //T //F`.
 
+## 2b. Estalos no áudio do ESPECTADOR (medido, não de ouvido)
+
+Fonte: Chrome à parte tocando seno puro (página com `OscillatorNode` 440Hz, `--autoplay-policy=no-user-gesture-required`,
+`--user-data-dir` próprio). Rode o E2E com `UNMUTE=1 HWND=<janela desse Chrome>` e, em paralelo,
+grave a saída do Chrome do viewer com o próprio addon: `initAudioCaptureForWindow(<hwnd do viewer>)`
++ dump do PCM mixado (instrumentação temporária no `EncodeReadyFrames` — `fwrite(mix_)` antes do
+`opus_encode_float`). Análise: resíduo do preditor de seno `x[n] − 2cos(w)x[n−1] + x[n−2]` > 0.01 =
+descontinuidade; pico acima da amplitude da fonte = sobreposição. Referência (2026-10-16, worklet):
+0 eventos em janela. Monitor não dá na mesma máquina (o loopback do sistema pega o próprio viewer).
+
 ## 3. Decompor latência (quando o número não fechar)
 
 Instrumentação TEMPORÁRIA em `viewer/src/hooks/useNativeStream.ts` (o vite recarrega sozinho;
