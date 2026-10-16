@@ -16,7 +16,7 @@
   microfone (Escutar este dispositivo / NVIDIA Broadcast) tem que sumir. Se vazar algo, abrir
   "Áudio da transmissão" no picker e ver qual app aparece tocando.
   (teste funcionou)
-- [~] **A4** Estalos de áudio sob oscilação de latência sumiram? (Sprint 37 — só simulado)
+- [x] **A4** Estalos de áudio sob oscilação de latência sumiram? (Sprint 37 — só simulado)
   **Reaberto (2026-10-16)**: usuário ainda ouvia estalos, principalmente em janela (Chrome com vídeo
   de fala). Medido gravando a saída do Chrome do ESPECTADOR por process loopback com seno puro: o
   host estava limpo (0 descontinuidades), o defeito era no viewer — o alvo de cada pacote caía
@@ -28,6 +28,7 @@
   mínima de 15ms). Medido: janela 0 estalos (antes ~125/s), janela + congestionamento simulado
   (`ACK_DELAY_TEST`) 0 estalos. Monitor não deu pra medir na mesma máquina (o loopback do sistema
   captura o próprio viewer → realimentação). Revalidar de ouvido (janela, monitor e troca de fonte).
+  (revalidado de ouvido pelo usuário após o fix — estalos sumiram)
 (testei e parou, mas parece que da um pouco ainda quando tem uma troca de origem de transmissão, quando troquei de um a tela inteira para uma janela, deu um pouco, mas parece ser aquela interferencia de 8 segundos que eu acho que você mencionou)
 - [x] **A5** Sincronia A/V a olho/ouvido (vídeo com fala, jogo com tiro/impacto).
 (teste realizado, até com internet fraca parece estar fazendo o trabalho correto)
