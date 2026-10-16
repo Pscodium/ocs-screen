@@ -580,6 +580,10 @@ interface NativeCaptureAddon {
   // SoftwareEncoderCore.cpp) — bem mais pesado em CPU, o host quer saber pra avisar o usuário.
   // Reflete só o encoder "high" (o "low" segue a mesma cascata, mas não tem HUD próprio ainda).
   isUsingSoftwareEncoder(): boolean;
+  // Fallback via MFT de hardware (Quick Sync/AMF...) em vez de CPU — ver SoftwareEncoderCore.h.
+  isUsingHardwareMft(): boolean;
+  // Por que o NVENC não ficou de pé (aviso específico pro usuário, ex.: driver desatualizado).
+  getNvencFailure(): "none" | "no-driver" | "driver-too-old" | "other" | "disabled";
   getActiveCodec(): "h264" | "hevc" | "av1";
   destroyEncoder(): void;
   destroyEncoderLow(): void;
@@ -968,6 +972,16 @@ ipcMain.handle("native-audio:set-excluded", (_event, excludedApps: unknown) => {
 // fallback do encoder, ou fallback por decode do primeiro viewer). Toda sessão NOVA usa esse
 // valor. Só tenta o fallback HEVC→H.264 UMA vez por transmissão.
 let ntActiveCodec: "h264" | "hevc" | "av1" = "h264";
+
+// Payload de "native-transport:encoder" — o que ficou de pé no encoder "high" (ver EncoderCore).
+function encoderInfo() {
+  return {
+    software: nativeCapture?.isUsingSoftwareEncoder() ?? false,
+    hardwareMft: nativeCapture?.isUsingHardwareMft() ?? false,
+    nvencFailure: nativeCapture?.getNvencFailure() ?? "none",
+    codec: ntActiveCodec,
+  };
+}
 let ntCodecFallbackDone = false;
 interface NativeViewerStats {
   viewerId: string;
@@ -1065,7 +1079,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // Avisa o renderer se caiu pro fallback de software (NVENC indisponível) e/ou codec degradou —
   // bem mais pesado em CPU o primeiro, e o usuário pediu HEVC mas ganhou H.264 no segundo (ver
   // docs/NATIVE_CAPTURE.md Fase 3 "Fallback de encoder por software"/"HEVC").
-  win.webContents.send("native-transport:encoder", { software: nativeCapture.isUsingSoftwareEncoder(), codec: ntActiveCodec });
+  win.webContents.send("native-transport:encoder", encoderInfo());
 
   // Áudio nunca bloqueia a transmissão — se falhar (dispositivo indisponível, sem áudio nenhum
   // ativo no sistema, WASAPI ocupado por outro app em modo exclusivo, etc.), a transmissão
@@ -1269,10 +1283,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
         // receberia bitstream HEVC/AV1.
         nativeCapture?.destroyEncoderLow();
         nativeCapture?.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, ntActiveCodec);
-        activeWin.webContents.send("native-transport:encoder", {
-          software: nativeCapture?.isUsingSoftwareEncoder() ?? false,
-          codec: ntActiveCodec,
-        });
+        activeWin.webContents.send("native-transport:encoder", encoderInfo());
         for (const [viewerId, tier] of ntViewerTiers) {
           if (!createViewerSession(viewerId, tier)) ntViewerTiers.delete(viewerId);
         }

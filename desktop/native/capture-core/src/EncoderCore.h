@@ -85,6 +85,13 @@ public:
     // driver desatualizado, ou sem GPU dedicada). Exposto pro host avisar o usuário/HUD de dev
     // (encode por software é bem mais pesado em CPU que NVENC, vale saber que caiu nesse caminho).
     bool IsUsingSoftwareFallback() const { return software_ != nullptr; }
+    // Fallback via MFT de HARDWARE (Quick Sync/AMF... — ver SoftwareEncoderCore.h), não CPU.
+    bool IsUsingHardwareMft() const { return software_ && software_->IsHardware(); }
+
+    // Por que o NVENC não ficou de pé (só faz sentido com `IsUsingSoftwareFallback()`) — o host
+    // mostra um aviso específico (ex.: "atualize o driver NVIDIA") em vez do genérico.
+    enum class NvencFailure { None, NoDriver, DriverTooOld, Other, Disabled };
+    NvencFailure GetNvencFailure() const { return nvencFailure_; }
 
     // Codec que realmente ficou ativo (pode ter degradado do pedido — ex.: pediu HEVC, GPU/driver
     // não suporta, caiu pra H.264). O host PRECISA saber isso antes de criar a sessão de
@@ -106,6 +113,7 @@ private:
     NV_ENC_INITIALIZE_PARAMS initializeParams_ = { NV_ENC_INITIALIZE_PARAMS_VER };
     NV_ENC_CONFIG encodeConfig_ = { NV_ENC_CONFIG_VER };
     VideoCodecType activeCodec_ = VideoCodecType::H264;
+    NvencFailure nvencFailure_ = NvencFailure::None;
 
     bool InitializeNvenc(ID3D11Device* device, int width, int height, int fps, int bitrateBps, VideoCodecType codec);
 };

@@ -57,6 +57,10 @@ bool SetGopSize(IUnknown* transform, unsigned long gopSize) {
     return SetU32(transform, CODECAPI_AVEncMPVGOPSize, gopSize);
 }
 
+bool SetNoBFrames(IUnknown* transform) {
+    return SetU32(transform, CODECAPI_AVEncMPVDefaultBPictureCount, 0);
+}
+
 bool ForceKeyframe(IUnknown* transform) {
     return SetU32(transform, CODECAPI_AVEncVideoForceKeyFrame, 1);
 }

@@ -392,13 +392,33 @@ export function useNativeStream(roomId: string, password?: string) {
       };
       let decoder = createDecoder();
 
+      // Frame maior que o `max-message-size` do canal chega em pedaços (bit 0x80 no 1º byte = tem
+      // mais pedaço deste frame — ver TransportCore::SendVideoFrame). Ack só do frame inteiro.
+      let fragments: Uint8Array[] = [];
+      let fragmentTimestampUs = -1;
+
       channel.onmessage = (event) => {
         const buffer = event.data as ArrayBuffer;
         if (buffer.byteLength < 9) return;
         const view = new DataView(buffer);
-        const isKeyframe = view.getUint8(0) === 0;
+        const flags = view.getUint8(0);
+        const isKeyframe = (flags & 0x7f) === 0;
         const timestampUs = Number(view.getBigUint64(1, true));
-        const payload = new Uint8Array(buffer, 9);
+        let payload = new Uint8Array(buffer, 9);
+        if ((flags & 0x80) !== 0 || fragments.length > 0) {
+          if (fragments.length > 0 && timestampUs !== fragmentTimestampUs) fragments = [];
+          fragmentTimestampUs = timestampUs;
+          fragments.push(payload);
+          if ((flags & 0x80) !== 0) return;
+          const total = fragments.reduce((sum, part) => sum + part.byteLength, 0);
+          payload = new Uint8Array(total);
+          let offset = 0;
+          for (const part of fragments) {
+            payload.set(part, offset);
+            offset += part.byteLength;
+          }
+          fragments = [];
+        }
         bytesReceived += payload.byteLength;
 
         try {

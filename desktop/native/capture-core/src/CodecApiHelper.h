@@ -14,5 +14,6 @@ bool SetRateControlCbr(IUnknown* transform);
 bool SetMeanBitRate(IUnknown* transform, unsigned long bitrateBps);
 bool SetLowLatency(IUnknown* transform);
 bool SetGopSize(IUnknown* transform, unsigned long gopSize);
+bool SetNoBFrames(IUnknown* transform);
 bool ForceKeyframe(IUnknown* transform);
 } // namespace CodecApiHelper

@@ -43,9 +43,15 @@ bool EncoderCore::Initialize(ID3D11Device* device, int width, int height, int fp
     // depois pra saber o que negociar com o transporte/viewer, nunca assume que o pedido foi
     // atendido.
     activeCodec_ = codec;
-    if (InitializeNvenc(device, width, height, fps, bitrateBps, codec)) return true;
+    nvencFailure_ = NvencFailure::None;
+    // `OCS_FORCE_MF=1` pula o NVENC — testar o fallback do Media Foundation numa máquina NVIDIA.
+    if (getenv("OCS_FORCE_MF")) {
+        nvencFailure_ = NvencFailure::Disabled;
+    } else if (InitializeNvenc(device, width, height, fps, bitrateBps, codec)) return true;
 
-    if (codec != VideoCodecType::H264) {
+    // Só vale tentar outro codec no NVENC se ele existe e falhou por outro motivo (sem driver /
+    // driver velho / desligado falhariam igual).
+    if (codec != VideoCodecType::H264 && nvencFailure_ == NvencFailure::Other) {
         fprintf(stderr, "[EncoderCore] NVENC não suporta o codec pedido (HEVC) — tentando NVENC H.264 antes de cair pro software.\n");
         activeCodec_ = VideoCodecType::H264;
         if (InitializeNvenc(device, width, height, fps, bitrateBps, VideoCodecType::H264)) return true;
@@ -209,7 +215,15 @@ bool EncoderCore::InitializeNvenc(ID3D11Device* device, int width, int height, i
         pacer_.Reset(fps);
 
         return true;
+    } catch (const NVENCException& e) {
+        // Driver mais antigo que a API do SDK (`NvEncodeAPIGetMaxSupportedVersion`) — o caso
+        // acionável mais comum: o usuário só precisa atualizar o driver.
+        nvencFailure_ = e.getErrorCode() == NV_ENC_ERR_INVALID_VERSION ? NvencFailure::DriverTooOld : NvencFailure::Other;
+        fprintf(stderr, "[EncoderCore] Initialize falhou: %s\n", e.what());
+        encoder_.reset();
+        return false;
     } catch (const std::exception& e) {
+        nvencFailure_ = NvencFailure::Other;
         // Fica no stderr de propósito (não engolido em silêncio) — a mensagem do NVENC costuma
         // ser específica e acionável (ex.: "driver desatualizado, atualize"), diferente da maioria
         // dos outros erros deste addon que falham graciosamente sem detalhe.

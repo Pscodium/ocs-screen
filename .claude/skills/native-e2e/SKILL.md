@@ -43,6 +43,10 @@ ELECTRON_RUN_AS_NODE=1 $E $S/audio-test.js ffplay.exe
     (GOP infinito → 1 só `I`)
   - VUI/SPS: `ffmpeg -hide_banner -i out.h264 -c copy -bsf:v trace_headers -frames:v 1 -f null NUL 2>&1 | grep -E "bitstream_restriction|max_num_reorder|colour_primaries|matrix_coef"`
     (esperado `bitstream_restriction_flag=1`, `max_num_reorder_frames=0`, BT.709 = 1)
+- Fallback do Media Foundation numa máquina NVIDIA: `OCS_FORCE_MF=1` pula o NVENC (pega o MFT de
+  hardware do mesmo adaptador — aqui "NVIDIA H.264 Encoder MFT"); `+ OCS_NO_HW_MFT=1` força o
+  encoder de CPU. Valem no harness e no E2E (env passa pro app). `packetCallMs` do `enc-test` = custo
+  real por frame codificado (referência: NVENC 3.2ms, MFT hardware 3.8ms, CPU 7.7ms @1080p).
 - `audio-test`: ~100 pacotes/s, `badSpacing 0`, `mix.lateSamples 0`, RMS cai pra ~0 na fase
   "silenciado" e volta na "reincluido".
 - Fidelidade de cor (matriz RGB→YUV): capture 1 frame via `addon.acquireFrame()` (BGRA) + codifique o

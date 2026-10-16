@@ -128,7 +128,7 @@ export function onNativeTransportCaptureWarning(callback: (message: string | nul
 }
 
 export function onNativeTransportEncoderInfo(
-  callback: (info: { software: boolean; codec: "h264" | "hevc" | "av1" }) => void,
+  callback: (info: { software: boolean; hardwareMft: boolean; nvencFailure: "none" | "no-driver" | "driver-too-old" | "other" | "disabled"; codec: "h264" | "hevc" | "av1" }) => void,
 ): () => void {
   return window.screenshare.nativeTransport.onEncoderInfo(callback);
 }

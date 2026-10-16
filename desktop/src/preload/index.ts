@@ -188,8 +188,8 @@ const api = {
       ipcRenderer.on("native-transport:capture-warning", listener);
       return () => ipcRenderer.removeListener("native-transport:capture-warning", listener);
     },
-    onEncoderInfo: (callback: (info: { software: boolean; codec: "h264" | "hevc" | "av1" }) => void) => {
-      const listener = (_event: IpcRendererEvent, info: { software: boolean; codec: "h264" | "hevc" | "av1" }) =>
+    onEncoderInfo: (callback: (info: { software: boolean; hardwareMft: boolean; nvencFailure: "none" | "no-driver" | "driver-too-old" | "other" | "disabled"; codec: "h264" | "hevc" | "av1" }) => void) => {
+      const listener = (_event: IpcRendererEvent, info: { software: boolean; hardwareMft: boolean; nvencFailure: "none" | "no-driver" | "driver-too-old" | "other" | "disabled"; codec: "h264" | "hevc" | "av1" }) =>
         callback(info);
       ipcRenderer.on("native-transport:encoder", listener);
       return () => ipcRenderer.removeListener("native-transport:encoder", listener);

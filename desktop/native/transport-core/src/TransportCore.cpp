@@ -271,7 +271,8 @@ static bool ContainsKeyframeNal(const uint8_t* data, size_t size, bool isHevc) {
     return false;
 }
 
-// Formato do frame no DataChannel: [1 byte: 0=key/1=delta][8 bytes: timestamp µs, little-endian]
+// Formato do frame no DataChannel: [1 byte: 0=key/1=delta, | 0x80 = continua no próximo pedaço]
+// [8 bytes: timestamp µs, little-endian]
 // [payload: H.264 Annex-B cru]. Pequeno o bastante pra não pesar, o suficiente pra reconstruir o
 // `EncodedVideoChunk` do WebCodecs do outro lado sem precisar inspecionar o bitstream no cliente.
 bool TransportCore::SendVideoFrame(const uint8_t* data, size_t size, uint64_t timestampUs) {
@@ -321,12 +322,25 @@ bool TransportCore::SendVideoFrame(const uint8_t* data, size_t size, uint64_t ti
         }
         waitingKeyframe_ = false;
 
-        rtc::binary message(9 + size);
-        message[0] = static_cast<std::byte>(isKeyframe ? 0 : 1);
-        std::memcpy(message.data() + 1, &timestampUs, 8);
-        std::memcpy(message.data() + 9, data, size);
-
-        videoChannel_->send(message);
+        // Frame maior que o `max-message-size` do espectador (Chrome anuncia 256KB) vai em
+        // pedaços: `send()` acima do limite LANÇA e o frame some — bug medido com keyframe de
+        // ~276KB do encoder Media Foundation (e qualquer keyframe grande em 1440p/4K pelo NVENC):
+        // keyframe perdido = espectador decodificando P-frames sem referência. Cada pedaço leva o
+        // mesmo cabeçalho; bit 0x80 no 1º byte = "tem mais pedaço deste frame" (SCTP ordenado,
+        // então os pedaços chegam em sequência).
+        const size_t maxMessage = std::max<size_t>(videoChannel_->maxMessageSize(), 1024);
+        const size_t chunkPayload = maxMessage - 9;
+        size_t offset = 0;
+        do {
+            const size_t part = std::min(chunkPayload, size - offset);
+            const bool more = offset + part < size;
+            rtc::binary message(9 + part);
+            message[0] = static_cast<std::byte>((isKeyframe ? 0 : 1) | (more ? 0x80 : 0));
+            std::memcpy(message.data() + 1, &timestampUs, 8);
+            std::memcpy(message.data() + 9, data + offset, part);
+            videoChannel_->send(message);
+            offset += part;
+        } while (offset < size);
 
         std::lock_guard<std::mutex> lock(feedbackMutex_);
         inflight_.push_back({timestampUs, now});

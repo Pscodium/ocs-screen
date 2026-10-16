@@ -155,14 +155,21 @@ export function useBroadcast() {
         unsubscribeNativeCaptureWarningRef.current = onNativeTransportCaptureWarning((captureWarning) => {
           setInfo((prev) => (prev ? { ...prev, captureWarning } : prev));
         });
-        unsubscribeNativeEncoderInfoRef.current = onNativeTransportEncoderInfo(({ software, codec }) => {
+        unsubscribeNativeEncoderInfoRef.current = onNativeTransportEncoderInfo(({ software, hardwareMft, nvencFailure, codec }) => {
           const codecLabel = codec === "hevc" ? "HEVC" : codec === "av1" ? "AV1" : "H.264";
-          const engineLabel = software ? "software, sem NVENC" : "NVENC (nativo)";
+          const engineLabel = !software ? "NVENC (nativo)" : hardwareMft ? "GPU via Media Foundation" : "software, sem NVENC";
           setInfo((prev) => (prev ? { ...prev, codec, encoderImplementation: `${codecLabel} — ${engineLabel}` } : prev));
-          if (software) {
+          // Driver NVIDIA velho é acionável (atualizar resolve) — avisa mesmo se o fallback for de
+          // GPU. Fallback de GPU sem motivo acionável (AMD/Intel, notebook híbrido) não pesa na
+          // CPU: sem aviso. Só CPU pura merece o aviso genérico.
+          if (software && nvencFailure === "driver-too-old") {
             setError(
-              "GPU NVIDIA/NVENC não disponível — usando encoder por software (mais lento, consome mais CPU).",
+              hardwareMft
+                ? "Driver NVIDIA desatualizado — NVENC indisponível. Atualize o driver da placa de vídeo pra melhor qualidade."
+                : "Driver NVIDIA desatualizado — usando encoder por CPU (mais lento). Atualize o driver da placa de vídeo.",
             );
+          } else if (software && !hardwareMft) {
+            setError("Sem encoder de vídeo por GPU disponível — usando encoder por CPU (mais lento, consome mais CPU).");
           }
         });
 

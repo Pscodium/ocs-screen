@@ -16,11 +16,12 @@ const codec = process.argv[5] ?? "h264";
 if (!addon.initialize()) throw new Error("initialize falhou");
 if (!addon.start(Number(process.env.MONITOR ?? 0))) throw new Error("start falhou");
 if (!addon.initEncoder(fps, 8_000_000, codec)) throw new Error("initEncoder falhou");
-console.log("codec ativo:", addon.getActiveCodec(), "software:", addon.isUsingSoftwareEncoder());
+console.log("codec ativo:", addon.getActiveCodec(), "software:", addon.isUsingSoftwareEncoder(), "hwMft:", addon.isUsingHardwareMft?.(), "nvencFailure:", addon.getNvencFailure?.());
 
 const fd = fs.openSync(out, "w");
 let acquired = 0, timeouts = 0, encodeCalls = 0, emptyCalls = 0, packets = 0, firstPacketAtCall = -1;
 const encodeTimes = [];
+const packetCallTimes = []; // só chamadas que devolveram pacote (custo real do encode)
 const t0 = Date.now();
 while (Date.now() - t0 < seconds * 1000) {
   const f = addon.acquireFrameGpuOnly(Math.round(1000 / fps));
@@ -29,7 +30,9 @@ while (Date.now() - t0 < seconds * 1000) {
   acquired++;
   const s = process.hrtime.bigint();
   const pk = addon.encodeCurrentFrame();
-  encodeTimes.push(Number(process.hrtime.bigint() - s) / 1e6);
+  const ms = Number(process.hrtime.bigint() - s) / 1e6;
+  encodeTimes.push(ms);
+  if (pk.length > 0) packetCallTimes.push(ms);
   encodeCalls++;
   if (pk.length === 0) emptyCalls++;
   if (pk.length > 0 && firstPacketAtCall < 0) firstPacketAtCall = encodeCalls;
@@ -39,6 +42,8 @@ fs.closeSync(fd);
 addon.destroyEncoder();
 addon.stop();
 encodeTimes.sort((a, b) => a - b);
-const pct = (q) => encodeTimes[Math.floor(q * (encodeTimes.length - 1))]?.toFixed(2);
+packetCallTimes.sort((a, b) => a - b);
+const pct = (q, arr = encodeTimes) => arr[Math.floor(q * (arr.length - 1))]?.toFixed(2);
 console.log(JSON.stringify({ seconds, fps, acquired, timeouts, encodeCalls, emptyCalls, packets,
-  encodedPerSec: (packets / seconds).toFixed(1), firstPacketAtCall, encodeMs: { p50: pct(0.5), p95: pct(0.95), max: pct(1) } }));
+  encodedPerSec: (packets / seconds).toFixed(1), firstPacketAtCall, encodeMs: { p50: pct(0.5), p95: pct(0.95), max: pct(1) },
+  packetCallMs: { p50: pct(0.5, packetCallTimes), p95: pct(0.95, packetCallTimes), max: pct(1, packetCallTimes) } }));

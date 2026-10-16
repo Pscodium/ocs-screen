@@ -446,6 +446,28 @@ Napi::Value IsUsingSoftwareEncoder(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), g_encoder && g_encoder->IsUsingSoftwareFallback());
 }
 
+// Fallback via MFT de hardware (Quick Sync/AMF...) em vez de CPU — ver SoftwareEncoderCore.h.
+Napi::Value IsUsingHardwareMft(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
+    return Napi::Boolean::New(info.Env(), g_encoder && g_encoder->IsUsingHardwareMft());
+}
+
+// Por que o NVENC não ficou de pé: "none" | "no-driver" | "driver-too-old" | "other" | "disabled".
+Napi::Value GetNvencFailure(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
+    const char* reason = "none";
+    if (g_encoder) {
+        switch (g_encoder->GetNvencFailure()) {
+            case EncoderCore::NvencFailure::NoDriver: reason = "no-driver"; break;
+            case EncoderCore::NvencFailure::DriverTooOld: reason = "driver-too-old"; break;
+            case EncoderCore::NvencFailure::Other: reason = "other"; break;
+            case EncoderCore::NvencFailure::Disabled: reason = "disabled"; break;
+            default: break;
+        }
+    }
+    return Napi::String::New(info.Env(), reason);
+}
+
 Napi::Value DestroyEncoder(const Napi::CallbackInfo& info) {
     std::lock_guard<std::mutex> lock(g_encoderMutex);
     g_encoder.reset();
@@ -1105,6 +1127,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("setCursorEnabled", Napi::Function::New(env, SetCursorEnabled));
     exports.Set("initEncoder", Napi::Function::New(env, InitEncoder));
     exports.Set("initEncoderLow", Napi::Function::New(env, InitEncoderLow));
+    exports.Set("isUsingHardwareMft", Napi::Function::New(env, IsUsingHardwareMft));
+    exports.Set("getNvencFailure", Napi::Function::New(env, GetNvencFailure));
     exports.Set("isUsingSoftwareEncoder", Napi::Function::New(env, IsUsingSoftwareEncoder));
     exports.Set("getActiveCodec", Napi::Function::New(env, GetActiveCodec));
     exports.Set("destroyEncoder", Napi::Function::New(env, DestroyEncoder));

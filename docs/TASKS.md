@@ -65,14 +65,29 @@
   (precisa deploy do backend).
 
 ### C. Compatibilidade de hardware
-- [ ] **C1** Notebook híbrido (Optimus) cai pra encode por CPU. Opção barata primeiro: ligar
+- [x] **C1** Notebook híbrido (Optimus) cai pra encode por CPU. Opção barata primeiro: ligar
   `MFT_ENUM_FLAG_HARDWARE` no `SoftwareEncoderCore` (Quick Sync/AMF da iGPU — exige MFT assíncrono +
   `IMFDXGIDeviceManager` com o device da captura). Opção completa: device na NVIDIA + cópia entre
   adaptadores (textura compartilhada NT handle + keyed mutex) pra usar NVENC.
-- [ ] **C2** Corrigir o comentário do `SoftwareEncoderCore` que diz que pega QuickSync/AMF "de
-  graça" (hoje só pega o encoder de CPU) — junto com C1.
-- [ ] **C3** Aviso específico "atualize o driver NVIDIA" quando o NVENC recusar por versão de API
+  **Feito (2026-10-16) — opção barata**: sem NVENC, tenta 1º o MFT de HARDWARE do MESMO adaptador
+  da captura (`MFT_ENUM_ADAPTER_LUID`), zero-copy (BGRA→NV12 no `ID3D11VideoProcessor`, BT.709
+  limitado → `IMFDXGIDeviceManager`), e só depois o encoder de CPU. Testado aqui forçando o fallback
+  (`OCS_FORCE_MF=1`; `OCS_NO_HW_MFT=1` força a CPU) — pegou o "NVIDIA H.264 Encoder MFT": 60fps,
+  1º pacote na 1ª chamada, ~3.8ms por frame (NVENC 3.2ms), VUI BT.709 + `max_num_reorder_frames=0`,
+  E2E 59.9fps sem erro. Junto: (a) encoder de CPU convertia em BT.601 sem sinalizar — agora BT.709
+  (PSNR 37.7dB vs 29.6dB decodificando como BT.601, barras SMPTE); (b) keyframe acima de 256KB
+  (`max-message-size` do Chrome) fazia o `send()` lançar e o frame sumir (medido com o MFT: keyframe
+  de ~276KB, `sendFail` 1/s; afeta também NVENC em 1440p/4K) — transporte agora fatia o frame em
+  pedaços (bit 0x80 no 1º byte) e o viewer remonta. Opção completa (NVENC entre adaptadores) não
+  feita. Falta testar em Intel/AMD/Optimus de verdade (C4).
+- [x] **C2** Corrigir o comentário do `SoftwareEncoderCore` que diz que pega QuickSync/AMF "de
+  graça" (hoje só pega o encoder de CPU) — junto com C1. **Feito** (comentário reescrito com os 2 caminhos).
+- [x] **C3** Aviso específico "atualize o driver NVIDIA" quando o NVENC recusar por versão de API
   (hoje só o ⚠️ genérico de encoder por software).
+  **Feito (2026-10-16)**: `EncoderCore` guarda o motivo (`NV_ENC_ERR_INVALID_VERSION` → driver
+  velho, DLL ausente → sem driver) e o host manda `nvencFailure`/`hardwareMft` no aviso de encoder.
+  Driver velho → "atualize o driver"; fallback pra GPU (Intel/AMD) sem aviso; só CPU → aviso
+  genérico. Não testado com driver velho de verdade (só o código do caminho).
 - [ ] **C4** Testar em máquinas reais: só AMD, só Intel, notebook Optimus, GPU antiga (GTX 900/10),
   RTX 40/50 (AV1 por hardware nunca rodou).
 
