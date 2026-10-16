@@ -430,6 +430,16 @@
     "python": "C:\\Users\\Peter\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
     "standalone_static_library": 1,
     "msbuild_path": "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\MSBuild\\Current\\Bin\\MSBuild.exe",
-    "target": "33.4.11"
+    "target": "33.4.11",
+    "cache": "C:\\Users\\Peter\\AppData\\Local\\npm-cache",
+    "globalconfig": "C:\\nvm4w\\nodejs\\etc\\npmrc",
+    "global_prefix": "C:\\nvm4w\\nodejs",
+    "init_module": "C:\\Users\\Peter\\.npm-init.js",
+    "local_prefix": "E:\\dev\\ocs-screen\\desktop",
+    "node_gyp": "C:\\Users\\Peter\\AppData\\Local\\nvm\\v20.19.0\\node_modules\\npm\\node_modules\\node-gyp\\bin\\node-gyp.js",
+    "npm_version": "10.8.2",
+    "prefix": "C:\\nvm4w\\nodejs",
+    "userconfig": "C:\\Users\\Peter\\.npmrc",
+    "user_agent": "npm/10.8.2 node/v20.19.0 win32 x64 workspaces/false"
   }
 }

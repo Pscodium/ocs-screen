@@ -51,6 +51,7 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
         createdAt: room.createdAt,
         settings: room.settings,
         hasPassword: room.passwordHash !== null,
+        viewerUrl: `${config.viewerUrl}/s/${room.id}`,
       })),
     };
     return reply.send(response);

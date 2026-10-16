@@ -4,7 +4,7 @@ import { fetchActiveRooms, type RoomSummary } from "../services/backend";
 const POLL_MS = 4000;
 
 interface RoomsBrowserProps {
-  onSelect: (roomId: string) => void;
+  onSelect: (room: RoomSummary) => void;
 }
 
 function timeAgo(createdAt: number): string {
@@ -62,7 +62,7 @@ export function RoomsBrowser({ onSelect }: RoomsBrowserProps) {
   return (
     <div className="room-list">
       {rooms.map((room) => (
-        <button key={room.roomId} className="room-row" onClick={() => onSelect(room.roomId)}>
+        <button key={room.roomId} className="room-row" onClick={() => onSelect(room)}>
           <span className="room-row-dot" />
           <span className="room-row-info">
             <span className="room-row-name">

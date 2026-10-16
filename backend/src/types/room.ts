@@ -50,6 +50,8 @@ export interface RoomSummary {
   createdAt: number;
   settings: RoomSettings;
   hasPassword: boolean;
+  // Link do viewer web — o app desktop abre ele numa janela própria pra assistir (aba "Assistir").
+  viewerUrl: string;
 }
 
 export interface ListRoomsResponse {

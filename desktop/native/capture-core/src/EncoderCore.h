@@ -49,6 +49,11 @@ public:
     // não perder frames já entregues ao NVENC mas ainda não devolvidos.
     std::vector<std::vector<uint8_t>> Flush();
 
+    // Keyframe pedido (`ForceKeyframe`) e ainda não emitido — com a tela PARADA não chega frame
+    // novo pra encodar, então o loop reencoda a última textura sob demanda (ver
+    // `EncodePendingKeyframe` em addon.cpp).
+    bool KeyframePending() const;
+
     // Troca o bitrate em sessão SEM recriar o encoder (sem esse método, mudar de qualidade
     // exigiria destruir e reinicializar toda a sessão NVENC, o que gera um soluço visível). Usa a
     // API `Reconfigure` da base `NvEncoder` — suportada nativamente pelo NVENC pra esse caso.

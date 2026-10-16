@@ -123,6 +123,10 @@ export function onNativeTransportError(callback: (message: string) => void): () 
   return window.screenshare.nativeTransport.onError(callback);
 }
 
+export function onNativeTransportCaptureWarning(callback: (message: string | null) => void): () => void {
+  return window.screenshare.nativeTransport.onCaptureWarning(callback);
+}
+
 export function onNativeTransportEncoderInfo(
   callback: (info: { software: boolean; codec: "h264" | "hevc" | "av1" }) => void,
 ): () => void {

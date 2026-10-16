@@ -51,6 +51,7 @@ public:
     // congestionamento passa `false` pra não injetar keyframe grande bem na hora que já tá represado).
     bool SetBitrate(int bitrateBps, bool forceKeyframe = true);
     void ForceKeyframe() { forceKeyframe_.store(true, std::memory_order_relaxed); }
+    bool KeyframePending() const { return forceKeyframe_.load(std::memory_order_relaxed); }
 
     bool IsInitialized() const { return transform_ != nullptr; }
     VideoCodecType GetActiveCodec() const { return activeCodec_; }

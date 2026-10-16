@@ -11,6 +11,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <avrt.h>
+#include <shellapi.h>
 #include "CaptureCore.h"
 #include "WindowCaptureCore.h"
 #include "EncoderCore.h"
@@ -485,6 +486,46 @@ Napi::Value EncodeCurrentFrameLow(const Napi::CallbackInfo& info) {
     return result;
 }
 
+// `info[0]` = "high"/"low". Chamado pelo loop quando NÃO chegou frame novo (tela parada): sem
+// isso, keyframe pedido por espectador novo (OnChannelOpen), troca de tier ou `'K'` do viewer só
+// saía quando algo mudasse na tela — espectador entrando com a tela parada (ex.: depois do
+// fallback de codec, teste A6) ficava com a tela preta até alguém mexer em algo. Reencoda a última
+// textura composta (persistente) só se tiver keyframe pendente; retorna os pacotes pro JS mandar.
+// App em TELA CHEIA EXCLUSIVA (Direct3D) rodando agora — `SHQueryUserNotificationState` é a mesma
+// consulta que o Windows usa pra segurar notificações durante jogos. Só leitura de estado do shell:
+// nada é injetado no jogo (sem risco de anti-cheat, diferente de captura por hook). Usado pelo loop
+// pra explicar a tela congelada (DXGI/WGC não recebem frame de tela cheia exclusiva) — tarefa B2.
+Napi::Value IsExclusiveFullscreenActive(const Napi::CallbackInfo& info) {
+    QUERY_USER_NOTIFICATION_STATE state{};
+    bool active = SUCCEEDED(SHQueryUserNotificationState(&state)) && state == QUNS_RUNNING_D3D_FULL_SCREEN;
+    return Napi::Boolean::New(info.Env(), active);
+}
+
+Napi::Value EncodePendingKeyframe(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    std::string tier = (info.Length() > 0 && info[0].IsString()) ? info[0].As<Napi::String>().Utf8Value() : "high";
+    {
+        // Pedidos de keyframe das sessões normalmente são consumidos no envio — sem envio (tela
+        // parada), consome aqui. Ordem de locks: sessões antes do encoder (ver topo do arquivo).
+        std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
+        bool keyframeNeeded = false;
+        for (auto& entry : g_transportSessions) {
+            if (entry.second.tier != tier || !entry.second.transport->IsConnected()) continue;
+            if (entry.second.transport->ConsumeKeyframeRequest()) keyframeNeeded = true;
+        }
+        if (keyframeNeeded) ForceKeyframeForTierLocked(tier);
+    }
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
+    EncoderCore* enc = EncoderForTier(tier);
+    if (!enc || !enc->KeyframePending() || !ActiveComposeTexture()) return Napi::Array::New(env);
+    auto packets = enc->EncodeFrame(ActiveComposeTexture());
+    Napi::Array result = Napi::Array::New(env, packets.size());
+    for (size_t i = 0; i < packets.size(); i++) {
+        result.Set(i, Napi::Buffer<uint8_t>::Copy(env, packets[i].data(), packets[i].size()));
+    }
+    return result;
+}
+
 // `info[0]` (opcional) = "high"/"low", padrão "high" — mantém a assinatura antiga (sem argumento)
 // funcionando pra qualquer chamador esquecido.
 Napi::Value ForceKeyframe(const Napi::CallbackInfo& info) {
@@ -928,6 +969,29 @@ Napi::Value TransportGetTierStats(const Napi::CallbackInfo& info) {
     return result;
 }
 
+// Mesmos sinais do `TransportGetTierStats`, mas POR ESPECTADOR (array de
+// `{viewerId, tier, queueDelayMs, droppedFrames, bufferedAmount}`, só sessões conectadas) — o AIMD
+// em main/index.ts agrega por tier sozinho e consegue separar "1 espectador com rede ruim" de "a
+// rede do host congestionou": no primeiro caso rebaixa só aquele espectador pro tier "low" em vez
+// de derrubar o bitrate de todo mundo (bug reportado no teste A2). `droppedFrames` zera ao ler.
+Napi::Value TransportGetViewerStats(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> sessionsLock(g_sessionsMutex);
+    Napi::Env env = info.Env();
+    Napi::Array result = Napi::Array::New(env);
+    uint32_t index = 0;
+    for (auto& entry : g_transportSessions) {
+        if (!entry.second.transport->IsConnected()) continue;
+        Napi::Object item = Napi::Object::New(env);
+        item.Set("viewerId", entry.first);
+        item.Set("tier", entry.second.tier);
+        item.Set("queueDelayMs", entry.second.transport->GetQueueDelayMs());
+        item.Set("droppedFrames", entry.second.transport->TakeDroppedFrames());
+        item.Set("bufferedAmount", static_cast<double>(entry.second.transport->GetBufferedAmount()));
+        result.Set(index++, item);
+    }
+    return result;
+}
+
 // Envio direto da thread JS (loop em main/index.ts, ver histórico — StreamWorker numa thread
 // nativa própria não resolveu o stutter, a causa real era o bug do PacingHandler, não threading).
 // `info[0]` = "high"/"low" (Sprint 27/simulcast) — de QUAL tier é esse frame (o chamador já
@@ -1074,6 +1138,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("transportConnectedCount", Napi::Function::New(env, TransportConnectedCount));
     exports.Set("transportMaxBufferedAmount", Napi::Function::New(env, TransportMaxBufferedAmount));
     exports.Set("transportGetTierStats", Napi::Function::New(env, TransportGetTierStats));
+    exports.Set("isExclusiveFullscreenActive", Napi::Function::New(env, IsExclusiveFullscreenActive));
+    exports.Set("encodePendingKeyframe", Napi::Function::New(env, EncodePendingKeyframe));
+    exports.Set("transportGetViewerStats", Napi::Function::New(env, TransportGetViewerStats));
     exports.Set("transportSendVideoFrame", Napi::Function::New(env, TransportSendVideoFrame));
     exports.Set("transportSendAudioFrame", Napi::Function::New(env, TransportSendAudioFrame));
     exports.Set("transportOnLocalDescription", Napi::Function::New(env, TransportOnLocalDescription));

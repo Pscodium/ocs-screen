@@ -72,9 +72,9 @@
       <AdditionalOptions>/LTCG:INCREMENTAL %(AdditionalOptions)</AdditionalOptions>
     </Lib>
     <Link>
-      <AdditionalDependencies>kernel32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;oleaut32.lib;uuid.lib;odbc32.lib;DelayImp.lib;&quot;C:\\Users\\Peter\\AppData\\Local\\node-gyp\\Cache\\33.4.11\\x64\\node.lib&quot;;d3d11.lib;dxgi.lib;user32.lib;gdi32.lib;avrt.lib;ole32.lib;windowsapp.lib;mfplat.lib;mfuuid.lib;propsys.lib;mmdevapi.lib;E:\dev\ocs-screen\desktop\native\capture-core\vendor\nvenc\Lib\nvencodeapi.lib;C:\vcpkg\installed\x64-windows\lib\datachannel.lib;C:\vcpkg\installed\x64-windows\lib\opus.lib</AdditionalDependencies>
+      <AdditionalDependencies>delayimp.lib;kernel32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;oleaut32.lib;uuid.lib;odbc32.lib;DelayImp.lib;&quot;C:\\Users\\Peter\\AppData\\Local\\node-gyp\\Cache\\33.4.11\\x64\\node.lib&quot;;d3d11.lib;dxgi.lib;user32.lib;gdi32.lib;avrt.lib;ole32.lib;windowsapp.lib;mfplat.lib;mfuuid.lib;propsys.lib;mmdevapi.lib;E:\dev\ocs-screen\desktop\native\capture-core\vendor\nvenc\Lib\nvencodeapi.lib;C:\vcpkg\installed\x64-windows\lib\datachannel.lib;C:\vcpkg\installed\x64-windows\lib\opus.lib</AdditionalDependencies>
       <AdditionalOptions>/LTCG:INCREMENTAL /ignore:4199 %(AdditionalOptions)</AdditionalOptions>
-      <DelayLoadDLLs>node.exe;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <DelayLoadDLLs>nvEncodeAPI64.dll;node.exe;%(DelayLoadDLLs)</DelayLoadDLLs>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <OptimizeReferences>true</OptimizeReferences>
@@ -117,9 +117,9 @@
       <AdditionalOptions>/LTCG:INCREMENTAL %(AdditionalOptions)</AdditionalOptions>
     </Lib>
     <Link>
-      <AdditionalDependencies>kernel32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;oleaut32.lib;uuid.lib;odbc32.lib;DelayImp.lib;&quot;C:\\Users\\Peter\\AppData\\Local\\node-gyp\\Cache\\33.4.11\\x64\\node.lib&quot;;d3d11.lib;dxgi.lib;user32.lib;gdi32.lib;avrt.lib;ole32.lib;windowsapp.lib;mfplat.lib;mfuuid.lib;propsys.lib;mmdevapi.lib;E:\dev\ocs-screen\desktop\native\capture-core\vendor\nvenc\Lib\nvencodeapi.lib;C:\vcpkg\installed\x64-windows\lib\datachannel.lib;C:\vcpkg\installed\x64-windows\lib\opus.lib</AdditionalDependencies>
+      <AdditionalDependencies>delayimp.lib;kernel32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;oleaut32.lib;uuid.lib;odbc32.lib;DelayImp.lib;&quot;C:\\Users\\Peter\\AppData\\Local\\node-gyp\\Cache\\33.4.11\\x64\\node.lib&quot;;d3d11.lib;dxgi.lib;user32.lib;gdi32.lib;avrt.lib;ole32.lib;windowsapp.lib;mfplat.lib;mfuuid.lib;propsys.lib;mmdevapi.lib;E:\dev\ocs-screen\desktop\native\capture-core\vendor\nvenc\Lib\nvencodeapi.lib;C:\vcpkg\installed\x64-windows\lib\datachannel.lib;C:\vcpkg\installed\x64-windows\lib\opus.lib</AdditionalDependencies>
       <AdditionalOptions>/LTCG:INCREMENTAL /ignore:4199 %(AdditionalOptions)</AdditionalOptions>
-      <DelayLoadDLLs>node.exe;%(DelayLoadDLLs)</DelayLoadDLLs>
+      <DelayLoadDLLs>nvEncodeAPI64.dll;node.exe;%(DelayLoadDLLs)</DelayLoadDLLs>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <OptimizeReferences>true</OptimizeReferences>

@@ -3,32 +3,54 @@
 ## 🎯 Próxima rodada (levantado 2026-10-15) — em ordem de prioridade
 
 ### A. Validação em uso real (usuário — bloqueia dar como "pronto" o que já foi feito)
-- [ ] **A1** Gerar build do desktop (`npm run dist`) e publicar o viewer (latência, sincronia,
+- [x] **A1** Gerar build do desktop (`npm run dist`) e publicar o viewer (latência, sincronia,
   fluidez, ack/keyframe e áudio Web Audio vivem no viewer — sem deploy nada disso aparece).
-- [ ] **A2** Rede real entre duas máquinas, incluindo Wi-Fi ruim (só simulado até agora):
+- [~] **A2** Rede real entre duas máquinas, incluindo Wi-Fi ruim (só simulado até agora):
   latência (painel 📊 "buffer"), `droppedHigh` no log do host, recuperação após congestionamento.
-- [ ] **A3** Call real no Discord transmitindo monitor: voz da call NÃO pode vazar; retorno de
+  **Fixes (2026-10-16)**: (1) espectador congestionado com os demais OK é rebaixado sozinho pro
+  tier "low" (o seletor dele atualiza) em vez de derrubar o bitrate de todos; (2) sessão em
+  "disconnected" ganha 10s pra voltar antes de ser fechada (antes fechava na hora → "transmissão
+  encerrada" em rede ruim). Revalidar com o mesmo perfil de rede ruim.
+  (teste realizado, simulei internet de 30mbit de download e 5mbit de upload com latencia de 130ms e packet loss 0% e só disso pra cima funciona, daí pra baixo nem conecta, parece ser timeout porque da que a transmissão foi encerrada. Percebi no teste que se um espectador estiver com problema de conexão parece que a baixa qualidade se replica pros demais, não sei ao certo se é isso mesmo mas parece)
+- [x] **A3** Call real no Discord transmitindo monitor: voz da call NÃO pode vazar; retorno de
   microfone (Escutar este dispositivo / NVIDIA Broadcast) tem que sumir. Se vazar algo, abrir
   "Áudio da transmissão" no picker e ver qual app aparece tocando.
-- [ ] **A4** Estalos de áudio sob oscilação de latência sumiram? (Sprint 37 — só simulado)
-- [ ] **A5** Sincronia A/V a olho/ouvido (vídeo com fala, jogo com tiro/impacto).
-- [ ] **A6** Fallback de codec com espectador real sem HEVC (iPhone não serve — usar PC/Android sem
+  (teste funcionou)
+- [x] **A4** Estalos de áudio sob oscilação de latência sumiram? (Sprint 37 — só simulado)
+(testei e parou, mas parece que da um pouco ainda quando tem uma troca de origem de transmissão, quando troquei de um a tela inteira para uma janela, deu um pouco, mas parece ser aquela interferencia de 8 segundos que eu acho que você mencionou)
+- [x] **A5** Sincronia A/V a olho/ouvido (vídeo com fala, jogo com tiro/impacto).
+(teste realizado, até com internet fraca parece estar fazendo o trabalho correto)
+- [~] **A6** Fallback de codec com espectador real sem HEVC (iPhone não serve — usar PC/Android sem
   decode HEVC) — Sprint 38 validado só com espectador simulado.
+  (testado, até cai do NEVC para o h264 corretamente mas o espectador que tentou entrar tem que dar um F5 para poder ver a tela pois a tela da transmissão fica preta para ele)
+  **Fix (2026-10-16)**: keyframe pendente só saía quando a tela mudava (tela parada = preto);
+  agora o loop reencoda a última textura (`encodePendingKeyframe`). Viewer: MediaStream nova por
+  canal + `play()`, repete pedido de keyframe até o 1º chegar, limpa o canal anterior.
+  `codec-fallback-test.js hevc` OK (A e B a 60fps). Revalidar.
 
 ### B. Bugs conhecidos
-- [ ] **B1** Addon nativo não carrega em PC sem driver NVIDIA → app inteiro cai pro LiveKit (ver
+- [x] **B1** Addon nativo não carrega em PC sem driver NVIDIA → app inteiro cai pro LiveKit (ver
   "Pendências de compatibilidade de hardware" abaixo): delay-load do `nvEncodeAPI64.dll` +
   checar `LoadLibraryW` antes do NVENC. Testar renomeando a DLL ou em VM sem GPU NVIDIA.
-- [ ] **B2** Tela cheia EXCLUSIVA não é capturável (Sprint 37): no mínimo detectar "monitor/janela
+  **Feito (2026-10-16)**: `DelayLoadDLLs` no binding.gyp + `IsNvencRuntimeAvailable()` no
+  EncoderCore. Falta testar em PC sem NVIDIA (usuário).
+- [x] **B2** Tela cheia EXCLUSIVA não é capturável (Sprint 37): no mínimo detectar "monitor/janela
   sem frame novo há X s enquanto um app está em tela cheia" e avisar no LiveCard ("coloque o jogo
   em janela sem bordas"). Captura por hook no jogo (como OBS/Discord) só se virar requisito —
   grande e com risco de anti-cheat.
+  **Feito (2026-10-16)**: sem hook (zero risco de anti-cheat) — 3s sem frame +
+  `SHQueryUserNotificationState == QUNS_RUNNING_D3D_FULL_SCREEN` → aviso amarelo no LiveCard,
+  some quando volta a chegar frame. Falta testar com jogo real em tela cheia exclusiva.
 - [ ] **B3** Firewall/rede diferente (Sprint 26, parado): app fechava quando outro dispositivo
   conectava. Reproduzir com o build atual e ler `{userData}/uncaught-exception.log`.
 - [x] **B4** ~~Picker: scrollbar de ~2px na grade~~ — resolvido pelo redesenho do picker (Sprint 39).
-- [ ] **B5** Aba "Assistir" do desktop só assiste salas LiveKit — sala nativa e sala com senha
+- [x] **B5** Aba "Assistir" do desktop só assiste salas LiveKit — sala nativa e sala com senha
   não abrem por ali (lista mostra 🔒 nas com senha). Ou implementar o player nativo + senha no
   desktop, ou esconder/avisar essas salas.
+  **Feito (2026-10-16)**: "Assistir" abre o VIEWER WEB da sala numa janela própria (sandbox,
+  navegação presa à origem) — player único, com nativo + senha + qualidade + stats. Player antigo
+  do desktop (RoomViewer/VideoPlayer/useRoomViewer) removido. Backend devolve `viewerUrl` na lista
+  (precisa deploy do backend).
 
 ### C. Compatibilidade de hardware
 - [ ] **C1** Notebook híbrido (Optimus) cai pra encode por CPU. Opção barata primeiro: ligar

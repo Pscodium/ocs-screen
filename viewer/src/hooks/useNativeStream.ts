@@ -108,8 +108,15 @@ export function useNativeStream(roomId: string, password?: string) {
     // o primeiro a criar o `MediaStream` do `<video>`. Mantém a MESMA instância entre renegociações
     // pra não precisar reatribuir `videoRef.current.srcObject` de novo (evita um flash/reload do
     // elemento `<video>`) — só troca as TRACKS de dentro dela.
-    const mediaStream = new MediaStream();
+    //
+    // Exceção (teste A6, tela preta depois do fallback de codec até dar F5): trocar a track DENTRO
+    // da mesma MediaStream não garante que o `<video>` passe a renderizar a nova — cada canal de
+    // vídeo novo ganha uma MediaStream nova + `srcObject` reatribuído + `play()`.
     let currentVideoTrack: MediaStreamTrack | null = null;
+    // Limpa o canal de vídeo da sessão anterior (watchdog, stats, decoder) quando um offer novo
+    // recria a conexão — antes ficavam pendurados (intervalo de stats duplicado, watchdog do canal
+    // velho podendo marcar erro na sessão nova).
+    let teardownVideoChannel: (() => void) | null = null;
     // Áudio NÃO entra na MediaStream do `<video>` — vai por Web Audio, agendado no relógio de
     // apresentação (ver services/nativeAudioPlayer.ts). Criado sob demanda no 1º canal de áudio,
     // compartilhado entre renegociações (mesmo motivo da `mediaStream`).
@@ -259,12 +266,15 @@ export function useNativeStream(roomId: string, password?: string) {
       // descarta fila/buffer do lado do espectador como causa — não vale a complexidade extra
       // aqui, o problema real tá em outro lugar (upstream: encoder/rate-control, ver notas em
       // EncoderCore.cpp sobre VBV).
+      teardownVideoChannel?.();
       const generator = new MediaStreamTrackGenerator<VideoFrame>({ kind: "video" });
       const writer = generator.writable.getWriter();
-      if (currentVideoTrack) mediaStream.removeTrack(currentVideoTrack);
+      currentVideoTrack?.stop();
       currentVideoTrack = generator;
-      mediaStream.addTrack(generator);
-      if (videoRef.current) videoRef.current.srcObject = mediaStream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = new MediaStream([generator]);
+        videoRef.current.play().catch(() => {});
+      }
 
       let gotFirstFrame = false;
       let width = 0;
@@ -280,6 +290,12 @@ export function useNativeStream(roomId: string, password?: string) {
           setPhase("error");
         }
       }, 12000);
+      // Enquanto o 1º keyframe não chega, repete o pedido — o pedido feito na abertura do canal
+      // pode se perder (sessão ainda conectando do lado do host) e, sem frame nenhum chegando, o
+      // `requestKeyframe` do `onmessage` nunca roda.
+      const keyframeRetry = setInterval(() => {
+        if (waitingKeyframe) requestKeyframe();
+      }, KEYFRAME_REQUEST_INTERVAL_MS);
 
       // Canal de volta pro host (ver TransportCore.h "Controle de latência"): ack de cada frame
       // recebido (8 bytes = o timestamp dele) — o host mede a fila real com isso e descarta frames
@@ -410,6 +426,16 @@ export function useNativeStream(roomId: string, password?: string) {
         }
       };
 
+      teardownVideoChannel = () => {
+        clearTimeout(noFrameTimeout);
+        clearInterval(keyframeRetry);
+        if (statsInterval) clearInterval(statsInterval);
+        statsInterval = null;
+        channel.onmessage = null;
+        if (decoder.state !== "closed") decoder.close();
+      };
+
+      if (statsInterval) clearInterval(statsInterval);
       statsInterval = setInterval(() => {
         const now = performance.now();
         const secondsDelta = (now - lastStatsAt) / 1000;
@@ -427,7 +453,7 @@ export function useNativeStream(roomId: string, password?: string) {
 
     function handleWsMessage(event: MessageEvent): void {
       if (cancelled) return;
-      let msg: { type?: string; sdp?: string; codec?: NativeVideoCodec; candidate?: string; mid?: string };
+      let msg: { type?: string; sdp?: string; codec?: NativeVideoCodec; candidate?: string; mid?: string; tier?: string };
       try {
         msg = JSON.parse(event.data);
       } catch {
@@ -468,6 +494,10 @@ export function useNativeStream(roomId: string, password?: string) {
             setPhase("error");
           }
         })();
+      } else if (msg.type === "quality-changed" && (msg.tier === "high" || msg.tier === "low")) {
+        // Host rebaixou este espectador sozinho (rede dele não aguentava o "high" enquanto os
+        // outros estavam bem — ver `demoteCongestedHighViewers` em desktop/src/main/index.ts).
+        setQualityState(msg.tier);
       } else if (msg.type === "ice" && msg.candidate) {
         pc?.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.mid ?? "0" }).catch(() => {});
       }
@@ -480,6 +510,7 @@ export function useNativeStream(roomId: string, password?: string) {
       sendMessageRef.current = null;
       if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
       ws.close();
+      teardownVideoChannel?.();
       if (statsInterval) clearInterval(statsInterval);
       pc?.close();
       audioPlayer?.close();

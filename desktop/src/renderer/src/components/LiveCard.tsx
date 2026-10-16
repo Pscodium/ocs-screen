@@ -128,6 +128,12 @@ export function LiveCard({
         <span className="live-link-copy">{copied ? "Copiado!" : "Copiar"}</span>
       </button>
 
+      {info.captureWarning && (
+        <div className="live-capture-warning" role="alert">
+          {info.captureWarning}
+        </div>
+      )}
+
       <div className="live-stats">
         <span className="live-stats-primary">
           {compactResolution(info.actualResolution)} · {info.actualFps}fps ·{" "}

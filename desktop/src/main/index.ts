@@ -165,7 +165,11 @@ function createWindow(): BrowserWindow {
   // Só a última janela fechada derruba o processo (window-all-closed já cuida disso) — fechar
   // uma janela de teste secundária não pode matar o app inteiro com a principal ainda aberta.
   window.on("closed", () => {
-    if (mainWindow === window) mainWindow = null;
+    if (mainWindow === window) {
+      mainWindow = null;
+      // Janelas de "Assistir" não seguram o app aberto depois da principal fechar.
+      for (const viewer of viewerWindows) viewer.close();
+    }
   });
 
   window.webContents.setWindowOpenHandler((details) => {
@@ -395,23 +399,61 @@ ipcMain.on("window:set-picker-mode", (event, open: boolean) => {
   }
 });
 
-// Maximiza a janela ao entrar numa sala pra assistir (mais espaço pra ver o stream) e trava
-// resize — ao sair, volta pro tamanho normal centralizado, igual ao picker-mode.
-ipcMain.on("window:set-watch-mode", (event, watching: boolean) => {
-  const win = resolveWindow(event);
-  if (!win) return;
-  if (watching) {
-    // Mesma ordem cuidadosa do widget: ação de tamanho primeiro, trava resizable depois (ver
-    // applyWidgetBounds — setSize()/maximize() pode ser ignorado silenciosamente no Windows se
-    // já vier depois de setResizable(false)).
-    win.maximize();
-    win.setResizable(false);
-  } else {
-    win.unmaximize();
-    win.setResizable(true);
-    win.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
-    win.center();
+// Aba "Assistir" (tarefa B5): abre o VIEWER WEB da sala numa janela própria em vez de manter um
+// player paralelo no app — o player antigo do desktop só falava LiveKit (sala nativa e sala com
+// senha não abriam) e tinha ficado bem atrás do viewer web (qualidade, áudio sincronizado,
+// estatísticas, tela cheia). Um player só, mantido num lugar só. Conteúdo remoto: janela isolada
+// (sandbox, sem preload/Node), navegação presa à origem do viewer, links externos no navegador.
+const viewerWindows = new Set<BrowserWindow>();
+
+ipcMain.on("viewer:open", (_event, rawUrl: unknown) => {
+  if (typeof rawUrl !== "string") return;
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return;
   }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return;
+
+  const existing = [...viewerWindows].find((w) => w.webContents.getURL() === url.href);
+  if (existing) {
+    existing.focus();
+    return;
+  }
+
+  const viewer = new BrowserWindow({
+    width: 1280,
+    height: 760,
+    minWidth: 480,
+    minHeight: 300,
+    backgroundColor: "#0e0f13",
+    icon: ICON_PATH,
+    autoHideMenuBar: true,
+    title: "ScreenShare — Assistir",
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      autoplayPolicy: "no-user-gesture-required",
+    },
+  });
+  viewerWindows.add(viewer);
+  viewer.on("closed", () => viewerWindows.delete(viewer));
+  viewer.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url);
+    return { action: "deny" };
+  });
+  viewer.webContents.on("will-navigate", (navEvent, target) => {
+    if (new URL(target).origin !== url.origin) {
+      navEvent.preventDefault();
+      shell.openExternal(target);
+    }
+  });
+  viewer.webContents.on("before-input-event", (_e, input) => {
+    if (input.type === "keyDown" && input.key === "F12") viewer.webContents.toggleDevTools();
+  });
+  viewer.loadURL(url.href);
 });
 
 ipcMain.on("tray:set-status", (_event, isLive: boolean, viewerCount: number) => {
@@ -586,6 +628,14 @@ interface NativeCaptureAddon {
   // `maxQueueDelayMs` = fila acima do RTT mínimo medida por ack do espectador, `droppedFrames` =
   // frames descartados por congestionamento desde a última leitura (zera ao ler).
   transportGetTierStats(tier: "high" | "low"): { maxQueueDelayMs: number; droppedFrames: number; maxBufferedAmount: number };
+  // Mesmos sinais, POR ESPECTADOR conectado (`droppedFrames` também zera ao ler) — o AIMD agrega
+  // por tier aqui no main e rebaixa sozinho um espectador congestionado (ver `tickAimd`).
+  transportGetViewerStats(): NativeViewerStats[];
+  // Reencoda a última textura SE o tier tiver keyframe pendente (tela parada = sem frame novo pra
+  // levar o keyframe pedido por espectador novo/troca de tier/`'K'`). Vazio se não tiver pendência.
+  encodePendingKeyframe(tier: "high" | "low"): Buffer[];
+  // Jogo/app em tela cheia EXCLUSIVA (D3D) agora — captura não recebe frame nesse modo (B2).
+  isExclusiveFullscreenActive(): boolean;
   // Relógio QPC (µs) — o MESMO dos `ptsUs` de áudio (ver QpcClock.h). Timestamps de vídeo saem
   // daqui pra ficarem sincronizáveis com o áudio no espectador.
   nowUs(): number;
@@ -919,6 +969,19 @@ ipcMain.handle("native-audio:set-excluded", (_event, excludedApps: unknown) => {
 // valor. Só tenta o fallback HEVC→H.264 UMA vez por transmissão.
 let ntActiveCodec: "h264" | "hevc" | "av1" = "h264";
 let ntCodecFallbackDone = false;
+interface NativeViewerStats {
+  viewerId: string;
+  tier: "high" | "low";
+  queueDelayMs: number;
+  droppedFrames: number;
+  bufferedAmount: number;
+}
+// Espectadores rebaixados pra "low" AUTOMATICAMENTE pelo AIMD (rede deles não aguentava o "high")
+// — ver `tickAimd`. Escolha manual de qualidade ("set-quality") tira daqui.
+const ntAutoDemoted = new Set<string>();
+// Sessões em "disconnected" esperando voltar antes de serem fechadas (ver transportOnStateChange).
+const ntDisconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const NT_DISCONNECT_GRACE_MS = 10_000;
 // Espectadores com sessão aberta agora e o tier de cada um — necessário pra renegociar TODO MUNDO
 // quando o codec da transmissão cai pra H.264 (ver handler de "answer").
 const ntViewerTiers = new Map<string, "high" | "low">();
@@ -931,6 +994,9 @@ let ntStartUs = 0;
 function stopNativeTransport(): void {
   ntActive = false;
   ntViewerTiers.clear();
+  ntAutoDemoted.clear();
+  for (const timer of ntDisconnectTimers.values()) clearTimeout(timer);
+  ntDisconnectTimers.clear();
   ntWs?.close();
   ntWs = null;
   if (ntStatsInterval) clearInterval(ntStatsInterval);
@@ -1033,12 +1099,45 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       state,
       connectedCount: nativeCapture?.transportConnectedCount() ?? 0,
     });
-    if (state === "failed" || state === "closed" || state === "disconnected") {
+    const pendingClose = ntDisconnectTimers.get(viewerId);
+    if (pendingClose && state === "connected") {
+      clearTimeout(pendingClose);
+      ntDisconnectTimers.delete(viewerId);
+    }
+    if (state === "disconnected") {
+      // "disconnected" é transitório (ICE perdeu checagens de consentimento — comum com o link
+      // saturado, rede ruim do teste A2): antes a sessão era fechada NA HORA, e o espectador via
+      // "A transmissão foi encerrada" em vez de se recuperar quando a fila escoasse. Agora espera
+      // um tempo; se não voltar pra "connected", fecha.
+      if (!pendingClose) {
+        ntDisconnectTimers.set(
+          viewerId,
+          setTimeout(() => {
+            ntDisconnectTimers.delete(viewerId);
+            if (nativeCapture?.transportIsConnected(viewerId)) return;
+            nativeCapture?.transportCloseSession(viewerId);
+            ntViewerTiers.delete(viewerId);
+            ntAutoDemoted.delete(viewerId);
+            win.webContents.send("native-transport:state", {
+              viewerId,
+              state: "closed",
+              connectedCount: nativeCapture?.transportConnectedCount() ?? 0,
+            });
+          }, NT_DISCONNECT_GRACE_MS),
+        );
+      }
+    }
+    if (state === "failed" || state === "closed") {
+      if (pendingClose) {
+        clearTimeout(pendingClose);
+        ntDisconnectTimers.delete(viewerId);
+      }
       // Só derruba a sessão DESSE espectador — os outros continuam recebendo o stream. Se esse
       // mesmo espectador voltar (F5), o WS dele reconecta com um `viewerId` NOVO e o backend
       // manda `viewer-joined` de novo sozinho.
       nativeCapture?.transportCloseSession(viewerId);
       ntViewerTiers.delete(viewerId);
+      ntAutoDemoted.delete(viewerId);
     }
   });
   nativeCapture.transportOnLocalDescription((viewerId, sdp, type) => {
@@ -1128,9 +1227,11 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // TransportSetViewerTier em addon.cpp).
       nativeCapture?.transportSetViewerTier(msg.viewerId, msg.tier);
       if (ntViewerTiers.has(msg.viewerId)) ntViewerTiers.set(msg.viewerId, msg.tier);
+      ntAutoDemoted.delete(msg.viewerId);
     } else if (msg.type === "viewer-left") {
       nativeCapture?.transportCloseSession(msg.viewerId);
       ntViewerTiers.delete(msg.viewerId);
+      ntAutoDemoted.delete(msg.viewerId);
       // O "closed" da sessão fechada aqui não chega mais no `transportOnStateChange` (eventos de
       // sessão que já saiu do mapa são descartados no addon — ver `ViewerSession::generation`), então
       // o contador de espectadores do LiveCard é atualizado aqui direto.
@@ -1224,6 +1325,12 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   let dbgSendFail = 0;
   let dbgBytes = 0;
   let dbgLastLog = Date.now();
+  // Tarefa B2: tela cheia EXCLUSIVA não é capturável (DXGI/WGC não recebem frame) — sem frame novo
+  // há um tempo + app em tela cheia exclusiva = avisa o host em vez de deixar a tela congelada sem
+  // explicação. Captura por hook no jogo (como OBS/Discord) foi descartada: risco de anti-cheat.
+  const FULLSCREEN_STALL_MS = 3000;
+  let lastFrameAt = Date.now();
+  let fullscreenWarningShown = false;
 
   // Controle de congestionamento (AIMD) — sem RTP/REMB nesse caminho (vídeo vai por DataChannel,
   // não media track), o sinal disponível é o `bufferedAmount()` do canal SCTP: cresce quando a
@@ -1261,9 +1368,50 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // `fps` aqui é o fps de PACING do tier (targetFps pro high, SIMULCAST_LOW_FPS pro low) — usado
   // só pra calcular o watermark (~3 frames de orçamento, igual o VBV do EncoderCore) do sinal
   // antigo (`bufferedAmount`), que continua valendo pra espectador sem ack.
-  function tickAimd(state: AimdState, tier: "high" | "low", ceilingBps: number, fps: number): number {
+  // Streak de congestionamento POR ESPECTADOR do tier "high" — base do rebaixamento automático.
+  const viewerHighStreak = new Map<string, number>();
+
+  function isViewerCongested(v: NativeViewerStats, highWatermarkBytes: number): boolean {
+    return v.droppedFrames > 0 || v.queueDelayMs > CONGESTION_QUEUE_DELAY_MS || v.bufferedAmount > highWatermarkBytes;
+  }
+
+  // Bug reportado no teste A2: 1 espectador com rede ruim derrubava a qualidade de TODOS — o AIMD
+  // do tier olhava o PIOR espectador (encoder é compartilhado). Agora, se só PARTE dos espectadores
+  // do "high" está congestionada (os outros escoam bem = o problema é a rede DELES, não a do
+  // host), esses são rebaixados pro "low" (simulcast já existente) e saem da conta do AIMD do
+  // "high". Se todos congestionam (ou só tem 1), é a rede do host/encoder: AIMD normal.
+  function demoteCongestedHighViewers(viewers: NativeViewerStats[], highWatermarkBytes: number): Set<string> {
+    const demoted = new Set<string>();
+    const high = viewers.filter((v) => v.tier === "high");
+    const congested = high.filter((v) => isViewerCongested(v, highWatermarkBytes));
+    for (const v of high) if (!congested.includes(v)) viewerHighStreak.delete(v.viewerId);
+    if (high.length < 2 || congested.length === high.length) return demoted;
+    for (const v of congested) {
+      const streak = (viewerHighStreak.get(v.viewerId) ?? 0) + 1;
+      viewerHighStreak.set(v.viewerId, streak);
+      if (v.droppedFrames === 0 && streak < CONGESTION_HIGH_STREAK_REQUIRED) continue;
+      viewerHighStreak.delete(v.viewerId);
+      if (!nativeCapture?.transportSetViewerTier(v.viewerId, "low")) continue;
+      ntViewerTiers.set(v.viewerId, "low");
+      ntAutoDemoted.add(v.viewerId);
+      demoted.add(v.viewerId);
+      // Espectador atualiza o seletor de qualidade dele (ver useNativeStream.ts "quality-changed").
+      if (ntWs) sendWhenOpen(ntWs, { type: "quality-changed", viewerId: v.viewerId, tier: "low", auto: true });
+      console.warn(
+        `[native-transport] espectador ${v.viewerId} congestionado (fila=${v.queueDelayMs.toFixed(0)}ms descartados=${v.droppedFrames}) com os demais OK — rebaixado pro tier 'low'.`,
+      );
+    }
+    return demoted;
+  }
+
+  function tickAimd(state: AimdState, tier: "high" | "low", ceilingBps: number, fps: number, viewers: NativeViewerStats[]): number {
     if (!nativeCapture) return 0;
-    const stats = nativeCapture.transportGetTierStats(tier);
+    const tierViewers = viewers.filter((v) => v.tier === tier);
+    const stats = {
+      maxQueueDelayMs: Math.max(0, ...tierViewers.map((v) => v.queueDelayMs)),
+      droppedFrames: tierViewers.reduce((sum, v) => sum + v.droppedFrames, 0),
+      maxBufferedAmount: Math.max(0, ...tierViewers.map((v) => v.bufferedAmount)),
+    };
     const highWatermarkBytes = (state.currentBitrateBps / 8 / Math.max(1, fps)) * 3;
     // Frame descartado por congestionamento = sinal mais forte possível: a fila já passou do
     // limite, reduz na hora em vez de esperar o 2º tick seguido.
@@ -1376,6 +1524,11 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       }
     } else if (frame) {
       dbgAcquired++;
+      lastFrameAt = Date.now();
+      if (fullscreenWarningShown) {
+        fullscreenWarningShown = false;
+        activeWin.webContents.send("native-transport:capture-warning", null);
+      }
       // Simulcast (Sprint 27) — codifica os DOIS tiers a partir do MESMO frame capturado, cada
       // encoder pacia sozinho pro seu próprio fps (o "low" naturalmente descarta a maioria das
       // chamadas, já que foi inicializado com SIMULCAST_LOW_FPS bem menor que targetFps).
@@ -1395,15 +1548,34 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       }
     } else {
       dbgTimeouts++;
+      // Tela parada: keyframe pendente (espectador acabou de entrar, trocou de tier, pediu 'K')
+      // sairia só quando algo mudasse — espectador ficava com tela preta (teste A6).
+      for (const tier of ["high", "low"] as const) {
+        for (const packet of nativeCapture.encodePendingKeyframe(tier)) {
+          nativeCapture.transportSendVideoFrame(tier, packet, timestampUs);
+        }
+      }
     }
 
     const now = Date.now();
     if (now - dbgLastLog >= 1000) {
+      if (!fullscreenWarningShown && now - lastFrameAt > FULLSCREEN_STALL_MS && nativeCapture.isExclusiveFullscreenActive()) {
+        fullscreenWarningShown = true;
+        activeWin.webContents.send(
+          "native-transport:capture-warning",
+          "Um app está em tela cheia exclusiva e não pode ser capturado. Coloque o jogo em \"janela sem bordas\" (tela cheia em janela).",
+        );
+      }
       // AIMD: decréscimo multiplicativo rápido sob congestionamento, recuperação aditiva lenta —
       // mesmo espírito de TCP/qualquer congestion control clássico. Cada tier roda o SEU (Sprint
       // 27/simulcast) — `tickAimd` lê os sinais do tier certo por dentro.
-      const dbgDroppedHigh = tickAimd(ntAimdHigh, "high", bitrateBps, targetFps);
-      tickAimd(ntAimdLow, "low", SIMULCAST_LOW_BITRATE_BPS, SIMULCAST_LOW_FPS);
+      const viewerStats = nativeCapture.transportGetViewerStats();
+      const demoted = demoteCongestedHighViewers(viewerStats, (ntAimdHigh.currentBitrateBps / 8 / Math.max(1, targetFps)) * 3);
+      // Recém-rebaixados não contam no AIMD de nenhum tier nessa volta (os sinais deles ainda são
+      // do "high"; o "low" passa a medi-los a partir da próxima).
+      const activeStats = viewerStats.filter((v) => !demoted.has(v.viewerId));
+      const dbgDroppedHigh = tickAimd(ntAimdHigh, "high", bitrateBps, targetFps, activeStats);
+      tickAimd(ntAimdLow, "low", SIMULCAST_LOW_BITRATE_BPS, SIMULCAST_LOW_FPS, activeStats);
 
       // `audioRms`/`audioSources` só existem com áudio nativo ativo — diagnóstico pra confirmar AO
       // VIVO quais apps o mixer tá capturando e se tem som passando (ver AudioCaptureCore.h).

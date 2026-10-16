@@ -77,7 +77,10 @@ const api = {
     close: () => ipcRenderer.send("window:close"),
     setWidgetMode: (isLive: boolean) => ipcRenderer.send("window:set-widget-mode", isLive),
     setPickerMode: (open: boolean) => ipcRenderer.send("window:set-picker-mode", open),
-    setWatchMode: (watching: boolean) => ipcRenderer.send("window:set-watch-mode", watching),
+  },
+  viewer: {
+    // Abre o viewer web da sala numa janela própria (aba "Assistir", ver main/index.ts "viewer:open").
+    open: (url: string) => ipcRenderer.send("viewer:open", url),
   },
   tray: {
     setStatus: (isLive: boolean, viewerCount: number) => ipcRenderer.send("tray:set-status", isLive, viewerCount),
@@ -179,6 +182,12 @@ const api = {
     // e/ou o codec ativo (pode ter degradado de HEVC pra H.264, ver docs/NATIVE_CAPTURE.md Fase 3
     // "Fallback de encoder por software"/"HEVC"). Dispara de novo se reiniciar em H.264 porque o
     // viewer não conseguiu decodificar HEVC.
+    // Aviso de captura (hoje: tela cheia exclusiva, tarefa B2) — `null` = aviso resolvido.
+    onCaptureWarning: (callback: (message: string | null) => void) => {
+      const listener = (_event: IpcRendererEvent, message: string | null) => callback(message);
+      ipcRenderer.on("native-transport:capture-warning", listener);
+      return () => ipcRenderer.removeListener("native-transport:capture-warning", listener);
+    },
     onEncoderInfo: (callback: (info: { software: boolean; codec: "h264" | "hevc" | "av1" }) => void) => {
       const listener = (_event: IpcRendererEvent, info: { software: boolean; codec: "h264" | "hevc" | "av1" }) =>
         callback(info);

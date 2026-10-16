@@ -3,7 +3,6 @@ import { LiveCard } from "../components/LiveCard";
 import { Logo } from "../components/Logo";
 import { SourcePicker } from "../components/SourcePicker";
 import { RoomsBrowser } from "../components/RoomsBrowser";
-import { RoomViewer } from "../components/RoomViewer";
 import type { useBroadcast } from "../hooks/useBroadcast";
 import { defaultStreamSettings } from "../types/stream";
 import { type AccessSettings, defaultAccessSettings } from "../components/AccessOptions";
@@ -20,7 +19,6 @@ export function HomePage({ broadcast }: HomePageProps) {
   const [access, setAccess] = useState<AccessSettings>(defaultAccessSettings);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [tab, setTab] = useState<Tab>("share");
-  const [watchingRoomId, setWatchingRoomId] = useState<string | null>(null);
   const { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec, toggleCursor } =
     broadcast;
 
@@ -36,10 +34,6 @@ export function HomePage({ broadcast }: HomePageProps) {
         onToggleCursor={toggleCursor}
       />
     );
-  }
-
-  if (watchingRoomId) {
-    return <RoomViewer roomId={watchingRoomId} onBack={() => setWatchingRoomId(null)} />;
   }
 
   return (
@@ -66,7 +60,7 @@ export function HomePage({ broadcast }: HomePageProps) {
           </button>
         </>
       ) : (
-        <RoomsBrowser onSelect={setWatchingRoomId} />
+        <RoomsBrowser onSelect={(room) => window.screenshare.viewer.open(room.viewerUrl)} />
       )}
 
       {pickerOpen && (

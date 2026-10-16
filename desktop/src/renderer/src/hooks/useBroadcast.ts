@@ -18,6 +18,7 @@ import {
   onNativeTransportError,
   onNativeTransportState,
   onNativeTransportEncoderInfo,
+  onNativeTransportCaptureWarning,
   setNativeCursorEnabled,
   swapNativeTransportSource,
 } from "../services/nativeTransport";
@@ -58,6 +59,9 @@ export interface BroadcastInfo {
   cursorEnabled: boolean;
   // Mostrado no LiveCard (cadeado) — quem transmite precisa lembrar de mandar a senha junto do link.
   isPrivate: boolean;
+  // Aviso de captura ao vivo (só caminho nativo — hoje: jogo em tela cheia exclusiva, ver B2 em
+  // docs/TASKS.md). Some sozinho quando a captura volta a receber frames.
+  captureWarning?: string | null;
   hasPassword: boolean;
 }
 
@@ -84,6 +88,7 @@ export function useBroadcast() {
   const unsubscribeNativeErrorRef = useRef<(() => void) | null>(null);
   const unsubscribeNativeStateRef = useRef<(() => void) | null>(null);
   const unsubscribeNativeEncoderInfoRef = useRef<(() => void) | null>(null);
+  const unsubscribeNativeCaptureWarningRef = useRef<(() => void) | null>(null);
 
   // Assina (ou limpa, se a fonte nova não for nativa) as estatísticas de fps de captura — chamado
   // tanto no `start()` quanto no `swapSource()`, já que trocar de fonte pode entrar ou sair do
@@ -147,6 +152,9 @@ export function useBroadcast() {
         // degradado (pediu HEVC, ficou H.264) — usuário merece saber dos dois (ver
         // docs/NATIVE_CAPTURE.md Fase 3 "Fallback de encoder por software"/"HEVC"). Dispara de
         // novo se o host reiniciar em H.264 porque o viewer não decodifica HEVC.
+        unsubscribeNativeCaptureWarningRef.current = onNativeTransportCaptureWarning((captureWarning) => {
+          setInfo((prev) => (prev ? { ...prev, captureWarning } : prev));
+        });
         unsubscribeNativeEncoderInfoRef.current = onNativeTransportEncoderInfo(({ software, codec }) => {
           const codecLabel = codec === "hevc" ? "HEVC" : codec === "av1" ? "AV1" : "H.264";
           const engineLabel = software ? "software, sem NVENC" : "NVENC (nativo)";
@@ -391,6 +399,8 @@ export function useBroadcast() {
     unsubscribeNativeStateRef.current = null;
     unsubscribeNativeEncoderInfoRef.current?.();
     unsubscribeNativeEncoderInfoRef.current = null;
+    unsubscribeNativeCaptureWarningRef.current?.();
+    unsubscribeNativeCaptureWarningRef.current = null;
 
     if (isNativeTransportModeRef.current) {
       await stopNativeTransport().catch(() => {});

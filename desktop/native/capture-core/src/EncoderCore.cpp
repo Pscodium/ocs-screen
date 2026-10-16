@@ -1,8 +1,19 @@
 #include "EncoderCore.h"
 #include <stdexcept>
 #include <wrl/client.h>
+#include <windows.h>
 
 using Microsoft::WRL::ComPtr;
+
+// `nvEncodeAPI64.dll` é DELAY-LOADED (binding.gyp) — sem isso o addon inteiro nem carregava em PC
+// sem driver NVIDIA (AMD/Intel), derrubando o pipeline nativo todo pro LiveKit. Falha de
+// delay-load é exceção SEH (não C++, o `catch` do InitializeNvenc não pega), então checa ANTES da
+// primeira chamada NVENC se a DLL existe. Resultado cacheado: a DLL fica carregada (refcount), o
+// delay-load resolve pelo módulo já carregado.
+static bool IsNvencRuntimeAvailable() {
+    static const bool available = LoadLibraryExW(L"nvEncodeAPI64.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32) != nullptr;
+    return available;
+}
 
 EncoderCore::EncoderCore() {}
 
@@ -12,6 +23,11 @@ void EncoderCore::ForceKeyframe() {
         return;
     }
     forceKeyframe_.store(true, std::memory_order_relaxed);
+}
+
+bool EncoderCore::KeyframePending() const {
+    if (software_) return software_->KeyframePending();
+    return forceKeyframe_.load(std::memory_order_relaxed);
 }
 
 EncoderCore::~EncoderCore() {
@@ -62,6 +78,10 @@ bool EncoderCore::Initialize(ID3D11Device* device, int width, int height, int fp
 }
 
 bool EncoderCore::InitializeNvenc(ID3D11Device* device, int width, int height, int fps, int bitrateBps, VideoCodecType codec) {
+    if (!IsNvencRuntimeAvailable()) {
+        fprintf(stderr, "[EncoderCore] nvEncodeAPI64.dll ausente (sem driver NVIDIA) — pulando NVENC.\n");
+        return false;
+    }
     try {
         // ARGB (BGRA na memória, mesmo layout que o CaptureCore já produz) — evita converter pra
         // NV12 antes de encodar. NVENC aceita ARGB direto, só custa um pouco mais de banda de

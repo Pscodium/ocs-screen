@@ -44,6 +44,10 @@
             "VCCLCompilerTool": {
               "ExceptionHandling": 1,
               "AdditionalOptions": ["/std:c++17"]
+            },
+            "VCLinkerTool": {
+              "DelayLoadDLLs": ["nvEncodeAPI64.dll"],
+              "AdditionalDependencies": ["delayimp.lib"]
             }
           },
           "copies": [
