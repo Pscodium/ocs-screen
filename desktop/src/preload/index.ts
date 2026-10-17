@@ -89,7 +89,18 @@ const api = {
     writeText: (text: string): Promise<void> => ipcRenderer.invoke("clipboard:write-text", text),
   },
   capture: {
-    listSources: (): Promise<CaptureSource[]> => ipcRenderer.invoke("capture:list-sources"),
+    // `windowsOnly` — atualização periódica do seletor (miniaturas ao vivo + janelas novas) sem
+    // tocar nas telas: listar telas pausa a captura nativa de monitor por um instante (ver
+    // "capture:list-sources"), o que a cada ~1s viraria buraco no vídeo de uma transmissão no ar.
+    listSources: (options?: { windowsOnly?: boolean }): Promise<CaptureSource[]> =>
+      ipcRenderer.invoke("capture:list-sources", options),
+    // Miniaturas AO VIVO das janelas (desenhadas pelo DWM por cima do app): retângulo de cada
+    // tile + área visível, em pixels físicos da área cliente. Lista vazia remove todas.
+    setLiveThumbnails: (
+      items: { hwnd: number; x: number; y: number; w: number; h: number }[],
+      clip: { x: number; y: number; w: number; h: number },
+    ) => ipcRenderer.send("capture:live-thumbnails", items, clip),
+    topLevelWindows: (): Promise<number[]> => ipcRenderer.invoke("capture:top-level-windows"),
   },
   updater: {
     onAvailable: (callback: (info: UpdateAvailableInfo) => void) => {

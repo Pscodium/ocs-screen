@@ -107,6 +107,45 @@
   todo commit) e gerar o addon no build (`npm run dist` chamando `node-gyp rebuild`) — conferir que
   o `electron-builder.yml` continua achando `.node` + DLLs.
 
+## Sprint 40 — Lip sync após trocar de jogo pra janela, miniaturas ao vivo no seletor (2026-10-16)
+
+Relato do usuário: trocar de tela→janela do Chrome (vídeo de fala) ok; trocar de um jogo pesado
+(Rocket League) → janela do Chrome tocando vídeo = áudio fora de sincronia com o vídeo.
+
+- [x] **Medição de sincronia de ponta a ponta ("relógio")** — `av-clock.html` (skill native-e2e):
+  flash branco + bipe de 1kHz juntos a cada 1s. `e2e-run.js AV_CLOCK=1` mede no espectador bipe
+  ouvido − flash exibido; `AV_SYNC=1` registra o atraso do áudio vs. relógio do vídeo dentro do
+  player (`nativeAudioPlayer.onSyncStats`); `SWAP_AT/SWAP_HWND` troca de fonte ao vivo no meio.
+- [x] **Causa: app capturado sem GPU com o jogo saturando em segundo plano** — com o jogo ainda
+  rodando (GPU a 99%), o Chrome quase não apresenta frames (medido no host: 11 frames em 8s; ou
+  frames 0.4s+ velhos) enquanto o áudio dele (CPU) segue no horário → na própria fonte o vídeo
+  chega 400-500ms atrás do som (harness: bipe −450ms em relação ao flash; sem jogo: +30ms). Não é
+  a troca em si: capturar o Chrome com o jogo rodando dá o mesmo. **Fix**: prioridade de GPU
+  "tempo real" pra árvore de processos do app da janela capturada (`SetCapturedAppGpuBoost`,
+  addon.cpp) — medido: mesmo cenário, bipe +8..+19ms do flash, jogo 36→32fps. Mas no PRÓPRIO jogo
+  pesado isso derruba a captura (o DWM fica sem GPU: 31→~0fps), e os contadores de GPU por processo
+  do Windows não identificam o pesado (8% pro gamesim com nvidia-smi em 99%) — então o main testa
+  uma vez por fonte (`tickAppGpuBoost`): mede 1s, liga, mede 1s; caiu >15% → desliga de vez
+  ("rejected"). Medido: jogo pesado → rejected (1s de queda na captura e volta a 34fps); Chrome →
+  on (42→71fps). Log do host: `appGpuBoost=off|trial|on|rejected`.
+- [ ] **Latência sobe ~150ms por ~25s depois de toda troca de fonte** (medido, mesmo sem jogo:
+  buffer 37→195ms). Alguns pacotes de áudio chegam ~140ms atrasados no espectador na troca, e a
+  regra do áudio no `playoutClock` (máximo de 10s, subida imediata) segura isso e depois desce a
+  10ms/s. A sincronia não é afetada (os dois esperam juntos). Investigar a origem do atraso
+  (suspeita: thread principal do viewer ocupada reconfigurando decoder) ou zerar o relógio na
+  troca.
+- [ ] **Áudio ~45ms atrás do vídeo no espectador** (medido com `AV_SYNC`, estável): o relógio de
+  apresentação não desconta a latência de saída do áudio do Chrome (`outputLatency` ~40ms aqui) —
+  o worklet toca "o mais cedo possível" atrás do alvo. Corrigir = vídeo esperar ~40ms a mais.
+  Dentro da tolerância de lip sync, decisão de latência vs. sincronia exata fica com o usuário.
+- [x] **Seletor: miniaturas de janela ao vivo + janelas novas aparecem sozinhas** — DWM thumbnails
+  (`DwmRegisterThumbnail`, como o Alt+Tab) desenhadas pelo próprio DWM por cima de cada tile
+  (`ThumbnailsUpdate`, renderer manda os retângulos), custo ~zero. Janela aberta/fechada com o
+  seletor aberto: checagem barata de janelas de topo 1x/s (`ListTopLevelWindows`) e só relista
+  quando muda — relistar (`desktopCapturer.getSources`) trava a thread main ~50ms (medido), o que
+  ao vivo seria engasgo no vídeo. Testado: notepad aberto → tile aparece; fechado → some. Telas
+  continuam com miniatura fixa ao vivo (fora do ar são refeitas a cada 2s).
+
 ## Sprint 39 — Picker de janelas, senha/sala privada no desktop (2026-10-15)
 
 - [x] **Aba "Janelas" escondia tiles** — `.picker-body` usava `justify-content: center`; com a grade

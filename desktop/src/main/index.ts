@@ -468,7 +468,8 @@ ipcMain.handle("clipboard:write-text", (_event, text: string) => {
 
 // Fontes de captura (monitores/janelas) — substitui o diálogo padrão do getDisplayMedia por
 // uma lista que a própria UI do app renderiza, sem passar pela permissão do browser.
-ipcMain.handle("capture:list-sources", async () => {
+ipcMain.handle("capture:list-sources", async (_event, options?: { windowsOnly?: boolean }) => {
+  const windowsOnly = options?.windowsOnly === true;
   // Bug real (relatado trocando de fonte AO VIVO com Monitor 1 compartilhado via pipeline nativo):
   // só "Tela cheia" aparecia na aba "Telas" do seletor, os monitores individuais sumiam. Causa:
   // `desktopCapturer.getSources({types:["screen"]})` do Chromium tenta capturar UMA miniatura POR
@@ -482,12 +483,12 @@ ipcMain.handle("capture:list-sources", async () => {
   // enquanto o Chromium enumera, e retomar a MESMA fonte de antes logo em seguida — janela curta o
   // bastante (só a duração do próprio `getSources`) pra não derrubar viewers conectados, só perde
   // uns frames de vídeo nesse intervalo (mesmo tipo de gap tolerado por timeout normal no loop).
-  const pauseNativeCapture = ntActive && ntMonitorIndex !== null && !!nativeCapture;
+  const pauseNativeCapture = !windowsOnly && ntActive && ntMonitorIndex !== null && !!nativeCapture;
   if (pauseNativeCapture) nativeCapture!.stop();
   let sources;
   try {
     sources = await desktopCapturer.getSources({
-      types: ["screen", "window"],
+      types: windowsOnly ? ["window"] : ["screen", "window"],
       thumbnailSize: { width: 300, height: 200 },
       fetchWindowIcons: true,
     });
@@ -514,6 +515,32 @@ ipcMain.handle("capture:list-sources", async () => {
       appIconDataUrl: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null,
     }));
 });
+
+// Miniaturas ao vivo do seletor de fonte (ver addon.cpp `ThumbnailsUpdate`) — o renderer manda o
+// retângulo de cada tile de janela (pixels físicos da área cliente) e a área visível; lista vazia
+// some com todas.
+type ThumbRect = { x: number; y: number; w: number; h: number };
+const isFiniteRect = (r: unknown): r is ThumbRect =>
+  !!r && typeof r === "object" && ["x", "y", "w", "h"].every((k) => Number.isFinite((r as Record<string, unknown>)[k]));
+ipcMain.on("capture:live-thumbnails", (event, items: unknown, clip: unknown) => {
+  if (!nativeCapture) return;
+  const win = resolveWindow(event);
+  if (!win || !Array.isArray(items) || !isFiniteRect(clip)) return;
+  const valid = items.filter(
+    (i): i is ThumbRect & { hwnd: number } => isFiniteRect(i) && Number.isFinite((i as { hwnd?: unknown }).hwnd),
+  );
+  if (valid.length === 0) {
+    nativeCapture.thumbnailsClear();
+    return;
+  }
+  const handle = win.getNativeWindowHandle();
+  const destHwnd = Number(handle.length >= 8 ? handle.readBigUInt64LE(0) : handle.readUInt32LE(0));
+  nativeCapture.thumbnailsUpdate(destHwnd, valid, clip);
+});
+
+// Janelas de topo abertas agora (HWNDs) — o seletor compara com a lista anterior pra saber se
+// precisa relistar fontes (relistar é caro, ver addon.cpp `ListTopLevelWindows`).
+ipcMain.handle("capture:top-level-windows", () => nativeCapture?.listTopLevelWindows() ?? []);
 
 // Captura nativa (DXGI Desktop Duplication + Direct3D 11) — alternativa ao WGC-via-Chromium do
 // `desktopCapturer` acima. Ver docs/NATIVE_CAPTURE.md. Só existe em Windows; carregamento com
@@ -565,6 +592,14 @@ interface NativeCaptureAddon {
     height?: number;
   } | null;
   setCursorEnabled(enabled: boolean): void;
+  // Captura de JANELA: prioridade de GPU "tempo real" pro app capturado (ver addon.cpp e
+  // `tickAppGpuBoost`). Retorna false se não tem árvore de processo rastreada.
+  setCapturedAppGpuBoost(enabled: boolean): boolean;
+  // Miniaturas AO VIVO do seletor (DWM thumbnails desenhadas por cima da janela do app) e lista
+  // barata de janelas de topo — ver addon.cpp `ThumbnailsUpdate`/`ListTopLevelWindows`.
+  thumbnailsUpdate(destHwnd: number, items: { hwnd: number; x: number; y: number; w: number; h: number }[], clip: { x: number; y: number; w: number; h: number }): void;
+  thumbnailsClear(): void;
+  listTopLevelWindows(): number[];
   // Encoder NVENC (Fase 3) — opera sobre a captura já em andamento (mesmo device/dimensões do
   // CaptureCore). Ver addon.cpp: InitEncoder/EncodeCurrentFrame/ForceKeyframe/SetEncoderBitrate.
   // `codec` opcional ("h264"/"hevc", padrão "h264") é o PEDIDO — cascata de fallback interna
@@ -877,6 +912,46 @@ const SIMULCAST_LOW_FPS = 15;
 let ntMonitorIndex: number | null = null;
 let ntHwnd: number | null = null;
 
+// Prioridade de GPU do app da JANELA capturada (ver addon.cpp `SetCapturedAppGpuBoost`). Bug real:
+// jogo saturando a GPU em segundo plano + transmitindo uma janela do Chrome → o Chrome passa fome
+// de GPU (medido: 11 frames em 8s, ou frames que chegam 0.4s+ velhos), o vídeo fica atrasado em
+// relação ao áudio (que é CPU e segue no horário) já na fonte. "Tempo real" pro app capturado
+// resolve — mas no PRÓPRIO jogo pesado derruba a captura (o DWM fica sem GPU), e não dá pra saber
+// de antemão quem é o pesado (contador de GPU por processo do Windows não é confiável, ver
+// addon.cpp). Então testa uma vez por fonte: mede 1s, liga ("trial"), mede 1s; se a taxa de frames
+// caiu, desliga de vez pra essa fonte ("rejected").
+let ntAppBoost: "off" | "trial" | "on" | "rejected" = "off";
+let ntAppBoostBaseFps = 0;
+let ntAppBoostSeconds = 0;
+
+function resetAppGpuBoost(): void {
+  ntAppBoost = "off";
+  ntAppBoostBaseFps = 0;
+  ntAppBoostSeconds = 0;
+}
+
+// 1x/s com os frames entregues pela captura no último segundo.
+function tickAppGpuBoost(acquiredLastSecond: number): void {
+  if (!nativeCapture) return;
+  ntAppBoostSeconds++;
+  if (ntAppBoost === "off") {
+    // 1º segundo da fonte nova ainda tem o transitório da troca — mede o 2º.
+    if (ntAppBoostSeconds >= 2 && nativeCapture.setCapturedAppGpuBoost(true)) {
+      ntAppBoost = "trial";
+      ntAppBoostBaseFps = acquiredLastSecond;
+    }
+  } else if (ntAppBoost === "trial") {
+    // Caiu = o app capturado é quem satura a GPU. Base quase zero = tela parada (ou app já sem
+    // GPU nenhuma), não dá pra concluir nada — mantém.
+    if (ntAppBoostBaseFps >= 5 && acquiredLastSecond < ntAppBoostBaseFps * 0.85) {
+      nativeCapture.setCapturedAppGpuBoost(false);
+      ntAppBoost = "rejected";
+    } else {
+      ntAppBoost = "on";
+    }
+  }
+}
+
 // `monitorIndex` OU `hwnd` (nunca os dois) — decide o backend nativo certo (DXGI/monitor vs
 // WGC/janela, ver addon.cpp `Start`/`StartWindow`).
 function startNativeCaptureSource(monitorIndex?: number, hwnd?: number): boolean {
@@ -1066,6 +1141,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   ntCodecFallbackDone = false;
   ntMonitorIndex = monitorIndex ?? null;
   ntHwnd = hwnd ?? null;
+  resetAppGpuBoost();
 
   if (!startNativeCaptureSource(monitorIndex, hwnd)) return false;
   nativeCapture.setCursorEnabled(showCursor);
@@ -1591,10 +1667,12 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // `audioRms`/`audioSources` só existem com áudio nativo ativo — diagnóstico pra confirmar AO
       // VIVO quais apps o mixer tá capturando e se tem som passando (ver AudioCaptureCore.h).
       // `audioLag`/`audioLate` = folga do mixer (se `audioLate` > 0, `kMixLatency` tá curto).
-      let audioInfo = "audio=off";
+      if (ntHwnd !== null) tickAppGpuBoost(dbgAcquired);
+      let audioInfo = ntHwnd !== null ? `appGpuBoost=${ntAppBoost} ` : "";
+      audioInfo += "audio=off";
       if (ntAudioActive) {
         const mix = nativeCapture.getAudioMixStats();
-        audioInfo = `audioRms=${nativeCapture.getAudioRms().toFixed(5)} audioSources=[${nativeCapture.getAudioSources().join(",")}] audioLag=${mix.maxArrivalLagMs.toFixed(1)}ms audioLate=${mix.lateSamples}`;
+        audioInfo = (ntHwnd !== null ? `appGpuBoost=${ntAppBoost} ` : "") + `audioRms=${nativeCapture.getAudioRms().toFixed(5)} audioSources=[${nativeCapture.getAudioSources().join(",")}] audioLag=${mix.maxArrivalLagMs.toFixed(1)}ms audioLate=${mix.lateSamples}`;
       }
       console.log(
         `[native-transport] acquired=${dbgAcquired} timeouts=${dbgTimeouts} encodedPackets=${dbgEncodedPackets} emptyEncodeCalls=${dbgEncodedEmptyCalls} sendOk=${dbgSendOk} sendFail=${dbgSendFail} bytes=${dbgBytes} viewersConnected=${nativeCapture.transportConnectedCount()} bitrateHighBps=${ntAimdHigh.currentBitrateBps} bitrateLowBps=${ntAimdLow.currentBitrateBps} droppedHigh=${dbgDroppedHigh} ${audioInfo}`,
@@ -1659,6 +1737,7 @@ ipcMain.handle(
     nativeCapture.setCursorEnabled(args.showCursor);
     ntMonitorIndex = args.monitorIndex ?? null;
     ntHwnd = args.hwnd ?? null;
+    resetAppGpuBoost();
     startNativeAudioForSource(args.hwnd);
 
     if (!nativeCapture.initEncoder(ntTargetFps, ntBitrateBps, ntActiveCodec)) {

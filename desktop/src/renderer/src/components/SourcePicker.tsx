@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { CaptureSource } from "../../../preload/index";
 import { isNativeCaptureAvailable } from "../services/nativeCapture";
 import { SettingsAdvanced, SettingsPrimary } from "./SettingsForm";
@@ -26,6 +26,42 @@ type SourcePickerProps = (SourcePickerConfigurable | Partial<Record<keyof Source
 
 type Tab = "screen" | "window";
 
+// Ao vivo: só a checagem barata de janelas abertas (relista quando muda). Fora do ar: relista tudo
+// (atualiza também as miniaturas de tela — sem transmissão, o custo na thread main não importa).
+const POLL_LIVE_MS = 1000;
+const POLL_IDLE_MS = 2000;
+
+// Captura nativa: telas ganham o índice de monitor equivalente (DXGI — ordem de enumeração do
+// Electron/Chromium e do EnumOutputs é a mesma que o Windows expõe; testado com 1 monitor,
+// multi-monitor cai de volta pro desktopCapturer se não bater) e janelas o HWND, que vem embutido
+// no id do desktopCapturer ("window:<hwnd>:<n>" no Windows) — ver capture.ts/docs/NATIVE_CAPTURE.md.
+function tagSources(list: CaptureSource[], nativeAvailable: boolean): CaptureSource[] {
+  let screenIndex = 0;
+  return list.map((source) => {
+    if (source.type === "screen" && nativeAvailable) return { ...source, nativeMonitorIndex: screenIndex++ };
+    if (source.type === "window" && nativeAvailable) {
+      const match = source.id.match(/^window:(-?\d+):/);
+      if (match) return { ...source, nativeWindowHandle: Number(match[1]) };
+    }
+    return source;
+  });
+}
+
+// Mantém a ordem que o usuário já está vendo (tile não pula de lugar a cada atualização): atualiza
+// as que continuam, some com as fechadas, novas vão pro fim. `keepScreens` = a lista nova só tem
+// janelas (atualização ao vivo), as telas anteriores ficam como estão.
+function mergeSources(prev: CaptureSource[] | null, fresh: CaptureSource[], keepScreens: boolean): CaptureSource[] {
+  if (!prev) return fresh;
+  const byId = new Map(fresh.map((s) => [s.id, s]));
+  const kept = prev.flatMap((s) => {
+    if (keepScreens && s.type === "screen") return [s];
+    const next = byId.get(s.id);
+    return next ? [next] : [];
+  });
+  const known = new Set(prev.map((s) => s.id));
+  return [...kept, ...fresh.filter((s) => !known.has(s.id))];
+}
+
 export function SourcePicker({
   settings,
   onSettingsChange,
@@ -52,36 +88,60 @@ export function SourcePicker({
   }, []);
 
   useEffect(() => {
-    // Captura nativa (DXGI) só existe pra monitor inteiro, nunca janela — marca as fontes do tipo
-    // "screen" com o índice de monitor equivalente pra `capture.ts` poder decidir qual caminho
-    // usar (nativo vs desktopCapturer). Ordem de enumeração de tela do Electron/Chromium e de
-    // saída do DXGI (EnumOutputs) seguem a mesma ordem que o Windows expõe os monitores — testado
-    // em produção com 1 monitor; setups multi-monitor caem de volta pro desktopCapturer se a
-    // ordem não bater (usuário sempre pode escolher outro tile).
-    Promise.all([window.screenshare.capture.listSources(), isNativeCaptureAvailable()])
-      .then(([list, nativeAvailable]) => {
-        let screenIndex = 0;
-        const tagged = list.map((source) => {
-          if (source.type === "screen" && nativeAvailable) {
-            return { ...source, nativeMonitorIndex: screenIndex++ };
-          }
-          // Backend WGC (janela, ver docs/NATIVE_CAPTURE.md §Backend Abstrato) — HWND vem
-          // embutido no id do desktopCapturer, formato "window:<hwnd>:<n>" no Windows.
-          if (source.type === "window" && nativeAvailable) {
-            const match = source.id.match(/^window:(-?\d+):/);
-            if (match) {
-              return { ...source, nativeWindowHandle: Number(match[1]) };
-            }
-          }
-          return source;
-        });
-        setSources(tagged);
-        if (!tagged.some((s) => s.type === "screen") && tagged.some((s) => s.type === "window")) {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let knownWindows = "";
+    // Ao vivo (troca de fonte = sem `settings`), relistar só JANELAS — relistar telas pausa a
+    // captura nativa de monitor por um instante (ver preload `listSources`).
+    const live = !settings;
+
+    // Janela aberta/fechada com o seletor aberto aparece/some sozinha (antes a lista era montada
+    // uma vez: janela nova só aparecia saindo e voltando). Relistar (`getSources`) trava a thread
+    // main ~50ms — numa transmissão no ar isso é engasgo no vídeo —, então só relista quando a
+    // lista barata de janelas de topo mudou. As miniaturas de janela são ao vivo à parte (DWM,
+    // `useLiveThumbnails`); as de tela ficam fixas ao vivo, e fora dele são refeitas junto.
+    const load = async (first: boolean) => {
+      try {
+        const [list, nativeAvailable] = await Promise.all([
+          window.screenshare.capture.listSources(first || !live ? undefined : { windowsOnly: true }),
+          isNativeCaptureAvailable(),
+        ]);
+        if (cancelled) return;
+        const fresh = tagSources(list, nativeAvailable);
+        setSources((prev) => mergeSources(prev, fresh, !first && live));
+        if (first && !fresh.some((s) => s.type === "screen") && fresh.some((s) => s.type === "window")) {
           setTab("window");
         }
-      })
-      .catch(() => setError("Não foi possível listar telas/janelas."));
+      } catch {
+        if (first && !cancelled) setError("Não foi possível listar telas/janelas.");
+      }
+    };
+    const poll = async () => {
+      try {
+        const windows = (await window.screenshare.capture.topLevelWindows()).sort((x, y) => x - y).join(",");
+        if (cancelled) return;
+        const changed = windows !== knownWindows;
+        knownWindows = windows;
+        if (changed || !live) await load(false);
+      } finally {
+        if (!cancelled) timer = setTimeout(poll, live ? POLL_LIVE_MS : POLL_IDLE_MS);
+      }
+    };
+    load(true).then(() => window.screenshare.capture.topLevelWindows()).then((w) => {
+      if (cancelled) return;
+      knownWindows = w.sort((x, y) => x - y).join(",");
+      timer = setTimeout(poll, live ? POLL_LIVE_MS : POLL_IDLE_MS);
+    });
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // `settings` só decide o modo (ao vivo ou não) — não reinicia a cada mudança de configuração.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useLiveThumbnails(bodyRef, tab === "window" && pendingId === null, sources);
 
   const filtered = useMemo(() => sources?.filter((s) => s.type === tab) ?? [], [sources, tab]);
   const screenCount = sources?.filter((s) => s.type === "screen").length ?? 0;
@@ -195,7 +255,7 @@ export function SourcePicker({
 
             {error && <p className="error-text picker-error">{error}</p>}
 
-            <div className="picker-body">
+            <div className="picker-body" ref={bodyRef}>
               {!sources && !error && (
                 <div className="picker-grid">
                   {Array.from({ length: 6 }).map((_, i) => (
@@ -252,7 +312,7 @@ function SourceTile({
       onClick={onPick}
       disabled={disabled}
     >
-      <div className="picker-thumbnail-wrap">
+      <div className="picker-thumbnail-wrap" data-live-hwnd={source.nativeWindowHandle}>
         {thumbnailBroken ? (
           <div className="picker-thumbnail picker-thumbnail-fallback">
             {source.appIconDataUrl ? (
@@ -283,4 +343,53 @@ function SourceTile({
       </span>
     </button>
   );
+}
+
+// Miniaturas AO VIVO das janelas: o DWM desenha o conteúdo atual de cada janela por cima do tile
+// (ver addon.cpp `ThumbnailsUpdate`) — aqui só informa onde cada tile está (pixels físicos da área
+// cliente) e a área visível do corpo rolável, sempre que algo pode ter mexido no layout. A
+// miniatura estática continua embaixo (aparece se o DWM não registrar a janela).
+function useLiveThumbnails(bodyRef: RefObject<HTMLDivElement | null>, enabled: boolean, sources: CaptureSource[] | null) {
+  useEffect(() => {
+    const body = bodyRef.current;
+    const clear = () => window.screenshare.capture.setLiveThumbnails([], { x: 0, y: 0, w: 0, h: 0 });
+    if (!enabled || !body) {
+      clear();
+      return;
+    }
+    let frame = 0;
+    const send = () => {
+      frame = 0;
+      const dpr = window.devicePixelRatio;
+      const clipRect = body.getBoundingClientRect();
+      const items = [...body.querySelectorAll<HTMLElement>("[data-live-hwnd]")].map((el) => {
+        const r = el.getBoundingClientRect();
+        return { hwnd: Number(el.dataset.liveHwnd), x: r.left * dpr, y: r.top * dpr, w: r.width * dpr, h: r.height * dpr };
+      });
+      window.screenshare.capture.setLiveThumbnails(items, {
+        x: clipRect.left * dpr,
+        y: clipRect.top * dpr,
+        w: clipRect.width * dpr,
+        h: clipRect.height * dpr,
+      });
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(send);
+    };
+    schedule();
+    body.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    const observer = new ResizeObserver(schedule);
+    observer.observe(body);
+    // Janela redimensionando (seletor abrindo) e fontes mudando de tamanho — rede de segurança.
+    const interval = setInterval(schedule, 500);
+    return () => {
+      body.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      observer.disconnect();
+      clearInterval(interval);
+      if (frame) cancelAnimationFrame(frame);
+      clear();
+    };
+  }, [bodyRef, enabled, sources]);
 }

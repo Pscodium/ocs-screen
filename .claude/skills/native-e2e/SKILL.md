@@ -130,6 +130,19 @@ grave a saída do Chrome do viewer com o próprio addon: `initAudioCaptureForWin
 descontinuidade; pico acima da amplitude da fonte = sobreposição. Referência (2026-10-16, worklet):
 0 eventos em janela. Monitor não dá na mesma máquina (o loopback do sistema pega o próprio viewer).
 
+## 2c. Sincronia A/V de ponta a ponta ("relógio")
+
+Abrir `scripts/av-clock.html` num Chrome à parte (flash branco + bipe juntos a cada 1s), com
+`--autoplay-policy=no-user-gesture-required --disable-backgrounding-occluded-windows
+--disable-renderer-backgrounding` (sem isso, coberta por outra janela a página para de animar e
+de bipar), e transmitir a janela dela: `AV_CLOCK=1 UNMUTE=1 HWND=<janela>` → imprime bipe ouvido −
+flash exibido por evento (+ = áudio atrasado). `AV_SYNC=1` mostra o atraso do áudio dentro do
+player. `SWAP_AT=<s> SWAP_HWND=<h>` troca de fonte no meio. Referência (2026-10-16): ~+90ms ponta
+a ponta (≈ +30 host/fonte, +45..50 viewer). Medir o lado do host sozinho (sem viewer): dump do
+bitstream + onset do áudio no mixer (instrumentação temporária) e brilho por frame com
+`ffmpeg -vf signalstats`. Com jogo pesado na MESMA máquina o espectador local também passa fome
+de GPU — a medida do viewer deixa de valer; use a do host.
+
 ## 3. Decompor latência (quando o número não fechar)
 
 Instrumentação TEMPORÁRIA em `viewer/src/hooks/useNativeStream.ts` (o vite recarrega sozinho;

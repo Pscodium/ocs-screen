@@ -16,6 +16,13 @@
 //   NO_DECODE=hevc,av1   espectador finge NÃO decodificar esses codecs (isConfigSupported → false) —
 //                         testa o fallback de codec do host
 //   E2E_HOST_LOG=<arquivo> grava o log inteiro do host (com E2E_ALL_LOGS=1, sem filtro)
+//   AV_SYNC=1             registra a sincronia A/V do espectador (atraso do áudio vs. relógio do
+//                         vídeo, a cada ~0.5s — ver nativeAudioPlayer.ts) e imprime por segundo.
+//                         Precisa de UNMUTE=1 (áudio só toca desmutado).
+//   AV_CLOCK=1            sincronia A/V de PONTA A PONTA: transmita a janela de `av-clock.html`
+//                         (flash + bipe juntos a cada 1s) e o espectador mede bipe ouvido − flash
+//                         exibido (positivo = áudio atrasado). Precisa de UNMUTE=1.
+//   SWAP_AT=<s> SWAP_HWND=<h> | SWAP_MONITOR=<i>  troca de fonte ao vivo no segundo <s>
 //   UNMUTE=1              desmuta o espectador (áudio tocando de verdade no Chrome do viewer)
 //   HWND=<handle>         transmite essa JANELA (WGC) em vez do monitor — ex.: a do gamesim
 const path = require("path");
@@ -96,6 +103,18 @@ let hostExit = null;
       };
     }, process.env.NO_DECODE.split(","));
   }
+  if (process.env.AV_SYNC) await page.addInitScript(() => (window.__ocsAvSync = []));
+  if (process.env.AV_CLOCK) {
+    // Guarda os GainNode criados — o do player nativo é a saída final do áudio do espectador.
+    await page.addInitScript(() => {
+      const orig = AudioContext.prototype.createGain;
+      AudioContext.prototype.createGain = function () {
+        const g = orig.call(this);
+        (window.__ocsGains ||= []).push(g);
+        return g;
+      };
+    });
+  }
   if (process.env.ACK_DELAY_TEST) {
     await page.addInitScript(() => {
       window.__ackDelayMs = 0;
@@ -133,6 +152,55 @@ let hostExit = null;
     });
   }
 
+  if (process.env.AV_CLOCK) {
+    await page.waitForFunction(() => (window.__ocsGains ?? []).some((g) => g.context.state === "running"), null, { timeout: 10000 });
+    await page.evaluate(async () => {
+      window.__clock = { audio: [], video: [] };
+      // Áudio: worklet ligado na saída do player detecta o início de cada bipe; `currentTime` no
+      // worklet é o instante de RENDER — convertido pra quando é OUVIDO via getOutputTimestamp.
+      const gain = window.__ocsGains.find((g) => g.context.state === "running");
+      const ctx = gain.context;
+      const src = `registerProcessor("onset", class extends AudioWorkletProcessor {
+        constructor() { super(); this.quiet = 0; }
+        process(inputs) {
+          const ch = inputs[0][0];
+          if (!ch) return true;
+          for (let i = 0; i < ch.length; i++) {
+            if (Math.abs(ch[i]) > 0.1) {
+              if (this.quiet > 9600) this.port.postMessage(currentTime + i / sampleRate);
+              this.quiet = 0;
+            } else this.quiet++;
+          }
+          return true;
+        }
+      });`;
+      await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([src], { type: "application/javascript" })));
+      const node = new AudioWorkletNode(ctx, "onset", { numberOfOutputs: 0 });
+      gain.connect(node);
+      node.port.onmessage = (e) => {
+        const st = ctx.getOutputTimestamp();
+        window.__clock.audio.push(st.performanceTime + (e.data - st.contextTime) * 1000);
+      };
+      // Vídeo: brilho médio de cada frame exibido; início do flash = 1º frame claro depois de escuro.
+      const v = document.querySelector("video");
+      const c = document.createElement("canvas");
+      c.width = 8; c.height = 8;
+      const g2 = c.getContext("2d", { willReadFrequently: true });
+      let dark = true;
+      const cb = (now, meta) => {
+        g2.drawImage(v, 0, 0, 8, 8);
+        const d = g2.getImageData(0, 0, 8, 8).data;
+        let sum = 0;
+        for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
+        const bright = sum / (64 * 3) > 128;
+        if (bright && dark) window.__clock.video.push(meta.expectedDisplayTime);
+        dark = !bright;
+        v.requestVideoFrameCallback(cb);
+      };
+      v.requestVideoFrameCallback(cb);
+    });
+  }
+
   await page.evaluate(() => {
     const v = document.querySelector("video");
     window.__m = { intervals: [], mediaTimes: [], presentWall: [] };
@@ -158,8 +226,35 @@ let hostExit = null;
       console.log(`t=${s + 1}s ackDelay=${s >= 5 && s < 10 ? 400 : 0} fpsApresentado=${now - last} kfReq=${await page.evaluate(() => window.__kfRequests)}`);
       last = now;
     }
+  } else if (process.env.SWAP_AT) {
+    const swapAt = Number(process.env.SWAP_AT) * 1000;
+    await page.waitForTimeout(swapAt);
+    const target = process.env.SWAP_HWND ? { hwnd: Number(process.env.SWAP_HWND) } : { monitorIndex: Number(process.env.SWAP_MONITOR ?? 0) };
+    const t0 = Date.now();
+    const swapped = await win.evaluate((args) => window.screenshare.nativeTransport.swapSource(args), { ...target, showCursor: true });
+    console.log(`swap-source -> ${swapped} (${Date.now() - t0}ms) em t=${swapAt / 1000}s`);
+    await page.waitForTimeout(Math.max(0, SECONDS * 1000 - swapAt));
   } else {
     await page.waitForTimeout(SECONDS * 1000);
+  }
+  if (process.env.AV_CLOCK) {
+    const { audio, video } = await page.evaluate(() => window.__clock);
+    const t0 = Math.min(audio[0] ?? Infinity, video[0] ?? Infinity);
+    const pairs = [];
+    for (const a of audio) {
+      let best = null;
+      for (const vt of video) if (best === null || Math.abs(a - vt) < Math.abs(a - best)) best = vt;
+      if (best !== null && Math.abs(a - best) < 500) pairs.push(`${((best - t0) / 1000).toFixed(1)}s:${(a - best).toFixed(0)}`);
+    }
+    console.log(`relógio A/V (bipe ouvido − flash exibido, ms; + = áudio atrasado) [${audio.length} bipes, ${video.length} flashes]:`, pairs.join(" "));
+  }
+  if (process.env.AV_SYNC) {
+    const log = await page.evaluate(() => window.__ocsAvSync ?? []);
+    const t0 = log[0]?.atMs ?? 0;
+    console.log(
+      "sincronia A/V (s: atrasoMédio/máx do áudio ms, buffer ms):",
+      log.map((e) => `${((e.atMs - t0) / 1000).toFixed(1)}:${e.lagMs.toFixed(0)}/${e.lagMaxMs.toFixed(0)},b${e.bufferMs}${e.dbg ? " " + e.dbg : ""}`).join(" "),
+    );
   }
 
   const m = await page.evaluate(() => window.__m);

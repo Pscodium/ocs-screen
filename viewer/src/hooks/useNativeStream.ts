@@ -218,7 +218,15 @@ export function useNativeStream(roomId: string, password?: string) {
         const channel = event.channel;
         channel.binaryType = "arraybuffer";
 
-        if (!audioPlayer) audioPlayer = new NativeAudioPlayer();
+        if (!audioPlayer) {
+          audioPlayer = new NativeAudioPlayer();
+          // Teste E2E (sincronia A/V): se a página definiu `window.__ocsAvSync = []`, registra o
+          // atraso do áudio vs. o relógio do vídeo ao longo do tempo.
+          audioPlayer.onSyncStats = (stats) => {
+            const log = (window as unknown as { __ocsAvSync?: unknown[] }).__ocsAvSync;
+            log?.push({ atMs: performance.now(), ...stats, bufferMs: playout.bufferMs });
+          };
+        }
         const player = audioPlayer;
         if (videoRef.current) player.attachVideoElement(videoRef.current);
         setHasAudio(true);

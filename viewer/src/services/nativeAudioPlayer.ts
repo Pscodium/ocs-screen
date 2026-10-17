@@ -43,6 +43,9 @@ class NativeAudioPlayout extends AudioWorkletProcessor {
     this.fadeIn = 0;
     this.lastL = 0;
     this.lastR = 0;
+    this.lagSum = 0;
+    this.lagMax = -Infinity;
+    this.lagCount = 0;
     this.port.onmessage = (e) => this.push(e.data);
   }
   queued() { return this.length - this.head; }
@@ -73,7 +76,20 @@ class NativeAudioPlayout extends AudioWorkletProcessor {
     this.length -= drop;
     this.head -= drop;
   }
-  push({ left, right, target }) {
+  // Diagnóstico de sincronia: quanto o chunk vai tocar DEPOIS do alvo pedido (o alvo é o mesmo
+  // relógio do vídeo, então isso é o atraso do áudio em relação à imagem). Média/máximo a cada
+  // ~0.5s pra thread principal.
+  push(chunk) {
+    this.place(chunk);
+    const startQueued = this.length - chunk.left.length - this.head;
+    const lag = currentTime + startQueued / sampleRate - chunk.target;
+    this.lagSum += lag; this.lagCount++; if (lag > this.lagMax) this.lagMax = lag;
+    if (this.lagCount >= 50) {
+      this.port.postMessage({ lagMs: (this.lagSum / this.lagCount) * 1000, lagMaxMs: this.lagMax * 1000 });
+      this.lagSum = 0; this.lagCount = 0; this.lagMax = -Infinity;
+    }
+  }
+  place({ left, right, target }) {
     const now = currentTime;
     // Alvo no passado/encostado no agora = não dá mais pra tocar no horário (ver MIN_LEAD na
     // classe principal) — mira o mais cedo possível COM folga de fila, senão cada pacote encostaria
@@ -185,6 +201,11 @@ export class NativeAudioPlayer {
   private node: AudioWorkletNode | null = null;
   private pending: PendingChunk[] = [];
   private detachVideo: (() => void) | null = null;
+  // Atraso médio (ms) do áudio em relação ao alvo do relógio de apresentação — o mesmo alvo do
+  // vídeo, ou seja, quanto o som está atrás da imagem (do ponto de vista do agendamento; a latência
+  // de saída do dispositivo já está descontada pelo `getOutputTimestamp`).
+  syncLagMs = 0;
+  onSyncStats: ((stats: { lagMs: number; lagMaxMs: number }) => void) | null = null;
 
   constructor() {
     this.context = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
@@ -197,6 +218,10 @@ export class NativeAudioPlayer {
       .then(() => {
         const node = new AudioWorkletNode(this.context, PROCESSOR_NAME, { numberOfInputs: 0, outputChannelCount: [2] });
         node.connect(this.gain);
+        node.port.onmessage = (e: MessageEvent<{ lagMs: number; lagMaxMs: number }>) => {
+          this.syncLagMs = e.data.lagMs;
+          this.onSyncStats?.(e.data);
+        };
         this.node = node;
         for (const chunk of this.pending) this.post(chunk);
         this.pending = [];

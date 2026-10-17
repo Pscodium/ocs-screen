@@ -12,6 +12,9 @@
 #include <windows.h>
 #include <avrt.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib") // miniaturas ao vivo do seletor (ThumbnailsUpdate)
 #include "CaptureCore.h"
 #include "WindowCaptureCore.h"
 #include "EncoderCore.h"
@@ -161,17 +164,214 @@ Napi::Value NowUs(const Napi::CallbackInfo& info) {
 // `SetGPUThreadPriority`) — `D3DKMTSetProcessSchedulingPriorityClass` (gdi32, sem header público no
 // SDK de user-mode, por isso via GetProcAddress). Valores: 0 idle, 1 abaixo do normal, 2 normal,
 // 3 acima do normal, 4 alta, 5 tempo real (exige admin). Retorna o NTSTATUS (0 = ok).
-static long SetProcessGpuPriorityClass(int priorityClass) {
+static long SetProcessGpuPriorityClass(int priorityClass, DWORD pid = 0) {
     using Fn = LONG(APIENTRY*)(HANDLE, int);
     static Fn fn = reinterpret_cast<Fn>(GetProcAddress(GetModuleHandleW(L"gdi32.dll"), "D3DKMTSetProcessSchedulingPriorityClass"));
     if (!fn) return -1;
-    return fn(GetCurrentProcess(), priorityClass);
+    if (!pid) return fn(GetCurrentProcess(), priorityClass);
+    HANDLE process = OpenProcess(PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process) return -2;
+    const LONG status = fn(process, priorityClass);
+    CloseHandle(process);
+    return status;
+}
+
+// Prioridade de GPU da árvore de processos dona da JANELA capturada — bug real medido (relógio
+// A/V, jogo saturando a GPU em segundo plano enquanto se transmite uma janela do Chrome): o app
+// capturado passa fome de GPU e quase não apresenta frames (11 frames em 8s), enquanto o áudio
+// dele (CPU) segue no horário — o vídeo chega 0.4-4s atrasado em relação ao som NA PRÓPRIA FONTE,
+// nada depois no pipeline consegue corrigir. Com a árvore do app em "tempo real" (mesmo recurso do
+// processo main, ver `Initialize`): 426/480 frames e sincronia normal (jogo caiu de 36 pra 32fps).
+//
+// Mas dar "tempo real" pro PRÓPRIO jogo que satura a GPU deixa o DWM (que compõe a tela e entrega
+// os frames do WGC) sem GPU — medido: captura caindo de 31 pra ~0fps. E não dá pra saber de
+// antemão quem é o pesado: os contadores de uso de GPU por processo do Windows
+// (`\GPU Engine(*)\Utilization Percentage`) mostraram 8% pro gamesim com a GPU a 99% (nvidia-smi).
+// Por isso quem decide é o main (`SetCapturedAppGpuBoost`), testando: liga e vê se a taxa de
+// frames da captura caiu — se caiu, desliga de vez pra essa fonte.
+//
+// Restaurado ao parar/trocar de fonte. Se o app cair sem parar, a prioridade morre junto com o
+// processo capturado quando ELE fechar — não persiste no sistema. Volta sempre pra "normal" (2):
+// ler a classe original (`D3DKMTGetProcessSchedulingPriorityClass`) dá acesso negado pra processo
+// de outro app, mesmo do mesmo usuário.
+static std::vector<DWORD> g_capturedTreePids;
+static bool g_capturedTreeBoosted = false;
+
+static void SetCapturedTreeBoost(bool boost) {
+    if (boost == g_capturedTreeBoosted) return;
+    int changed = 0;
+    for (DWORD pid : g_capturedTreePids) {
+        if (SetProcessGpuPriorityClass(boost ? 5 : 2, pid) == 0) changed++;
+    }
+    g_capturedTreeBoosted = boost;
+    fprintf(stderr, "[capture-core] prioridade de GPU do app capturado: %s (%d processo(s))\n", boost ? "tempo real" : "normal", changed);
+}
+
+static void RestoreCapturedAppGpuPriority() {
+    SetCapturedTreeBoost(false);
+    g_capturedTreePids.clear();
+}
+
+// Árvore de processos do MESMO executável dona da janela (apps multi-processo: o processo de GPU
+// do Chromium é filho da raiz, não da janela) — mesma regra do áudio por janela
+// (AudioCaptureCore.cpp, SameExeRoot).
+static void TrackCapturedAppTree(HWND hwnd) {
+    RestoreCapturedAppGpuPriority();
+    if (getenv("OCS_NO_APP_GPU_BOOST")) return;
+    DWORD windowPid = 0;
+    GetWindowThreadProcessId(hwnd, &windowPid);
+    if (!windowPid || windowPid == GetCurrentProcessId()) return;
+
+    struct Entry { DWORD parent; std::wstring exe; };
+    std::unordered_map<DWORD, Entry> procs;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snapshot, &pe)) {
+        do { procs[pe.th32ProcessID] = {pe.th32ParentProcessID, pe.szExeFile}; } while (Process32NextW(snapshot, &pe));
+    }
+    CloseHandle(snapshot);
+    auto self = procs.find(windowPid);
+    if (self == procs.end()) return;
+    const std::wstring exe = self->second.exe;
+
+    DWORD root = windowPid;
+    for (int depth = 0; depth < 64; depth++) {
+        auto parent = procs.find(procs[root].parent);
+        if (parent == procs.end() || parent->first == root || _wcsicmp(parent->second.exe.c_str(), exe.c_str()) != 0) break;
+        root = parent->first;
+    }
+    for (const auto& [pid, entry] : procs) {
+        if (_wcsicmp(entry.exe.c_str(), exe.c_str()) != 0) continue;
+        DWORD cur = pid;
+        for (int depth = 0; depth < 64 && cur; depth++) {
+            if (cur == root) { g_capturedTreePids.push_back(pid); break; }
+            auto it = procs.find(cur);
+            if (it == procs.end() || it->second.parent == cur) break;
+            cur = it->second.parent;
+        }
+    }
+}
+
+// `info[0]` = liga/desliga "tempo real" pra árvore do app da janela capturada (ver acima).
+Napi::Value SetCapturedAppGpuBoost(const Napi::CallbackInfo& info) {
+    SetCapturedTreeBoost(info.Length() > 0 && info[0].ToBoolean().Value());
+    return Napi::Boolean::New(info.Env(), !g_capturedTreePids.empty());
 }
 
 // Diagnóstico/ajuste: `info[0]` = classe de prioridade de GPU do processo (ver acima).
 Napi::Value SetGpuPriorityClass(const Napi::CallbackInfo& info) {
     if (info.Length() < 1 || !info[0].IsNumber()) return Napi::Number::New(info.Env(), -1);
-    return Napi::Number::New(info.Env(), static_cast<double>(SetProcessGpuPriorityClass(info[0].As<Napi::Number>().Int32Value())));
+    const DWORD pid = info.Length() > 1 && info[1].IsNumber() ? info[1].As<Napi::Number>().Uint32Value() : 0;
+    return Napi::Number::New(info.Env(), static_cast<double>(SetProcessGpuPriorityClass(info[0].As<Napi::Number>().Int32Value(), pid)));
+}
+
+// Miniaturas AO VIVO do seletor de fonte — DWM thumbnails (`DwmRegisterThumbnail`, a mesma API do
+// Alt+Tab/barra de tarefas): o próprio DWM desenha o conteúdo atual de cada janela, em tempo real,
+// num retângulo da janela do app. Custo quase zero (é composição do DWM, sem captura/cópia nossa) —
+// a alternativa óbvia, refazer as miniaturas do `desktopCapturer.getSources` periodicamente,
+// trava a thread main do Electron ~50ms por chamada (medido), o que numa troca de fonte ao vivo
+// vira engasgo no vídeo de quem está assistindo. Só janelas: monitor não tem DWM thumbnail.
+//
+// A miniatura é desenhada POR CIMA do conteúdo web da janela (o renderer só informa onde fica cada
+// tile, em pixels físicos da área cliente); o `clip` corta o que estiver fora da área rolável
+// visível do seletor.
+static std::unordered_map<HWND, HTHUMBNAIL> g_thumbnails;
+
+static void ClearThumbnails() {
+    for (auto& [src, thumb] : g_thumbnails) DwmUnregisterThumbnail(thumb);
+    g_thumbnails.clear();
+}
+
+static HWND HwndFromValue(const Napi::Value& value) {
+    return reinterpret_cast<HWND>(static_cast<uintptr_t>(value.As<Napi::Number>().Int64Value()));
+}
+
+// `info[0]` = HWND da janela do app (destino), `info[1]` = [{ hwnd, x, y, w, h }] (tile de cada
+// fonte, pixels físicos da área cliente), `info[2]` = { x, y, w, h } área visível (corte).
+// Fontes que não vieram mais são removidas.
+Napi::Value ThumbnailsUpdate(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsArray() || !info[2].IsObject()) return env.Undefined();
+    HWND dest = HwndFromValue(info[0]);
+    Napi::Array items = info[1].As<Napi::Array>();
+    Napi::Object clipObj = info[2].As<Napi::Object>();
+    auto num = [](const Napi::Object& o, const char* key) { return o.Get(key).ToNumber().DoubleValue(); };
+    const double clipL = num(clipObj, "x"), clipT = num(clipObj, "y");
+    const double clipR = clipL + num(clipObj, "w"), clipB = clipT + num(clipObj, "h");
+
+    std::unordered_map<HWND, bool> wanted;
+    for (uint32_t i = 0; i < items.Length(); i++) {
+        Napi::Object item = items.Get(i).As<Napi::Object>();
+        HWND src = HwndFromValue(item.Get("hwnd"));
+        if (!IsWindow(src)) continue;
+        wanted[src] = true;
+
+        auto it = g_thumbnails.find(src);
+        if (it == g_thumbnails.end()) {
+            HTHUMBNAIL thumb = nullptr;
+            if (FAILED(DwmRegisterThumbnail(dest, src, &thumb))) continue;
+            it = g_thumbnails.emplace(src, thumb).first;
+        }
+        SIZE srcSize{};
+        if (FAILED(DwmQueryThumbnailSourceSize(it->second, &srcSize)) || srcSize.cx <= 0 || srcSize.cy <= 0) continue;
+
+        // Encaixa mantendo a proporção (mesmo `object-fit: contain` da miniatura estática).
+        const double x = num(item, "x"), y = num(item, "y"), w = num(item, "w"), h = num(item, "h");
+        const double scale = std::min(w / srcSize.cx, h / srcSize.cy);
+        const double dw = srcSize.cx * scale, dh = srcSize.cy * scale;
+        double l = x + (w - dw) / 2, t = y + (h - dh) / 2, r = l + dw, b = t + dh;
+        // Corte pela área visível: recorta o destino e o pedaço equivalente da origem.
+        const double cl = std::max(l, clipL), ct = std::max(t, clipT), cr = std::min(r, clipR), cb = std::min(b, clipB);
+
+        DWM_THUMBNAIL_PROPERTIES props{};
+        props.dwFlags = DWM_TNP_VISIBLE | DWM_TNP_RECTDESTINATION | DWM_TNP_RECTSOURCE | DWM_TNP_OPACITY | DWM_TNP_SOURCECLIENTAREAONLY;
+        props.fSourceClientAreaOnly = FALSE;
+        props.opacity = 255;
+        props.fVisible = cr > cl && cb > ct;
+        if (props.fVisible) {
+            props.rcDestination = {static_cast<LONG>(cl), static_cast<LONG>(ct), static_cast<LONG>(cr), static_cast<LONG>(cb)};
+            props.rcSource = {static_cast<LONG>((cl - l) / scale), static_cast<LONG>((ct - t) / scale),
+                              static_cast<LONG>((cr - l) / scale), static_cast<LONG>((cb - t) / scale)};
+        }
+        DwmUpdateThumbnailProperties(it->second, &props);
+    }
+    for (auto it = g_thumbnails.begin(); it != g_thumbnails.end();) {
+        if (wanted.count(it->first)) {
+            ++it;
+            continue;
+        }
+        DwmUnregisterThumbnail(it->second);
+        it = g_thumbnails.erase(it);
+    }
+    return env.Undefined();
+}
+
+Napi::Value ThumbnailsClear(const Napi::CallbackInfo& info) {
+    ClearThumbnails();
+    return info.Env().Undefined();
+}
+
+// Janelas de topo visíveis (HWNDs) — barato (EnumWindows), usado pelo seletor pra perceber janela
+// aberta/fechada sem chamar o `desktopCapturer.getSources` (caro, ver acima) a cada segundo.
+Napi::Value ListTopLevelWindows(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    std::vector<HWND> windows;
+    EnumWindows(
+        [](HWND hwnd, LPARAM param) -> BOOL {
+            if (!IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER)) return TRUE;
+            if (GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return TRUE;
+            BOOL cloaked = FALSE;
+            DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
+            if (cloaked) return TRUE;
+            reinterpret_cast<std::vector<HWND>*>(param)->push_back(hwnd);
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&windows));
+    Napi::Array arr = Napi::Array::New(env, windows.size());
+    for (size_t i = 0; i < windows.size(); i++) arr.Set(i, Napi::Number::New(env, static_cast<double>(reinterpret_cast<uintptr_t>(windows[i]))));
+    return arr;
 }
 
 Napi::Value Initialize(const Napi::CallbackInfo& info) {
@@ -258,12 +458,14 @@ Napi::Value StartWindow(const Napi::CallbackInfo& info) {
     g_usingWindow = true;
     bool ok = g_windowCore->Start(hwnd);
     if (!ok) g_usingWindow = false;
+    if (ok) TrackCapturedAppTree(hwnd);
     g_lastWindowWidth = 0;
     g_lastWindowHeight = 0;
     return Napi::Boolean::New(env, ok);
 }
 
 Napi::Value Stop(const Napi::CallbackInfo& info) {
+    RestoreCapturedAppGpuPriority();
     if (g_core) g_core->Stop();
     if (g_windowCore) g_windowCore->Stop();
     return info.Env().Undefined();
@@ -1117,6 +1319,10 @@ Napi::Value TransportOnStateChange(const Napi::CallbackInfo& info) {
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("initialize", Napi::Function::New(env, Initialize));
     exports.Set("nowUs", Napi::Function::New(env, NowUs));
+    exports.Set("thumbnailsUpdate", Napi::Function::New(env, ThumbnailsUpdate));
+    exports.Set("thumbnailsClear", Napi::Function::New(env, ThumbnailsClear));
+    exports.Set("listTopLevelWindows", Napi::Function::New(env, ListTopLevelWindows));
+    exports.Set("setCapturedAppGpuBoost", Napi::Function::New(env, SetCapturedAppGpuBoost));
     exports.Set("setGpuPriorityClass", Napi::Function::New(env, SetGpuPriorityClass));
     exports.Set("listMonitors", Napi::Function::New(env, ListMonitors));
     exports.Set("start", Napi::Function::New(env, Start));
