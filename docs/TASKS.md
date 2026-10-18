@@ -92,13 +92,36 @@
   RTX 40/50 (AV1 por hardware nunca rodou).
 
 ### D. Melhorias de transmissão
-- [ ] **D1** Encoder H.264 PARALELO pros espectadores sem suporte a HEVC/AV1 (Sprint 38): quem
+- [x] **D1** Encoder H.264 PARALELO pros espectadores sem suporte a HEVC/AV1 (Sprint 38): quem
   decodifica o codec principal não precisa reconectar. Tier por par (qualidade × codec), AIMD e
   troca de qualidade por par, NVENC lazy (só cria quando aparece espectador incompatível).
-- [ ] **D2** Recuperação de device-lost (TDR) sem derrubar as sessões: recriar device → captura →
+  **Feito (2026-10-17)**: stream da sessão = qualidade × codec (`high`/`low`/`high-h264`/`low-h264`).
+  Espectador sem decode do codec principal vai sozinho pros encoders H.264 paralelos (criados na hora,
+  liberados quando o último sai), com AIMD próprio; rebaixar/voltar de qualidade respeita o codec.
+  Recriados junto em resize, troca de fonte e TDR. Se não der pra criar (ex.: limite de sessões NVENC),
+  cai no caminho antigo (transmissão inteira em H.264). `codec-fallback-test.js hevc`: A em HEVC
+  sem reconectar (182 frames/3s), B em H.264 (180 frames/3s), host vivo. Revalidar com PC/Android real.
+- [x] **D2** Recuperação de device-lost (TDR) sem derrubar as sessões: recriar device → captura →
   encoders e forçar keyframe; sessões `TransportCore` sobrevivem (não dependem do device).
-- [ ] **D3** Recuperação de bitrate mais rápida depois de congestionamento (hoje ~45s pra voltar
+  **Feito (2026-10-17)**: `resetCaptureDevice()` no addon (solta encoders, device D3D11 novo); main
+  religa fonte + encoders (até 10 tentativas, 1s entre elas — driver leva ~2s pra voltar), aviso
+  amarelo no LiveCard durante. WGC agora também detecta device removido. Exige mesmo codec de antes
+  (senão espectadores não decodificam → encerra como antes). Testado com TDR SIMULADO
+  (`OCS_TEST_DEVICE_LOST_S=6`, reset real do device): espectador seguiu a 59.7fps, 1 engasgo de 55ms.
+  TDR de verdade não testado (dá pra forçar com `dxcap -forcetdr`, precisa das Graphics Tools).
+- [x] **D3** Recuperação de bitrate mais rápida depois de congestionamento (hoje ~45s pra voltar
   ao teto: +10%/5s). Ex.: degraus maiores enquanto a fila continua vazia, ou sondagem.
+  **Feito (2026-10-17)**: 1º degrau igual (5s limpos, +10% do teto); seguintes a cada 2s limpos,
+  crescendo +20/30/40% — do piso ao teto em ~11-15s. Congestionamento zera a escada. Só typecheck;
+  revalidar com rede limitada (A2).
+
+- [~] **D4** Espectador fraco (notebook 1.6GHz + Intel integrada) caía pra 15fps assim que um PC
+  forte entrava na mesma live (sozinho rodava 60fps). Causa: rebaixamento automático do A2 — 1 frame
+  descartado já mandava pro tier "low" (15fps/800kbps fixo) e nunca voltava; ack sai da main thread
+  do viewer, CPU ocupada parece fila de rede. **Fix (2026-10-17)**: rebaixa só com 5s seguidos de
+  congestionamento; volta sozinho pro "high" após 15s limpo no "low" (espera dobra a cada novo
+  rebaixamento, teto 240s). Revalidar com o mesmo par de máquinas. Pendente: ack fora da main
+  thread do viewer (Worker) e/ou tier intermediário (ex. 720p30) em vez de saltar direto pra 15fps.
 
 ### E. Distribuição / repositório
 - [ ] **E1** Assinatura de código do `.exe` (SmartScreen avisa no primeiro uso) — ver

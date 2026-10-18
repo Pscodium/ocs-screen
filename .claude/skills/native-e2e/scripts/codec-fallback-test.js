@@ -1,6 +1,7 @@
 // Fallback de codec com espectador já conectado: host transmite em HEVC/AV1, espectador A (com
-// suporte) entra e assiste, depois entra B que NÃO decodifica esse codec. Esperado: a transmissão
-// inteira cai pra H.264, A reconecta sozinho, os dois recebem vídeo e o host não cai.
+// suporte) entra e assiste, depois entra B que NÃO decodifica esse codec. Esperado (D1): B vai pro
+// encoder H.264 paralelo, A continua no codec principal SEM reconectar (log do host: "stream H.264
+// paralelo", nunca "transmissão inteira caindo"), os dois recebem vídeo e o host não cai.
 // Uso: NODE_PATH=<dir-com-playwright-core>/node_modules node codec-fallback-test.js [hevc|av1]
 // (backend :4100 e viewer :5199 rodando, ver SKILL.md)
 const path = require("path");

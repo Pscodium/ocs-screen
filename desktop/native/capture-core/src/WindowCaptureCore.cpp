@@ -372,7 +372,10 @@ WindowAcquireResult WindowCaptureCore::AcquireFrameGpuOnly(uint32_t timeoutMs) {
             return impl_->frameHandler->hasNewFrame || impl_->frameHandler->closed;
         });
         if (impl_->frameHandler->closed) return WindowAcquireResult::ItemClosed;
-        if (!got) return WindowAcquireResult::Timeout;
+        if (!got) {
+            return (device_ && FAILED(device_->GetDeviceRemovedReason())) ? WindowAcquireResult::DeviceLost
+                                                                          : WindowAcquireResult::Timeout;
+        }
 
         frame = std::move(impl_->frameHandler->pendingFrame);
         texture = std::move(impl_->frameHandler->pendingTexture);
@@ -382,6 +385,7 @@ WindowAcquireResult WindowCaptureCore::AcquireFrameGpuOnly(uint32_t timeoutMs) {
     }
 
     if (!texture) return WindowAcquireResult::Timeout;
+    if (device_ && FAILED(device_->GetDeviceRemovedReason())) return WindowAcquireResult::DeviceLost;
     if (!EnsureComposeTexture(w, h)) return WindowAcquireResult::Error;
 
     context_->CopyResource(composeTexture_.Get(), texture.Get());

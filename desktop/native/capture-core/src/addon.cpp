@@ -107,6 +107,12 @@ static int ActiveHeight() {
 static std::mutex g_encoderMutex;
 static std::unique_ptr<EncoderCore> g_encoder;
 static std::unique_ptr<EncoderCore> g_encoderLow;
+// Encoders H.264 PARALELOS (tarefa D1) — só existem quando a transmissão é HEVC/AV1 e aparece
+// espectador que não decodifica esse codec. Criados sob demanda pelo JS (`initEncoderTier`), mesmo
+// frame capturado, fan-out pras sessões de stream "high-h264"/"low-h264". Quem decodifica o codec
+// principal não precisa reconectar (antes a transmissão inteira caía pra H.264).
+static std::unique_ptr<EncoderCore> g_encoderCompat;
+static std::unique_ptr<EncoderCore> g_encoderCompatLow;
 static std::unordered_map<std::string, ViewerSession> g_transportSessions;
 // Protege `g_transportSessions` — o áudio é enviado direto da thread de áudio nativa
 // (AudioCaptureCore, ver `StartAudioForwarding`), não mais do loop JS, então o mapa passou a ser
@@ -126,8 +132,14 @@ static std::unique_ptr<AudioCaptureCore> g_audioCore;
 // encoder desse tier" sem duplicar o if/else toda vez. CHAMAR SÓ com `g_encoderMutex` já
 // segurado (ver comentário grande em `g_encoderMutex`) — não tranca sozinho porque quem já tem o
 // lock (ex.: `ForceKeyframeForTierLocked`) não pode travar de novo (mutex não é recursivo).
+static std::unique_ptr<EncoderCore>& EncoderSlotForTier(const std::string& tier) {
+    if (tier == "low") return g_encoderLow;
+    if (tier == "high-h264") return g_encoderCompat;
+    if (tier == "low-h264") return g_encoderCompatLow;
+    return g_encoder;
+}
 static EncoderCore* EncoderForTier(const std::string& tier) {
-    return tier == "low" ? g_encoderLow.get() : g_encoder.get();
+    return EncoderSlotForTier(tier).get();
 }
 
 // Único jeito seguro de forçar keyframe num tier — usado tanto pela thread do Node
@@ -408,6 +420,29 @@ Napi::Value Initialize(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, ok);
 }
 
+// Recuperação de device-lost (TDR) sem derrubar as sessões (tarefa D2): solta os encoders (seguram
+// referência ao device morto), descarta os dois backends de captura e cria um device D3D11 novo pro
+// DXGI. O de janela (WGC) é recriado sob demanda no próximo `StartWindow`. Sessões `TransportCore`
+// não são tocadas — só recebem bytes, não dependem do device. Quem chama (main/index.ts) religa a
+// fonte e os encoders depois; o 1º frame de encoder novo já sai keyframe.
+Napi::Value ResetCaptureDevice(const Napi::CallbackInfo& info) {
+    {
+        std::lock_guard<std::mutex> lock(g_encoderMutex);
+        g_encoder.reset();
+        g_encoderLow.reset();
+        g_encoderCompat.reset();
+        g_encoderCompatLow.reset();
+    }
+    RestoreCapturedAppGpuPriority();
+    if (g_core) g_core->Stop();
+    g_windowCore.reset();
+    g_usingWindow = false;
+    g_lastWindowWidth = 0;
+    g_lastWindowHeight = 0;
+    g_core = std::make_unique<CaptureCore>();
+    return Napi::Boolean::New(info.Env(), g_core->Initialize());
+}
+
 Napi::Value ListMonitors(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Array result = Napi::Array::New(env);
@@ -536,6 +571,11 @@ Napi::Value AcquireFrameGpuOnly(const Napi::CallbackInfo& info) {
             obj.Set("windowClosed", true);
             return obj;
         }
+        if (result == WindowAcquireResult::DeviceLost) {
+            Napi::Object obj = Napi::Object::New(env);
+            obj.Set("deviceLost", true);
+            return obj;
+        }
         if (result != WindowAcquireResult::Ok) return env.Null();
 
         // Janela redimensionou (`WindowCaptureCore` já recriou o frame pool sozinho — ver
@@ -633,6 +673,59 @@ Napi::Value InitEncoderLow(const Napi::CallbackInfo& info) {
     bool ok = g_encoderLow->Initialize(ActiveDevice(), ActiveWidth(), ActiveHeight(), fps, bitrateBps, codec);
     if (!ok) g_encoderLow.reset();
     return Napi::Boolean::New(env, ok);
+}
+
+// Genérico por stream (`info[0]` = "high" | "low" | "high-h264" | "low-h264", depois fps, bitrate,
+// codec) — usado pros encoders H.264 paralelos (D1); "high"/"low" continuam com as funções antigas.
+Napi::Value InitEncoderTier(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (!ActiveDevice() || info.Length() < 3 || !info[0].IsString() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        return Napi::Boolean::New(env, false);
+    }
+    std::string tier = info[0].As<Napi::String>().Utf8Value();
+    int fps = info[1].As<Napi::Number>().Int32Value();
+    int bitrateBps = info[2].As<Napi::Number>().Int32Value();
+    VideoCodecType codec = (info.Length() > 3 && info[3].IsString())
+        ? ParseCodec(info[3].As<Napi::String>().Utf8Value())
+        : VideoCodecType::H264;
+
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
+    auto& slot = EncoderSlotForTier(tier);
+    slot = std::make_unique<EncoderCore>();
+    bool ok = slot->Initialize(ActiveDevice(), ActiveWidth(), ActiveHeight(), fps, bitrateBps, codec) &&
+              slot->GetActiveCodec() == codec;
+    if (!ok) slot.reset();
+    return Napi::Boolean::New(env, ok);
+}
+
+Napi::Value DestroyEncoderTier(const Napi::CallbackInfo& info) {
+    if (info.Length() > 0 && info[0].IsString()) {
+        std::lock_guard<std::mutex> lock(g_encoderMutex);
+        EncoderSlotForTier(info[0].As<Napi::String>().Utf8Value()).reset();
+    }
+    return info.Env().Undefined();
+}
+
+Napi::Value HasEncoderTier(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
+    bool has = info.Length() > 0 && info[0].IsString() && EncoderForTier(info[0].As<Napi::String>().Utf8Value()) != nullptr;
+    return Napi::Boolean::New(info.Env(), has);
+}
+
+Napi::Value EncodeCurrentFrameTier(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    Napi::Array result = Napi::Array::New(env);
+    if (info.Length() < 1 || !info[0].IsString()) return result;
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
+    EncoderCore* enc = EncoderForTier(info[0].As<Napi::String>().Utf8Value());
+    if (!enc || !ActiveComposeTexture()) return result;
+
+    auto packets = enc->EncodeFrame(ActiveComposeTexture());
+    result = Napi::Array::New(env, packets.size());
+    for (size_t i = 0; i < packets.size(); i++) {
+        result.Set(i, Napi::Buffer<uint8_t>::Copy(env, packets[i].data(), packets[i].size()));
+    }
+    return result;
 }
 
 Napi::Value GetActiveCodec(const Napi::CallbackInfo& info) {
@@ -1324,6 +1417,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("listTopLevelWindows", Napi::Function::New(env, ListTopLevelWindows));
     exports.Set("setCapturedAppGpuBoost", Napi::Function::New(env, SetCapturedAppGpuBoost));
     exports.Set("setGpuPriorityClass", Napi::Function::New(env, SetGpuPriorityClass));
+    exports.Set("resetCaptureDevice", Napi::Function::New(env, ResetCaptureDevice));
+    exports.Set("initEncoderTier", Napi::Function::New(env, InitEncoderTier));
+    exports.Set("destroyEncoderTier", Napi::Function::New(env, DestroyEncoderTier));
+    exports.Set("hasEncoderTier", Napi::Function::New(env, HasEncoderTier));
+    exports.Set("encodeCurrentFrameTier", Napi::Function::New(env, EncodeCurrentFrameTier));
     exports.Set("listMonitors", Napi::Function::New(env, ListMonitors));
     exports.Set("start", Napi::Function::New(env, Start));
     exports.Set("startWindow", Napi::Function::New(env, StartWindow));

@@ -15,6 +15,9 @@ enum class WindowAcquireResult {
     // O `GraphicsCaptureItem` fechou (janela destruída/processo dono morreu) — quem chama precisa
     // parar e voltar pro picker (a janela escolhida não existe mais).
     ItemClosed,
+    // Device D3D11 morreu (TDR) — igual `AcquireResult::DeviceLost` do DXGI. O WGC não avisa: o
+    // frame pool só para de entregar frame, então o timeout confere o device.
+    DeviceLost,
     Error
 };
 

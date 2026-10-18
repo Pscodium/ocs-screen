@@ -565,6 +565,10 @@ interface NativeFrame {
   deviceLost?: boolean;
 }
 
+// Stream de vídeo de uma sessão = qualidade × codec. "high"/"low" = codec principal da transmissão;
+// "-h264" = encoder H.264 paralelo pra quem não decodifica HEVC/AV1 (tarefa D1).
+type NativeStreamKey = "high" | "low" | "high-h264" | "low-h264";
+
 interface NativeCaptureAddon {
   initialize(): boolean;
   listMonitors(): NativeMonitor[];
@@ -575,6 +579,15 @@ interface NativeCaptureAddon {
   // abaixo). Ver docs/NATIVE_CAPTURE.md §Backend Abstrato / WindowCaptureCore.h.
   startWindow(hwnd: number): boolean;
   stop(): void;
+  // Device-lost (TDR, tarefa D2): solta encoders + backends de captura e cria device D3D11 novo.
+  // Sessões de transporte continuam. Depois disso: religar fonte + encoders. Ver addon.cpp.
+  resetCaptureDevice(): boolean;
+  // Encoder genérico por stream (D1 usa pros "-h264"). `initEncoderTier` falha se o codec ativo
+  // não for exatamente o pedido.
+  initEncoderTier(tier: NativeStreamKey, fps: number, bitrateBps: number, codec: "h264" | "hevc" | "av1"): boolean;
+  destroyEncoderTier(tier: NativeStreamKey): void;
+  hasEncoderTier(tier: NativeStreamKey): boolean;
+  encodeCurrentFrameTier(tier: NativeStreamKey): Buffer[];
   acquireFrame(timeoutMs: number): NativeFrame | null;
   // Mesma captura, sem o readback GPU→CPU (Map+memcpy de um frame inteiro) — usado pelo loop do
   // transporte nativo, que só precisa da textura composta (encodeCurrentFrame lê ela direto da
@@ -625,12 +638,12 @@ interface NativeCaptureAddon {
   encodeCurrentFrame(): Buffer[];
   encodeCurrentFrameLow(): Buffer[];
   // `tier` (opcional, padrão "high") — qual dos dois encoders forçar keyframe.
-  forceKeyframe(tier?: "high" | "low"): void;
+  forceKeyframe(tier?: NativeStreamKey): void;
   // `forceKeyframe` (opcional, padrão true) — passar `false` no ajuste automático de
   // congestionamento (AIMD): forçar keyframe bem na hora que já tá represado piora em vez de
   // ajudar (bug real medido — ver docs/NATIVE_CAPTURE.md Fase 4 "Congestion control"). `tier`
   // (opcional, padrão "high") — cada tier tem seu próprio AIMD independente agora.
-  setEncoderBitrate(bitrateBps: number, forceKeyframe?: boolean, tier?: "high" | "low"): boolean;
+  setEncoderBitrate(bitrateBps: number, forceKeyframe?: boolean, tier?: NativeStreamKey): boolean;
   // Transporte nativo (libdatachannel, Fase 4) — mesclado neste mesmo addon, ver addon.cpp. 1
   // sessão POR ESPECTADOR (`viewerId`, gerado pelo backend na conexão WS — ver
   // backend/src/services/nativeWsRelay.ts) — é o "SFU" do projeto: cada sessão tem um TIER
@@ -640,10 +653,10 @@ interface NativeCaptureAddon {
   // usado pra detectar keyframe certo no bitstream (ver TransportCore.cpp). `tier` (opcional,
   // padrão "high") — todo espectador novo entra em alta qualidade, troca depois via
   // `transportSetViewerTier` (ver "set-quality" no handler de mensagens WS abaixo).
-  transportCreateSession(viewerId: string, stunUrls: string[], codec?: "h264" | "hevc" | "av1", tier?: "high" | "low"): boolean;
+  transportCreateSession(viewerId: string, stunUrls: string[], codec?: "h264" | "hevc" | "av1", tier?: NativeStreamKey): boolean;
   // Troca o tier de uma sessão JÁ ATIVA (não recria a conexão WebRTC) — força keyframe no encoder
   // do tier novo pra essa sessão não ficar sem decodificar até o próximo GOP.
-  transportSetViewerTier(viewerId: string, tier: "high" | "low"): boolean;
+  transportSetViewerTier(viewerId: string, tier: NativeStreamKey): boolean;
   // Fecha só a sessão desse espectador — os outros continuam recebendo o stream.
   transportCloseSession(viewerId: string): void;
   // Fecha TODAS as sessões — usado só ao parar a transmissão inteira, não no ciclo normal de um
@@ -662,24 +675,24 @@ interface NativeCaptureAddon {
   // bitrate adaptativo DAQUELE tier (ver docs/NATIVE_CAPTURE.md Fase 4 "Congestion control"/
   // "Simulcast" — cada tier tem AIMD independente agora). 0 = ninguém conectado nesse tier ou tudo
   // escoando bem.
-  transportMaxBufferedAmount(tier?: "high" | "low"): number;
+  transportMaxBufferedAmount(tier?: NativeStreamKey): number;
   // Sinais de congestionamento de um tier (ver TransportCore.h "Controle de latência"):
   // `maxQueueDelayMs` = fila acima do RTT mínimo medida por ack do espectador, `droppedFrames` =
   // frames descartados por congestionamento desde a última leitura (zera ao ler).
-  transportGetTierStats(tier: "high" | "low"): { maxQueueDelayMs: number; droppedFrames: number; maxBufferedAmount: number };
+  transportGetTierStats(tier: NativeStreamKey): { maxQueueDelayMs: number; droppedFrames: number; maxBufferedAmount: number };
   // Mesmos sinais, POR ESPECTADOR conectado (`droppedFrames` também zera ao ler) — o AIMD agrega
   // por tier aqui no main e rebaixa sozinho um espectador congestionado (ver `tickAimd`).
   transportGetViewerStats(): NativeViewerStats[];
   // Reencoda a última textura SE o tier tiver keyframe pendente (tela parada = sem frame novo pra
   // levar o keyframe pedido por espectador novo/troca de tier/`'K'`). Vazio se não tiver pendência.
-  encodePendingKeyframe(tier: "high" | "low"): Buffer[];
+  encodePendingKeyframe(tier: NativeStreamKey): Buffer[];
   // Jogo/app em tela cheia EXCLUSIVA (D3D) agora — captura não recebe frame nesse modo (B2).
   isExclusiveFullscreenActive(): boolean;
   // Relógio QPC (µs) — o MESMO dos `ptsUs` de áudio (ver QpcClock.h). Timestamps de vídeo saem
   // daqui pra ficarem sincronizáveis com o áudio no espectador.
   nowUs(): number;
   // `tier` diz de qual encoder veio esse frame — só é mandado pras sessões daquele tier.
-  transportSendVideoFrame(tier: "high" | "low", data: Buffer, timestampUs: number): boolean;
+  transportSendVideoFrame(tier: NativeStreamKey, data: Buffer, timestampUs: number): boolean;
   // Callbacks GLOBAIS (registrados 1x, não por sessão) — `viewerId` sempre vem primeiro, pra
   // saber de qual espectador é a mensagem (ver addon.cpp, `g_on*Tsfn`).
   transportOnLocalDescription(callback: (viewerId: string, sdp: string, type: string) => void): void;
@@ -1060,7 +1073,7 @@ function encoderInfo() {
 let ntCodecFallbackDone = false;
 interface NativeViewerStats {
   viewerId: string;
-  tier: "high" | "low";
+  tier: NativeStreamKey;
   queueDelayMs: number;
   droppedFrames: number;
   bufferedAmount: number;
@@ -1074,6 +1087,51 @@ const NT_DISCONNECT_GRACE_MS = 10_000;
 // Espectadores com sessão aberta agora e o tier de cada um — necessário pra renegociar TODO MUNDO
 // quando o codec da transmissão cai pra H.264 (ver handler de "answer").
 const ntViewerTiers = new Map<string, "high" | "low">();
+// Espectadores no stream H.264 paralelo (D1) — não decodificam o codec principal (HEVC/AV1).
+const ntViewerCompat = new Set<string>();
+
+function streamKeyFor(viewerId: string, tier: "high" | "low"): NativeStreamKey {
+  return ntViewerCompat.has(viewerId) ? (tier === "high" ? "high-h264" : "low-h264") : tier;
+}
+
+// Encoders H.264 paralelos só existem enquanto tiver espectador neles (NVENC tem limite de
+// sessões simultâneas em GPU de consumo, e cada encode extra custa GPU).
+function ensureCompatEncoders(): boolean {
+  if (!nativeCapture) return false;
+  if (nativeCapture.hasEncoderTier("high-h264")) return true;
+  if (!nativeCapture.initEncoderTier("high-h264", ntTargetFps, ntBitrateBps, "h264")) return false;
+  if (!nativeCapture.initEncoderTier("low-h264", SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, "h264")) {
+    console.warn("[native-transport] falha ao criar encoder H.264 paralelo 'low' — espectadores H.264 ficam só no 'high'.");
+  }
+  console.log("[native-transport] encoders H.264 paralelos criados (espectador sem suporte ao codec principal).");
+  return true;
+}
+
+function releaseCompatEncodersIfUnused(): void {
+  if (ntViewerCompat.size > 0 || !nativeCapture?.hasEncoderTier("high-h264")) return;
+  nativeCapture.destroyEncoderTier("high-h264");
+  nativeCapture.destroyEncoderTier("low-h264");
+  console.log("[native-transport] último espectador H.264 saiu — encoders paralelos liberados.");
+}
+
+// Fonte/tamanho/device mudou: os encoders paralelos precisam nascer de novo no device e tamanho
+// atuais, igual os principais. Sem espectador H.264, não faz nada.
+function restartCompatEncoders(): void {
+  if (!nativeCapture) return;
+  nativeCapture.destroyEncoderTier("high-h264");
+  nativeCapture.destroyEncoderTier("low-h264");
+  if (ntViewerCompat.size > 0 && !ensureCompatEncoders()) {
+    console.warn("[native-transport] encoders H.264 paralelos não voltaram — espectadores H.264 ficam sem vídeo.");
+  }
+}
+
+// Espectador saiu/caiu: tira de todos os registros (e libera os encoders paralelos se era o último).
+function forgetViewer(viewerId: string): void {
+  ntViewerTiers.delete(viewerId);
+  ntAutoDemoted.delete(viewerId);
+  ntViewerCompat.delete(viewerId);
+  releaseCompatEncodersIfUnused();
+}
 
 // Áudio nativo ativo na transmissão atual (ver `startNativeAudioForSource`/AudioCaptureCore.h).
 let ntAudioActive = false;
@@ -1084,6 +1142,7 @@ function stopNativeTransport(): void {
   ntActive = false;
   ntViewerTiers.clear();
   ntAutoDemoted.clear();
+  ntViewerCompat.clear();
   for (const timer of ntDisconnectTimers.values()) clearTimeout(timer);
   ntDisconnectTimers.clear();
   ntWs?.close();
@@ -1093,6 +1152,8 @@ function stopNativeTransport(): void {
   nativeCapture?.transportCloseAllSessions();
   nativeCapture?.destroyEncoder();
   nativeCapture?.destroyEncoderLow();
+  nativeCapture?.destroyEncoderTier("high-h264");
+  nativeCapture?.destroyEncoderTier("low-h264");
   nativeCapture?.destroyAudioCapture();
   ntAudioActive = false;
   nativeCapture?.stop();
@@ -1114,7 +1175,8 @@ function sendWhenOpen(ws: WebSocket, payload: Record<string, unknown>): void {
 // nunca derruba os outros espectadores — cada um vive/morre independente.
 function createViewerSession(viewerId: string, tier: "high" | "low" = "high"): boolean {
   if (!nativeCapture) return false;
-  if (!nativeCapture.transportCreateSession(viewerId, ntStunUrls, ntActiveCodec, tier)) return false;
+  const codec = ntViewerCompat.has(viewerId) ? "h264" : ntActiveCodec;
+  if (!nativeCapture.transportCreateSession(viewerId, ntStunUrls, codec, streamKeyFor(viewerId, tier))) return false;
   if (!nativeCapture.transportAddVideoChannel(viewerId)) return false;
   // Canal de áudio é OPCIONAL — só existe se a captura de áudio nativa foi inicializada com
   // sucesso (`ntAudioActive`). Falhar em adicionar não derruba a sessão (espectador continua
@@ -1206,8 +1268,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
             ntDisconnectTimers.delete(viewerId);
             if (nativeCapture?.transportIsConnected(viewerId)) return;
             nativeCapture?.transportCloseSession(viewerId);
-            ntViewerTiers.delete(viewerId);
-            ntAutoDemoted.delete(viewerId);
+            forgetViewer(viewerId);
             win.webContents.send("native-transport:state", {
               viewerId,
               state: "closed",
@@ -1226,12 +1287,11 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // mesmo espectador voltar (F5), o WS dele reconecta com um `viewerId` NOVO e o backend
       // manda `viewer-joined` de novo sozinho.
       nativeCapture?.transportCloseSession(viewerId);
-      ntViewerTiers.delete(viewerId);
-      ntAutoDemoted.delete(viewerId);
+      forgetViewer(viewerId);
     }
   });
   nativeCapture.transportOnLocalDescription((viewerId, sdp, type) => {
-    if (ntWs) sendWhenOpen(ntWs, { type, viewerId, sdp, codec: ntActiveCodec });
+    if (ntWs) sendWhenOpen(ntWs, { type, viewerId, sdp, codec: ntViewerCompat.has(viewerId) ? "h264" : ntActiveCodec });
   });
   nativeCapture.transportOnLocalCandidate((viewerId, candidate, mid) => {
     if (ntWs) sendWhenOpen(ntWs, { type: "ice", viewerId, candidate, mid });
@@ -1315,13 +1375,12 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // Espectador trocou de qualidade manualmente (Sprint 27/simulcast) — não recria a conexão
       // WebRTC, só religa qual encoder essa sessão passa a receber (força keyframe sozinho, ver
       // TransportSetViewerTier em addon.cpp).
-      nativeCapture?.transportSetViewerTier(msg.viewerId, msg.tier);
+      nativeCapture?.transportSetViewerTier(msg.viewerId, streamKeyFor(msg.viewerId, msg.tier));
       if (ntViewerTiers.has(msg.viewerId)) ntViewerTiers.set(msg.viewerId, msg.tier);
       ntAutoDemoted.delete(msg.viewerId);
     } else if (msg.type === "viewer-left") {
       nativeCapture?.transportCloseSession(msg.viewerId);
-      ntViewerTiers.delete(msg.viewerId);
-      ntAutoDemoted.delete(msg.viewerId);
+      forgetViewer(msg.viewerId);
       // O "closed" da sessão fechada aqui não chega mais no `transportOnStateChange` (eventos de
       // sessão que já saiu do mapa são descartados no addon — ver `ViewerSession::generation`), então
       // o contador de espectadores do LiveCard é atualizado aqui direto.
@@ -1339,6 +1398,17 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // HEVC (senão quebraria quem já tá funcionando). Se já tiver, esse espectador específico
       // fica sem vídeo — limitação conhecida do encoder único (SVC/encode duplo resolveria, fora
       // de escopo agora).
+      // D1: 1º tenta o encoder H.264 PARALELO só pra esse espectador — quem já assiste no codec
+      // principal não reconecta. Só se não der (sem sessão NVENC sobrando, etc.) cai pro caminho
+      // antigo abaixo (transmissão inteira em H.264).
+      if (ntActiveCodec !== "h264" && msg.decoderOk === false && !ntViewerCompat.has(msg.viewerId) && ensureCompatEncoders()) {
+        const tier = ntViewerTiers.get(msg.viewerId) ?? "high";
+        console.warn(`[native-transport] viewer ${msg.viewerId} não decodifica ${ntActiveCodec.toUpperCase()} — indo pro stream H.264 paralelo.`);
+        nativeCapture?.transportCloseSession(msg.viewerId);
+        ntViewerCompat.add(msg.viewerId);
+        if (!createViewerSession(msg.viewerId, tier)) forgetViewer(msg.viewerId);
+        return;
+      }
       if (ntActiveCodec !== "h264" && msg.decoderOk === false && !ntCodecFallbackDone) {
         // Espectador não decodifica o codec da transmissão (HEVC/AV1 dependem do hardware/navegador
         // dele) → a transmissão INTEIRA cai pra H.264, que todo navegador decodifica. Antes isso só
@@ -1352,6 +1422,8 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
           `[native-transport] viewer ${msg.viewerId} não decodifica ${ntActiveCodec.toUpperCase()} — transmissão inteira caindo pra H.264 (${ntViewerTiers.size} espectador(es) renegociando).`,
         );
         for (const viewerId of ntViewerTiers.keys()) nativeCapture?.transportCloseSession(viewerId);
+        ntViewerCompat.clear();
+        releaseCompatEncodersIfUnused();
         nativeCapture?.destroyEncoder();
         nativeCapture?.initEncoder(ntTargetFps, ntBitrateBps, "h264");
         ntActiveCodec = nativeCapture?.getActiveCodec() ?? "h264";
@@ -1430,6 +1502,8 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
     currentBitrateBps: number;
     lowStreak: number;
     highStreak: number;
+    // Degraus de subida seguidos sem congestionamento no meio (D3) — cada degrau maior que o anterior.
+    recoverSteps: number;
   }
   const CONGESTION_MIN_BITRATE_BPS = 500_000;
   const CONGESTION_DECREASE_FACTOR = 0.7;
@@ -1442,8 +1516,11 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // oscilando bitrate pra cima e pra baixo repetidamente com jitter momentâneo.
   const CONGESTION_LOW_STREAK_REQUIRED = 5;
 
-  const ntAimdHigh: AimdState = { currentBitrateBps: bitrateBps, lowStreak: 0, highStreak: 0 };
-  const ntAimdLow: AimdState = { currentBitrateBps: SIMULCAST_LOW_BITRATE_BPS, lowStreak: 0, highStreak: 0 };
+  const ntAimdHigh: AimdState = { currentBitrateBps: bitrateBps, lowStreak: 0, highStreak: 0, recoverSteps: 0 };
+  const ntAimdLow: AimdState = { currentBitrateBps: SIMULCAST_LOW_BITRATE_BPS, lowStreak: 0, highStreak: 0, recoverSteps: 0 };
+  // AIMD próprio dos encoders H.264 paralelos (D1) — sessões e encoder independentes.
+  const ntAimdCompatHigh: AimdState = { currentBitrateBps: bitrateBps, lowStreak: 0, highStreak: 0, recoverSteps: 0 };
+  const ntAimdCompatLow: AimdState = { currentBitrateBps: SIMULCAST_LOW_BITRATE_BPS, lowStreak: 0, highStreak: 0, recoverSteps: 0 };
 
   // `fps` aqui é o fps de PACING do tier (targetFps pro high, SIMULCAST_LOW_FPS pro low) — usado
   // só pra calcular o watermark (~3 frames de orçamento, igual o VBV do EncoderCore).
@@ -1457,6 +1534,17 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // antigo (`bufferedAmount`), que continua valendo pra espectador sem ack.
   // Streak de congestionamento POR ESPECTADOR do tier "high" — base do rebaixamento automático.
   const viewerHighStreak = new Map<string, number>();
+  // Rebaixamento só depois de congestionamento SUSTENTADO (ticks de 1s). Antes bastava 1 frame
+  // descartado — bug real: notebook fraco (CPU 1.6GHz + Intel integrada) assistindo junto com um
+  // PC forte era rebaixado pro "low" (15fps/800kbps) e ficava lá pra sempre; sozinho ele rodava
+  // 60fps. O ack sai da main thread do viewer, então CPU ocupada atrasa o ack e parece fila de rede.
+  const DEMOTE_STREAK_REQUIRED = 5;
+  // Volta automática pro "high": ticks limpos seguidos no "low" antes de tentar de novo. Dobra a
+  // cada rebaixamento repetido do mesmo espectador (rede/CPU que realmente não aguenta não fica
+  // oscilando), até o teto.
+  const PROMOTE_CLEAN_TICKS_INITIAL = 15;
+  const PROMOTE_CLEAN_TICKS_MAX = 240;
+  const viewerPromoteState = new Map<string, { cleanTicks: number; requiredTicks: number }>();
 
   function isViewerCongested(v: NativeViewerStats, highWatermarkBytes: number): boolean {
     return v.droppedFrames > 0 || v.queueDelayMs > CONGESTION_QUEUE_DELAY_MS || v.bufferedAmount > highWatermarkBytes;
@@ -1469,18 +1557,25 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // "high". Se todos congestionam (ou só tem 1), é a rede do host/encoder: AIMD normal.
   function demoteCongestedHighViewers(viewers: NativeViewerStats[], highWatermarkBytes: number): Set<string> {
     const demoted = new Set<string>();
-    const high = viewers.filter((v) => v.tier === "high");
+    // Os dois streams "high" (codec principal e H.264 paralelo) contam juntos: a pergunta é se a
+    // rede do HOST aguenta, e ela é a mesma pros dois.
+    const high = viewers.filter((v) => v.tier === "high" || v.tier === "high-h264");
     const congested = high.filter((v) => isViewerCongested(v, highWatermarkBytes));
     for (const v of high) if (!congested.includes(v)) viewerHighStreak.delete(v.viewerId);
     if (high.length < 2 || congested.length === high.length) return demoted;
     for (const v of congested) {
       const streak = (viewerHighStreak.get(v.viewerId) ?? 0) + 1;
       viewerHighStreak.set(v.viewerId, streak);
-      if (v.droppedFrames === 0 && streak < CONGESTION_HIGH_STREAK_REQUIRED) continue;
+      if (streak < DEMOTE_STREAK_REQUIRED) continue;
       viewerHighStreak.delete(v.viewerId);
-      if (!nativeCapture?.transportSetViewerTier(v.viewerId, "low")) continue;
+      if (!nativeCapture?.transportSetViewerTier(v.viewerId, streamKeyFor(v.viewerId, "low"))) continue;
       ntViewerTiers.set(v.viewerId, "low");
       ntAutoDemoted.add(v.viewerId);
+      const prev = viewerPromoteState.get(v.viewerId);
+      viewerPromoteState.set(v.viewerId, {
+        cleanTicks: 0,
+        requiredTicks: prev ? Math.min(PROMOTE_CLEAN_TICKS_MAX, prev.requiredTicks * 2) : PROMOTE_CLEAN_TICKS_INITIAL,
+      });
       demoted.add(v.viewerId);
       // Espectador atualiza o seletor de qualidade dele (ver useNativeStream.ts "quality-changed").
       if (ntWs) sendWhenOpen(ntWs, { type: "quality-changed", viewerId: v.viewerId, tier: "low", auto: true });
@@ -1491,7 +1586,27 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
     return demoted;
   }
 
-  function tickAimd(state: AimdState, tier: "high" | "low", ceilingBps: number, fps: number, viewers: NativeViewerStats[]): number {
+  // Devolve pro "high" quem foi rebaixado AUTOMATICAMENTE e ficou limpo no "low" tempo suficiente
+  // (escolha manual tira de `ntAutoDemoted`, então nunca é desfeita aqui).
+  function promoteRecoveredViewers(viewers: NativeViewerStats[]): void {
+    const lowWatermarkBytes = (SIMULCAST_LOW_BITRATE_BPS / 8 / SIMULCAST_LOW_FPS) * 3;
+    for (const v of viewers) {
+      if ((v.tier !== "low" && v.tier !== "low-h264") || !ntAutoDemoted.has(v.viewerId)) continue;
+      const st = viewerPromoteState.get(v.viewerId);
+      if (!st) continue;
+      st.cleanTicks = isViewerCongested(v, lowWatermarkBytes) ? 0 : st.cleanTicks + 1;
+      if (st.cleanTicks < st.requiredTicks) continue;
+      st.cleanTicks = 0;
+      if (!nativeCapture?.transportSetViewerTier(v.viewerId, streamKeyFor(v.viewerId, "high"))) continue;
+      ntViewerTiers.set(v.viewerId, "high");
+      ntAutoDemoted.delete(v.viewerId);
+      viewerHighStreak.delete(v.viewerId);
+      if (ntWs) sendWhenOpen(ntWs, { type: "quality-changed", viewerId: v.viewerId, tier: "high", auto: true });
+      console.log(`[native-transport] espectador ${v.viewerId} estável no 'low' — voltando pro 'high' (próximo rebaixamento espera ${Math.min(PROMOTE_CLEAN_TICKS_MAX, st.requiredTicks * 2)}s).`);
+    }
+  }
+
+  function tickAimd(state: AimdState, tier: NativeStreamKey, ceilingBps: number, fps: number, viewers: NativeViewerStats[]): number {
     if (!nativeCapture) return 0;
     const tierViewers = viewers.filter((v) => v.tier === tier);
     const stats = {
@@ -1508,6 +1623,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
 
     if (isHigh) {
       state.lowStreak = 0;
+      state.recoverSteps = 0;
       if (dropped || state.highStreak >= CONGESTION_HIGH_STREAK_REQUIRED) {
         const next = Math.max(CONGESTION_MIN_BITRATE_BPS, Math.round(state.currentBitrateBps * CONGESTION_DECREASE_FACTOR));
         if (next < state.currentBitrateBps) {
@@ -1523,9 +1639,15 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       }
     } else if (state.currentBitrateBps < ceilingBps) {
       state.lowStreak++;
-      if (state.lowStreak >= CONGESTION_LOW_STREAK_REQUIRED) {
+      // D3: 1º degrau espera 5 ticks limpos e sobe 10% do teto; enquanto continuar limpo, os
+      // próximos esperam só 2 ticks e sobem 10%/20%/30%/40% (antes: +10%/5s fixo, ~45s até o teto;
+      // agora ~15s). Qualquer congestionamento zera `recoverSteps` e volta pro passo cauteloso.
+      const required = state.recoverSteps === 0 ? CONGESTION_LOW_STREAK_REQUIRED : 2;
+      if (state.lowStreak >= required) {
         state.lowStreak = 0;
-        state.currentBitrateBps = Math.min(ceilingBps, state.currentBitrateBps + Math.round(ceilingBps * 0.1));
+        state.recoverSteps++;
+        const step = Math.round(ceilingBps * 0.1 * Math.min(4, state.recoverSteps));
+        state.currentBitrateBps = Math.min(ceilingBps, state.currentBitrateBps + step);
         // `false` também na subida — com GOP infinito (EncoderCore.cpp) não tem IDR periódico, e
         // um IDR a cada passo de recuperação reintroduziria o pico de bytes/queda de qualidade que
         // o GOP infinito tirou. NVENC aplica bitrate novo sem IDR.
@@ -1547,22 +1669,69 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
     console.log(`[native-transport] gravando bitstream de debug em: ${dumpPath}`);
   }
 
+  // Tentativas de recriar o pipeline após TDR — o driver leva ~2s pra voltar, e a 1ª
+  // tentativa costuma falhar (device novo também nasce removido enquanto o reset não termina).
+  const DEVICE_RECOVERY_MAX_ATTEMPTS = 10;
+  const DEVICE_RECOVERY_RETRY_MS = 1000;
+
+  const testDeviceLostS = Number(process.env.OCS_TEST_DEVICE_LOST_S ?? "");
+  let testDeviceLostAt: number | null = testDeviceLostS > 0 ? Date.now() + testDeviceLostS * 1000 : null;
+
+  function recoverFromDeviceLost(attempt: number): void {
+    if (!ntActive || !nativeCapture) return;
+    const ok =
+      nativeCapture.resetCaptureDevice() &&
+      startNativeCaptureSource(ntMonitorIndex ?? undefined, ntHwnd ?? undefined) &&
+      nativeCapture.initEncoder(targetFps, ntAimdHigh.currentBitrateBps, ntActiveCodec) &&
+      // Espectadores já negociaram esse codec — se o encoder novo cair pra outro (ex.: NVENC não
+      // voltou e o fallback não tem HEVC), eles não decodificariam: conta como falha.
+      nativeCapture.getActiveCodec() === ntActiveCodec;
+    if (!ok) {
+      if (attempt < DEVICE_RECOVERY_MAX_ATTEMPTS) {
+        console.warn(`[native-transport] recuperação do device falhou (tentativa ${attempt}/${DEVICE_RECOVERY_MAX_ATTEMPTS}) — tentando de novo.`);
+        setTimeout(() => recoverFromDeviceLost(attempt + 1), DEVICE_RECOVERY_RETRY_MS);
+        return;
+      }
+      console.error("[native-transport] não deu pra recuperar o device D3D11 — encerrando a transmissão nativa.");
+      nativeCapture.destroyEncoder();
+      activeWin.webContents.send("native-transport:capture-warning", null);
+      activeWin.webContents.send("native-transport:error", "A GPU reiniciou (sobrecarga) e a transmissão precisou parar. Tenta de novo.");
+      activeWin.webContents.send("native-transport:ended");
+      stopNativeTransport();
+      return;
+    }
+    if (!nativeCapture.initEncoderLow(SIMULCAST_LOW_FPS, ntAimdLow.currentBitrateBps, ntActiveCodec)) {
+      console.warn("[native-transport] falha ao recriar encoder do tier 'low' após TDR — simulcast fica só com 'high'.");
+    }
+    restartCompatEncoders();
+    resetAppGpuBoost();
+    console.log(`[native-transport] device recuperado após TDR (tentativa ${attempt}) — transmissão continua.`);
+    activeWin.webContents.send("native-transport:capture-warning", null);
+    lastFrameAt = Date.now();
+    setImmediate(runNativeTransportLoop);
+  }
+
   function runNativeTransportLoop(): void {
     if (!ntActive || !nativeCapture) {
       dumpStream?.end();
       return;
     }
 
-    const frame = nativeCapture.acquireFrameGpuOnly(timeoutMs);
+    let frame = nativeCapture.acquireFrameGpuOnly(timeoutMs);
+    // Teste da recuperação de TDR sem TDR de verdade: `OCS_TEST_DEVICE_LOST_S=N` finge 1
+    // device-lost N segundos depois de começar (o reset em si é real — device novo de fato).
+    if (testDeviceLostAt !== null && Date.now() >= testDeviceLostAt) {
+      testDeviceLostAt = null;
+      frame = { deviceLost: true };
+    }
     if (frame?.deviceLost) {
       // Device D3D11 morreu (TDR do driver — comum sob contenção pesada de GPU, jogo 3D +
-      // captura+NVENC disputando). Recuperar de verdade exigiria recriar todo o pipeline; por
-      // ora só para com segurança em vez de continuar chamando encode/send num device morto
-      // (esse era o caminho provável do crash sem log nenhum, medido jogando Rocket League).
-      console.error("[native-transport] device D3D11 perdido (TDR) — encerrando a transmissão nativa.");
-      activeWin.webContents.send("native-transport:error", "A GPU reiniciou (sobrecarga) e a transmissão precisou parar. Tenta de novo.");
-      activeWin.webContents.send("native-transport:ended");
-      stopNativeTransport();
+      // captura+NVENC disputando). Nada mais pode tocar no device morto (caminho provável do
+      // crash sem log medido jogando Rocket League). Tarefa D2: recria device → captura →
+      // encoders sem fechar as sessões dos espectadores (só o vídeo congela uns segundos).
+      console.error("[native-transport] device D3D11 perdido (TDR) — recriando captura e encoders.");
+      activeWin.webContents.send("native-transport:capture-warning", "A GPU reiniciou (sobrecarga) — reconectando a captura...");
+      recoverFromDeviceLost(1);
       return;
     }
     if (frame?.windowClosed) {
@@ -1594,6 +1763,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       if (!nativeCapture.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, ntActiveCodec)) {
         console.warn("[native-transport] falha ao reiniciar encoder do tier 'low' após resize — simulcast fica só com 'high'.");
       }
+      restartCompatEncoders();
     }
     // Instante da captura (logo depois do acquire, antes do encode) no relógio QPC — mesmo relógio
     // dos `ptsUs` de áudio. Encoder sem atraso de saída (EncoderCore.cpp), então o pacote que sai
@@ -1633,11 +1803,20 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       for (const packet of packetsLow) {
         nativeCapture.transportSendVideoFrame("low", packet, timestampUs);
       }
+      // D1: streams H.264 paralelos, só enquanto tiver espectador neles (encoder lazy).
+      if (ntViewerCompat.size > 0) {
+        for (const tier of ["high-h264", "low-h264"] as const) {
+          for (const packet of nativeCapture.encodeCurrentFrameTier(tier)) {
+            nativeCapture.transportSendVideoFrame(tier, packet, timestampUs);
+          }
+        }
+      }
     } else {
       dbgTimeouts++;
       // Tela parada: keyframe pendente (espectador acabou de entrar, trocou de tier, pediu 'K')
       // sairia só quando algo mudasse — espectador ficava com tela preta (teste A6).
-      for (const tier of ["high", "low"] as const) {
+      const pendingTiers: NativeStreamKey[] = ntViewerCompat.size > 0 ? ["high", "low", "high-h264", "low-h264"] : ["high", "low"];
+      for (const tier of pendingTiers) {
         for (const packet of nativeCapture.encodePendingKeyframe(tier)) {
           nativeCapture.transportSendVideoFrame(tier, packet, timestampUs);
         }
@@ -1661,8 +1840,13 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // Recém-rebaixados não contam no AIMD de nenhum tier nessa volta (os sinais deles ainda são
       // do "high"; o "low" passa a medi-los a partir da próxima).
       const activeStats = viewerStats.filter((v) => !demoted.has(v.viewerId));
+      promoteRecoveredViewers(activeStats);
       const dbgDroppedHigh = tickAimd(ntAimdHigh, "high", bitrateBps, targetFps, activeStats);
       tickAimd(ntAimdLow, "low", SIMULCAST_LOW_BITRATE_BPS, SIMULCAST_LOW_FPS, activeStats);
+      if (nativeCapture.hasEncoderTier("high-h264")) {
+        tickAimd(ntAimdCompatHigh, "high-h264", bitrateBps, targetFps, activeStats);
+        tickAimd(ntAimdCompatLow, "low-h264", SIMULCAST_LOW_BITRATE_BPS, SIMULCAST_LOW_FPS, activeStats);
+      }
 
       // `audioRms`/`audioSources` só existem com áudio nativo ativo — diagnóstico pra confirmar AO
       // VIVO quais apps o mixer tá capturando e se tem som passando (ver AudioCaptureCore.h).
@@ -1724,6 +1908,8 @@ ipcMain.handle(
     nativeCapture.stop();
     nativeCapture.destroyEncoder();
     nativeCapture.destroyEncoderLow();
+    nativeCapture.destroyEncoderTier("high-h264");
+    nativeCapture.destroyEncoderTier("low-h264");
     // Sem isso, o filtro de áudio (exclusão por processo pra monitor, inclusão da árvore do hwnd
     // pra janela) continuava vinculado à fonte ANTERIOR depois de trocar de vídeo (bug real —
     // ver docs/TASKS.md). `destroyAudioCapture` é seguro chamar mesmo se áudio já não estava
@@ -1747,6 +1933,7 @@ ipcMain.handle(
     if (!nativeCapture.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, ntActiveCodec)) {
       console.warn("[native-transport] falha ao reiniciar encoder do tier 'low' após troca de fonte — simulcast fica só com 'high'.");
     }
+    restartCompatEncoders();
     return true;
   },
 );
