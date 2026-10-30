@@ -18,6 +18,7 @@ export async function createRoom(
   settings: StreamSettings,
   slug?: string,
   access: RoomAccess = { isPrivate: false },
+  nativeMode = false,
 ): Promise<CreateRoomResponse> {
   const res = await fetch(`${backendUrl}/rooms`, {
     method: "POST",
@@ -27,6 +28,7 @@ export async function createRoom(
       slug: slug || undefined,
       isPrivate: access.isPrivate,
       password: access.password || undefined,
+      nativeMode,
     }),
   });
   if (!res.ok) {

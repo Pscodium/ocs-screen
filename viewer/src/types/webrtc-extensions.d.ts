@@ -21,6 +21,13 @@ declare class MediaStreamTrackGenerator<T = VideoFrame> extends MediaStreamTrack
   readonly writable: WritableStream<T>;
 }
 
+// Par do `MediaStreamTrackGenerator` — usado em services/webNativeHost.ts pra ler os frames
+// capturados (`getDisplayMedia`) e mandar pro `VideoEncoder`/`AudioEncoder` (WebCodecs).
+declare class MediaStreamTrackProcessor<T = VideoFrame> {
+  constructor(init: { track: MediaStreamTrack });
+  readonly readable: ReadableStream<T>;
+}
+
 // `avc.format` é suportado pelo Chromium (permite Annex-B — SPS/PPS embutido no bitstream, com
 // start code — em vez de exigir AVCC com `description` separada) mas ainda não está no
 // VideoDecoderConfig do lib.dom.d.ts desta versão do TS.

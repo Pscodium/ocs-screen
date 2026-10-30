@@ -3,7 +3,8 @@ import { ConnectionState } from "livekit-client";
 import { captureScreen, stopCapture } from "../services/capture";
 import { createRoom, endRoom, type RoomAccess } from "../services/backend";
 import { startBroadcast, readPublishStats, switchToH264, type BroadcastSession } from "../services/publish";
-import type { StreamSettings } from "../types/stream";
+import { WebNativeHost, isWebNativeHostSupported } from "../services/webNativeHost";
+import { AUTO_FPS_TARGET, getMaxBitrate, type StreamSettings } from "../types/stream";
 
 export type BroadcastState = "idle" | "starting" | "live" | "error";
 
@@ -35,6 +36,7 @@ export function useBroadcast() {
 
   const streamRef = useRef<MediaStream | null>(null);
   const sessionRef = useRef<BroadcastSession | null>(null);
+  const nativeHostRef = useRef<WebNativeHost | null>(null);
   const roomIdRef = useRef<string | null>(null);
   const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const settingsRef = useRef<StreamSettings | null>(null);
@@ -47,18 +49,35 @@ export function useBroadcast() {
       const { stream, settings: actualSettings, hasAudio } = await captureScreen(settings);
       streamRef.current = stream;
 
-      const room = await createRoom(settings, slug, access);
+      // Caminho principal: protocolo do transporte nativo (WebCodecs + DataChannel, mesmo viewer
+      // do app desktop — ver services/webNativeHost.ts). LiveKit só sobra como fallback pra
+      // navegador sem WebCodecs/Insertable Streams (Firefox, Safari).
+      const useNative = isWebNativeHostSupported();
+      const room = await createRoom(settings, slug, access, useNative);
       roomIdRef.current = room.roomId;
 
-      const session = await startBroadcast(
-        room.livekitUrl,
-        room.hostToken,
-        stream,
-        settings,
-        (count) => setInfo((prev) => (prev ? { ...prev, viewerCount: count } : prev)),
-        (connectionState) => setInfo((prev) => (prev ? { ...prev, connectionState } : prev)),
-      );
-      sessionRef.current = session;
+      if (useNative) {
+        const width = actualSettings.width ?? 1920;
+        const height = actualSettings.height ?? 1080;
+        const host = new WebNativeHost({
+          roomId: room.roomId,
+          stream,
+          bitrateBps: getMaxBitrate(width, height, settings),
+          fps: settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps,
+          onViewerCount: (count) => setInfo((prev) => (prev ? { ...prev, viewerCount: count } : prev)),
+        });
+        nativeHostRef.current = host;
+        await host.start();
+      } else {
+        sessionRef.current = await startBroadcast(
+          room.livekitUrl,
+          room.hostToken,
+          stream,
+          settings,
+          (count) => setInfo((prev) => (prev ? { ...prev, viewerCount: count } : prev)),
+          (connectionState) => setInfo((prev) => (prev ? { ...prev, connectionState } : prev)),
+        );
+      }
 
       // Usuário pode parar o compartilhamento pelo diálogo nativo do navegador/SO.
       stream.getVideoTracks()[0].onended = () => stop();
@@ -74,7 +93,7 @@ export function useBroadcast() {
         bitrateKbps: 0,
         packetLossPercent: 0,
         hasAudio,
-        codec: "?",
+        codec: useNative ? "H.264" : "?",
         encoderImplementation: null,
         avgQp: null,
         qualityLimitationReason: null,
@@ -84,6 +103,26 @@ export function useBroadcast() {
       setState("live");
 
       statsIntervalRef.current = setInterval(async () => {
+        const nativeHost = nativeHostRef.current;
+        if (nativeHost) {
+          const stats = nativeHost.takeStats();
+          setInfo((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  bitrateKbps: stats.bitrateKbps,
+                  codec: `H.264 (WebCodecs, alvo ${(stats.targetBitrateKbps / 1000).toFixed(1)} Mbps)`,
+                  encoderImplementation: stats.hardwareAccelerated ? "hardware" : "OpenH264 (software)",
+                  avgEncodeMs: stats.avgEncodeMs,
+                  actualResolution: stats.width ? `${stats.width} × ${stats.height}` : prev.actualResolution,
+                  actualFps: stats.fps > 0 ? stats.fps : prev.actualFps,
+                }
+              : prev,
+          );
+          return;
+        }
+        const session = sessionRef.current;
+        if (!session) return;
         const stats = await readPublishStats(session.publication);
         if (stats) {
           setInfo((prev) =>
@@ -136,6 +175,8 @@ export function useBroadcast() {
     statsIntervalRef.current = null;
 
     if (streamRef.current) stopCapture(streamRef.current);
+    nativeHostRef.current?.stop();
+    nativeHostRef.current = null;
     if (sessionRef.current) await sessionRef.current.disconnect();
     if (roomIdRef.current) await endRoom(roomIdRef.current).catch(() => {});
 
