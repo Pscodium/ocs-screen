@@ -37,6 +37,8 @@ export interface PlayoutClockOptions {
   marginMs: number;
   maxExtraMs: number;
   decayMsPerSecond: number;
+  // Acima disso de sobra (offset − alvo), desce de uma vez em vez de 10ms/s.
+  snapDownMs: number;
   recomputeEveryMs: number;
 }
 
@@ -49,6 +51,7 @@ const DEFAULT_OPTIONS: PlayoutClockOptions = {
   marginMs: 8,
   maxExtraMs: 1000,
   decayMsPerSecond: 10,
+  snapDownMs: 250,
   recomputeEveryMs: 100,
 };
 
@@ -148,10 +151,18 @@ export class PlayoutClock {
       // No aquecimento segue o alvo nos DOIS sentidos — o 1º keyframe/decoder subindo chega
       // atrasado e, com a descida lenta normal, prendia ~120ms de latência por ~8s (medido no E2E).
       this.offsetMs = desired;
+    } else if (this.offsetMs - desired > this.options.snapDownMs) {
+      // Excesso grande = sobra de um soluço que já passou (host travou alguns segundos e a fila
+      // chegou de uma vez). Descer a 10ms/s levaria minutos — bug real: buffer preso em ~9.9s,
+      // espectador assistindo ~10s atrasado. Num ao vivo pular pra frente uma vez é melhor.
+      this.offsetMs = desired;
     } else {
       const elapsedS = (nowMs - this.lastRecomputeMs) / 1000;
       this.offsetMs = Math.max(desired, this.offsetMs - this.options.decayMsPerSecond * elapsedS);
     }
+    // Teto vale pro offset ATUAL também, não só pro alvo — senão um offset subido antes de o
+    // trânsito mínimo cair fica acima de `maxExtraMs` indefinidamente.
+    this.offsetMs = Math.min(this.offsetMs, minTransit + this.options.maxExtraMs);
     this.minTransitMs = minTransit;
     this.lastRecomputeMs = nowMs;
   }
