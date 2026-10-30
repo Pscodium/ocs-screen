@@ -16,6 +16,14 @@ function isHeavyCodec(codec: string): boolean {
   return codec.toUpperCase() === "AV1" || codec.toUpperCase() === "VP9";
 }
 
+// VP9 por software é a escolha padrão do web pra movimento (ver services/codecs.ts) — encoder de
+// software sozinho não é problema. Só avisa/oferece H.264 quando o navegador diz que a CPU tá
+// limitando de verdade; senão o aviso ficaria sempre ligado e empurraria o host pro H.264, que
+// congela com movimento no navegador.
+function isCpuLimited(info: BroadcastInfo): boolean {
+  return info.qualityLimitationReason === "cpu";
+}
+
 const connectionLabel: Record<ConnectionState, string> = {
   [ConnectionState.Connected]: "Ao vivo",
   [ConnectionState.Connecting]: "Conectando...",
@@ -66,7 +74,7 @@ export function LiveCard({ info, onStop, onOptimizeCodec, optimizingCodec }: Liv
             {info.encoderImplementation && ` (${info.encoderImplementation})`}
           </span>
         )}
-        {(isSoftwareEncoder(info.encoderImplementation) || info.hasSoftwareLayer) && (
+        {isCpuLimited(info) && (
           <span
             className="live-stats-warning"
             title={[
@@ -84,7 +92,7 @@ export function LiveCard({ info, onStop, onOptimizeCodec, optimizingCodec }: Liv
             ⚠️ CPU
           </span>
         )}
-        {isSoftwareEncoder(info.encoderImplementation) && isHeavyCodec(info.codec) && (
+        {isCpuLimited(info) && isSoftwareEncoder(info.encoderImplementation) && isHeavyCodec(info.codec) && (
           <button
             className="live-optimize-btn"
             onClick={onOptimizeCodec}

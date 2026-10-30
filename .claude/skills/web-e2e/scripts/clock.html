@@ -1,0 +1,40 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>OCS-CLOCK</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#123}canvas{display:block}</style></head>
+<body><canvas id="c"></canvas>
+<script>
+// Barra no topo: 2 células de referência (preto, branco) + 24 bits de Date.now() % 2^24.
+// Abaixo: carga de movimento (MODE=game) ou texto quase parado (MODE=text).
+const mode = new URLSearchParams(location.search).get("mode") || "game";
+const c = document.getElementById("c"), g = c.getContext("2d");
+function size(){ c.width = innerWidth; c.height = innerHeight; }
+size(); addEventListener("resize", size);
+const CELLS = 26, BAR = 0.07;
+const shapes = Array.from({length: 220}, (_, i) => ({x: Math.random(), y: Math.random(), vx: (Math.random()-.5)*.012, vy: (Math.random()-.5)*.012, s: 10+Math.random()*90, h: (i*37)%360}));
+let frame = 0;
+function draw(){
+  const W = c.width, H = c.height, top = H*BAR;
+  if (mode === "game") {
+    g.fillStyle = `hsl(${frame%360},40%,18%)`; g.fillRect(0, top, W, H-top);
+    for (const s of shapes) {
+      s.x = (s.x + s.vx + 1) % 1; s.y = (s.y + s.vy + 1) % 1;
+      g.fillStyle = `hsl(${(s.h+frame*2)%360},80%,55%)`;
+      g.fillRect(s.x*W, top + s.y*(H-top), s.s, s.s);
+    }
+    g.fillStyle = "#fff"; g.font = "28px monospace";
+    for (let i = 0; i < 12; i++) g.fillText("frame " + frame + " scrolling text ".repeat(3), ((frame*7 + i*150) % (W+600)) - 600, top + 60 + i*70);
+  } else {
+    g.fillStyle = "#1e1e1e"; g.fillRect(0, top, W, H-top);
+    g.fillStyle = "#d4d4d4"; g.font = "16px Consolas, monospace";
+    for (let i = 0; i < 60; i++) g.fillText(`${String(i+1).padStart(3)}  const value${i} = computeSomething(${i}, "texto pequeno de código ${i}"); // comentário`, 20, top + 30 + i*20);
+    g.fillStyle = "#ffcc00"; g.fillRect(20 + (frame%600), top + 30 + 61*20, 8, 18); // cursor piscando/andando
+  }
+  const t = Date.now() % 16777216, cw = W / CELLS;
+  for (let i = 0; i < CELLS; i++) {
+    const on = i === 0 ? 0 : i === 1 ? 1 : (t >> (i-2)) & 1;
+    g.fillStyle = on ? "#fff" : "#000"; g.fillRect(i*cw, 0, cw, top);
+  }
+  frame++; requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+</script></body></html>

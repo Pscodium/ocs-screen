@@ -62,7 +62,7 @@ export async function startBroadcast(
 
   const [track] = stream.getVideoTracks();
   const { width, height } = track.getSettings();
-  const videoCodec = detectBestVideoCodec();
+  const videoCodec = detectBestVideoCodec(settings.sharpText ? "text" : "motion");
   const isSvcCodec = videoCodec === "vp9" || videoCodec === "av1";
 
   const publication = await room.localParticipant.publishTrack(track, {
