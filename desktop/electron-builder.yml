@@ -42,7 +42,7 @@ win:
 # Ícones opcionais em build/appx/ (StoreLogo.png 50x50, Square44x44Logo.png, Square150x150Logo.png,
 # Wide310x150Logo.png) — sem eles o electron-builder usa ícones genéricos.
 appx:
-  displayName: Screen Share
+  displayName: OCS Screen
   applicationId: ScreenShare
   languages:
     - pt-BR
