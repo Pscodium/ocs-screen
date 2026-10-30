@@ -53,15 +53,10 @@ Sem assinatura, Windows SmartScreen alerta o usuário no primeiro uso. Passos qu
 2. Configurar `win.certificateFile`/`win.certificatePassword` (ou variáveis `CSC_LINK`/`CSC_KEY_PASSWORD`) no `electron-builder.yml` / CI.
 3. `electron-builder` assina automaticamente via `signtool` durante o build se o certificado estiver configurado.
 
-## Auto-update (pendente)
+## Auto-update e Microsoft Store
 
-Não implementado ainda — requer:
-
-1. Adicionar `electron-updater` às dependências.
-2. Configurar `publish` no `electron-builder.yml` apontando pro provedor de releases (ex.: GitHub Releases).
-3. Chamar `autoUpdater.checkForUpdatesAndNotify()` no processo principal.
-
-Fica de fora do MVP para não acoplar a um provedor de hospedagem antes de decidir onde o app será distribuído.
+Implementados — ver [RELEASE.md](RELEASE.md) (GitHub Releases com `electron-updater` e
+publicação na Microsoft Store).
 
 ## ARM64
 

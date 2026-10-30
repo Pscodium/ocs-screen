@@ -40,6 +40,14 @@ jobs:
 
       # O addon nativo (capture_core.node + DLLs) já vem pré-compilado no repositório em
       # native/capture-core/build/Release — o CI não recompila o C++.
+      # .env.production é gitignored — sem isso o Vite embute o fallback localhost no bundle e o app
+      # da Store não acha o backend.
+      - name: Gerar .env.production
+        shell: pwsh
+        run: |
+          if (-not "${{ secrets.VITE_BACKEND_URL }}") { throw "Secret VITE_BACKEND_URL não definido" }
+          "VITE_BACKEND_URL=${{ secrets.VITE_BACKEND_URL }}" | Out-File .env.production -Encoding utf8NoBOM
+
       - run: npm ci
       - run: npm run dist:store
 
