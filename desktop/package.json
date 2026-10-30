@@ -1,6 +1,6 @@
 {
   "name": "ocs-screen-desktop",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
@@ -9,7 +9,9 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "dist": "electron-vite build && electron-builder --win",
-    "dist:publish": "electron-vite build && electron-builder --win --publish always"
+    "dist:publish": "electron-vite build && electron-builder --win --publish always",
+    "dist:store": "electron-vite build && node scripts/build-store.js",
+    "publish:store": "npm run dist:store && powershell -ExecutionPolicy Bypass -File scripts/publish-store.ps1"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",

@@ -249,9 +249,11 @@ function setupAutoUpdater(): void {
     mainWindow?.webContents.send("update:error", err.message);
   });
 
+  // process.windowsStore: instalado via MSIX da Microsoft Store — quem atualiza é a Store (e a
+  // política proíbe self-update), então o electron-updater/GitHub fica desligado nesse caso.
   // app.isPackaged: em dev não existe app-update.yml (só gerado no build), checkForUpdates()
   // sempre falha nesse caso — nem tenta.
-  if (app.isPackaged) {
+  if (app.isPackaged && !process.windowsStore) {
     autoUpdater.checkForUpdates().catch(() => {
       // Falha silenciosa de propósito (sem internet, GitHub fora do ar, etc.) — não é motivo
       // pra incomodar o usuário toda vez que abre o app.

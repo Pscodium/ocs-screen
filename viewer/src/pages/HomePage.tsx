@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { SettingsForm } from "../components/SettingsForm";
 import { LiveCard } from "../components/LiveCard";
 import { RoomsBrowser } from "../components/RoomsBrowser";
@@ -120,6 +121,10 @@ export function HomePage() {
           <RoomsBrowser />
         )}
       </div>
+
+      <Link className="footer-link" to="/privacidade">
+        Política de privacidade
+      </Link>
     </div>
   );
 }

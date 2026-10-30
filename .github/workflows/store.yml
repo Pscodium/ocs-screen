@@ -1,0 +1,61 @@
+# Publica uma versão nova na Microsoft Store a cada tag vX.Y.Z (ex.: git tag v1.0.14 && git push origin v1.0.14).
+# A versão do pacote vem da tag, não do package.json. Pré-requisito: a primeira submissão já foi feita
+# manualmente no Partner Center (msstore só atualiza um app existente) — ver doc "Publicar na Microsoft Store".
+name: Microsoft Store
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão (ex.: 1.0.14)"
+        required: true
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    env:
+      MSSTORE_IDENTITY_NAME: ${{ secrets.MSSTORE_IDENTITY_NAME }}
+      MSSTORE_PUBLISHER: ${{ secrets.MSSTORE_PUBLISHER }}
+      MSSTORE_PUBLISHER_DISPLAY_NAME: ${{ secrets.MSSTORE_PUBLISHER_DISPLAY_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Definir versão
+        shell: pwsh
+        run: |
+          $v = "${{ github.event.inputs.version }}"
+          if (-not $v) { $v = "${{ github.ref_name }}".TrimStart("v") }
+          npm version $v --no-git-tag-version --allow-same-version
+
+      # O addon nativo (capture_core.node + DLLs) já vem pré-compilado no repositório em
+      # native/capture-core/build/Release — o CI não recompila o C++.
+      - run: npm ci
+      - run: npm run dist:store
+
+      - uses: microsoft/setup-msstore-cli@v1
+
+      - name: Enviar pra Store
+        shell: pwsh
+        env:
+          MSSTORE_TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+          MSSTORE_SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+          MSSTORE_CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+          MSSTORE_CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+          MSSTORE_PRODUCT_ID: ${{ secrets.MSSTORE_PRODUCT_ID }}
+        run: ./scripts/publish-store.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store-package
+          path: desktop/dist/*.appx

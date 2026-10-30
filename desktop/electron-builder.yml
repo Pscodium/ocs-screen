@@ -36,6 +36,18 @@ asarUnpack:
 win:
   target: nsis
   icon: build/icon.ico
+# MSIX pra Microsoft Store (`npm run dist:store`). identityName/publisher/publisherDisplayName vêm do
+# Partner Center (Identidade do produto) via env e são injetados por scripts/build-store.js — o
+# electron-builder não expande ${env.X} aqui. Não precisa assinar: a Store re-assina o pacote na publicação.
+# Ícones opcionais em build/appx/ (StoreLogo.png 50x50, Square44x44Logo.png, Square150x150Logo.png,
+# Wide310x150Logo.png) — sem eles o electron-builder usa ícones genéricos.
+appx:
+  displayName: Screen Share
+  applicationId: ScreenShare
+  languages:
+    - pt-BR
+    - en-US
+  artifactName: ${productName}-${version}.${ext}
 nsis:
   oneClick: false
   perMachine: false
