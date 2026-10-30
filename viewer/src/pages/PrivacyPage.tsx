@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 
-// Endereço exibido como contato na política — exigido pela Microsoft Store. Preencher antes de publicar.
-const CONTACT_EMAIL = "contato@exemplo.com";
+// Contato exibido na política (exigido pela Microsoft Store) — definido no build via VITE_CONTACT_EMAIL.
+const CONTACT_EMAIL = import.meta.env.VITE_CONTACT_EMAIL ?? "";
 const LAST_UPDATED = "29 de outubro de 2026";
 
 export function PrivacyPage() {
@@ -50,7 +50,13 @@ export function PrivacyPage() {
       <h2>Seus direitos</h2>
       <p>
         Você pode encerrar a transmissão a qualquer momento, o que remove os dados da sala. Para dúvidas ou pedidos
-        relacionados à LGPD, escreva para <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.
+        relacionados à LGPD, {CONTACT_EMAIL ? (
+          <>
+            escreva para <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.
+          </>
+        ) : (
+          "entre em contato pela página do aplicativo na Microsoft Store."
+        )}
       </p>
 
       <h2>Alterações</h2>
