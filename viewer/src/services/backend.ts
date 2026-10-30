@@ -47,6 +47,9 @@ export interface RoomSummary {
   roomId: string;
   createdAt: number;
   hasPassword: boolean;
+  settings?: Pick<StreamSettings, "resolution" | "fps" | "quality">;
+  // null quando o backend não consegue saber (LiveKit fora do ar).
+  viewerCount?: number | null;
 }
 
 export async function fetchActiveRooms(): Promise<RoomSummary[]> {
@@ -61,6 +64,8 @@ export interface RoomInfo {
   createdAt: number;
   nativeMode: boolean;
   hasPassword: boolean;
+  settings?: Pick<StreamSettings, "resolution" | "fps" | "quality">;
+  viewerCount?: number | null;
 }
 
 // Valida a senha antes de montar o player (token/WS checam de novo no backend).

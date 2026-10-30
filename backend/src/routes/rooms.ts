@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { config } from "../config.js";
-import { createHostToken, createViewerToken, getLiveRoomIds } from "../services/livekit.js";
+import { createHostToken, createViewerToken, getLiveRoomViewerCounts } from "../services/livekit.js";
 import { cancelRoomCleanup, checkRoomPassword, createRoom, deleteRoom, getRoom, listRooms, SlugTakenError } from "../services/rooms.js";
-import { registerHostSocket, registerViewerSocket } from "../services/nativeWsRelay.js";
+import { getNativeViewerCount, registerHostSocket, registerViewerSocket } from "../services/nativeWsRelay.js";
 import { getIceServers } from "../services/turn.js";
 import { generateIdentity, isValidSlug, normalizeSlug } from "../utils/ids.js";
 import type {
@@ -20,9 +20,9 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
     // (DELETE) — se o host caiu sem avisar, a sala fica presa lá pra sempre. O LiveKit é a fonte
     // de verdade de quem tá realmente ao vivo; cruza os dois e já aproveita pra descartar o que
     // sobrou órfão, sem precisar de ação manual nenhuma.
-    let liveIds: Set<string> | null = null;
+    let liveCounts: Map<string, number> | null = null;
     try {
-      liveIds = await getLiveRoomIds();
+      liveCounts = await getLiveRoomViewerCounts();
     } catch {
       // LiveKit inacessível não pode derrubar a listagem inteira — cai pra mostrar tudo que o
       // backend tem registrado, sem filtrar.
@@ -38,7 +38,7 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
     // abaixo e se autodestrói ~20s depois de criada mesmo transmitindo ativamente (bug real: apagava
     // offer/answer da sinalização nativa e sumia da lista de salas ativas em pleno vivo).
     const isOrphan = (room: (typeof localRooms)[number]) =>
-      !room.nativeMode && liveIds !== null && !liveIds.has(room.id) && Date.now() - room.createdAt > GRACE_MS;
+      !room.nativeMode && liveCounts !== null && !liveCounts.has(room.id) && Date.now() - room.createdAt > GRACE_MS;
 
     const rooms = localRooms.filter((room) => !isOrphan(room) && !room.isPrivate);
     for (const room of localRooms) {
@@ -51,6 +51,7 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
         createdAt: room.createdAt,
         settings: room.settings,
         hasPassword: room.passwordHash !== null,
+        viewerCount: room.nativeMode ? getNativeViewerCount(room.id) : (liveCounts?.get(room.id) ?? null),
         viewerUrl: `${config.viewerUrl}/s/${room.id}`,
       })),
     };
@@ -97,12 +98,26 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>("/rooms/:id", async (request, reply) => {
     const room = getRoom(request.params.id);
     if (!room) return reply.code(404).send({ error: "room_not_found" });
+
+    // Player do espectador consulta isso periodicamente pro contador de quem tá assistindo.
+    let viewerCount: number | null = null;
+    if (room.nativeMode) {
+      viewerCount = getNativeViewerCount(room.id);
+    } else {
+      try {
+        viewerCount = (await getLiveRoomViewerCounts([room.id])).get(room.id) ?? 0;
+      } catch {
+        // LiveKit inacessível — player só esconde o contador.
+      }
+    }
+
     return reply.send({
       roomId: room.id,
       settings: room.settings,
       createdAt: room.createdAt,
       nativeMode: room.nativeMode,
       hasPassword: room.passwordHash !== null,
+      viewerCount,
     });
   });
 

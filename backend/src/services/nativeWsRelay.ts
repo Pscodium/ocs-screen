@@ -133,6 +133,10 @@ export function registerViewerSocket(roomId: string, socket: WebSocket): string 
   return viewerId;
 }
 
+export function getNativeViewerCount(roomId: string): number {
+  return rooms.get(roomId)?.viewers.size ?? 0;
+}
+
 // Chamado junto com `deleteRoom` (mesmo ciclo de vida da sala) — fecha os sockets que sobrarem.
 export function cleanupNativeSockets(roomId: string): void {
   const state = rooms.get(roomId);

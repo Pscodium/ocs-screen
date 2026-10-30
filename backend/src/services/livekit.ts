@@ -9,9 +9,12 @@ const roomService = new RoomServiceClient(httpUrl, config.livekit.apiKey, config
 // Salas que o LiveKit considera "vivas" agora (tem publisher e/ou ainda não expirou vazia). Serve
 // pra filtrar o mapa em memória de `rooms.ts`, que só é limpo por chamada explícita de DELETE —
 // se o host cair sem avisar (crash, queda de rede), o registro local fica órfão até isso rodar.
-export async function getLiveRoomIds(): Promise<Set<string>> {
-  const rooms = await roomService.listRooms();
-  return new Set(rooms.map((room) => room.name));
+//
+// Valor = espectadores conectados (participantes menos o host). Sala que ainda não tem o host
+// conectado sai com 0, nunca negativo.
+export async function getLiveRoomViewerCounts(roomIds?: string[]): Promise<Map<string, number>> {
+  const rooms = await roomService.listRooms(roomIds);
+  return new Map(rooms.map((room) => [room.name, Math.max(0, room.numParticipants - 1)]));
 }
 
 export async function createHostToken(roomId: string, identity: string): Promise<string> {

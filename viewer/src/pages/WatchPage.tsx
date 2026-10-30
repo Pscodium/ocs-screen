@@ -4,6 +4,7 @@ import { ConnectionState } from "livekit-client";
 import { useRoomStream } from "../hooks/useRoomStream";
 import { useNativeStream } from "../hooks/useNativeStream";
 import { fetchRoomInfo, verifyRoomPassword } from "../services/backend";
+import { useRoomPresence } from "../hooks/useRoomPresence";
 import { VideoPlayer } from "../components/VideoPlayer";
 
 export function WatchPage() {
@@ -113,6 +114,7 @@ function NativeWatchRoom({ roomId, password }: { roomId: string; password?: stri
       setPlayoutDelayMs={setPlayoutDelayMs}
       quality={quality}
       setQuality={setQuality}
+      roomId={roomId}
     />
   );
 }
@@ -130,6 +132,7 @@ function WatchRoom({ roomId, password }: { roomId: string; password?: string }) 
       hasAudio={hasAudio}
       playoutDelayMs={playoutDelayMs}
       setPlayoutDelayMs={setPlayoutDelayMs}
+      roomId={roomId}
     />
   );
 }
@@ -145,7 +148,10 @@ function WatchRoomView({
   setPlayoutDelayMs,
   quality,
   setQuality,
-}: ReturnType<typeof useRoomStream> & Partial<Pick<ReturnType<typeof useNativeStream>, "quality" | "setQuality">>) {
+  roomId,
+}: ReturnType<typeof useRoomStream> &
+  Partial<Pick<ReturnType<typeof useNativeStream>, "quality" | "setQuality">> & { roomId: string }) {
+  const presence = useRoomPresence(roomId);
 
   if (phase === "error") return <StatusMessage text={error ?? "Erro ao conectar."} />;
   if (phase === "ended") return <StatusMessage text="A transmissão foi encerrada." />;
@@ -165,6 +171,9 @@ function WatchRoomView({
         onPlayoutDelayChange={setPlayoutDelayMs}
         quality={quality}
         onQualityChange={setQuality}
+        roomId={roomId}
+        startedAt={presence.createdAt}
+        viewerCount={presence.viewerCount}
       />
     </div>
   );

@@ -50,6 +50,9 @@ export interface RoomSummary {
   createdAt: number;
   settings: RoomSettings;
   hasPassword: boolean;
+  // Espectadores conectados agora (LiveKit: participantes menos o host; nativo: sockets de viewer
+  // no relay). null quando o LiveKit está inacessível e não dá pra saber.
+  viewerCount: number | null;
   // Link do viewer web — o app desktop abre ele numa janela própria pra assistir (aba "Assistir").
   viewerUrl: string;
 }

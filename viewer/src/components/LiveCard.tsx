@@ -2,6 +2,9 @@ import { useState } from "react";
 import { ConnectionState } from "livekit-client";
 import type { BroadcastInfo } from "../hooks/useBroadcast";
 import { isSoftwareEncoder } from "../services/codecs";
+import { useNow } from "../hooks/useNow";
+import { formatDuration, viewersLabel } from "../utils/format";
+import { CheckIcon, ClockIcon, CopyIcon, EyeIcon } from "./Icons";
 
 interface LiveCardProps {
   info: BroadcastInfo;
@@ -34,6 +37,9 @@ const connectionLabel: Record<ConnectionState, string> = {
 
 export function LiveCard({ info, onStop, onOptimizeCodec, optimizingCodec }: LiveCardProps) {
   const [copied, setCopied] = useState(false);
+  // Card monta quando a transmissão entra no ar — serve de início pro contador de duração.
+  const [startedAt] = useState(() => Date.now());
+  const now = useNow();
   const isLive = info.connectionState === ConnectionState.Connected;
 
   const copyLink = async () => {
@@ -46,65 +52,91 @@ export function LiveCard({ info, onStop, onOptimizeCodec, optimizingCodec }: Liv
     }
   };
 
+  const stats: { label: string; value: string; title?: string }[] = [
+    { label: "Resolução", value: info.actualResolution },
+    { label: "FPS", value: String(info.actualFps) },
+    { label: "Bitrate", value: info.bitrateKbps > 0 ? `${(info.bitrateKbps / 1000).toFixed(1)} Mbps` : "—" },
+    { label: "Perda", value: `${info.packetLossPercent}%` },
+    {
+      label: "Codec",
+      value: info.codec !== "?" ? info.codec.toUpperCase() : "—",
+      title: info.encoderImplementation ? `Encoder: ${info.encoderImplementation}` : undefined,
+    },
+  ];
+
   return (
-    <div className="live-card">
+    <section className="home-card live-card">
       <div className="live-top-row">
         <div className={`live-badge ${isLive ? "" : "live-badge-warning"}`}>
           <span className={`live-dot ${isLive ? "" : "live-dot-warning"}`} />
           {connectionLabel[info.connectionState]}
         </div>
-        <span className="live-viewer-count">
-          {info.viewerCount} espectador{info.viewerCount === 1 ? "" : "es"}
+        <span className="live-room-name">{info.roomId}</span>
+        <span className="live-meta">
+          <span title="Tempo no ar">
+            <ClockIcon size={14} />
+            {formatDuration(now - startedAt)}
+          </span>
+          <span title="Espectadores">
+            <EyeIcon size={14} />
+            {viewersLabel(info.viewerCount)}
+          </span>
         </span>
       </div>
 
-      <button className="live-link-btn" onClick={copyLink} title={info.viewerUrl}>
-        <span className="live-link-text">{info.viewerUrl}</span>
-        <span className="live-link-copy">{copied ? "Copiado!" : "Copiar"}</span>
-      </button>
+      <div className="live-link-row">
+        <span className="live-link-text" title={info.viewerUrl}>
+          {info.viewerUrl}
+        </span>
+        <button className={`live-link-copy ${copied ? "live-link-copied" : ""}`} onClick={copyLink}>
+          {copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+          {copied ? "Copiado" : "Copiar link"}
+        </button>
+      </div>
 
       <div className="live-stats">
-        <span>{info.actualResolution}</span>
-        <span>{info.actualFps} FPS</span>
-        <span>{info.bitrateKbps > 0 ? `${(info.bitrateKbps / 1000).toFixed(1)} Mbps` : "—"}</span>
-        <span>{info.packetLossPercent}% perda</span>
-        {info.codec !== "?" && (
-          <span title={info.encoderImplementation ? `Encoder: ${info.encoderImplementation}` : undefined}>
-            {info.codec.toUpperCase()}
-            {info.encoderImplementation && ` (${info.encoderImplementation})`}
-          </span>
-        )}
-        {isCpuLimited(info) && (
-          <span
-            className="live-stats-warning"
-            title={[
-              isSoftwareEncoder(info.encoderImplementation)
-                ? `Codificando por software (${info.encoderImplementation}) — pode pesar a CPU. Confere se "usar aceleração de hardware" tá ligado nas configurações do navegador.`
-                : "A camada principal tá em hardware, mas pelo menos uma camada menor do simulcast caiu em software.",
-              info.qualityLimitationReason && info.qualityLimitationReason !== "none"
-                ? `Motivo reportado pelo navegador: ${info.qualityLimitationReason}.`
-                : null,
-              info.avgEncodeMs !== null ? `Tempo médio de encode: ${info.avgEncodeMs}ms/frame.` : null,
-            ]
-              .filter(Boolean)
-              .join("\n")}
-          >
-            ⚠️ CPU
-          </span>
-        )}
-        {isCpuLimited(info) && isSoftwareEncoder(info.encoderImplementation) && isHeavyCodec(info.codec) && (
-          <button
-            className="live-optimize-btn"
-            onClick={onOptimizeCodec}
-            disabled={optimizingCodec}
-            title="Trocar pra H.264 agora — mais leve que AV1/VP9 por software. Causa um soluço curto de vídeo pros espectadores."
-          >
-            {optimizingCodec ? "Otimizando..." : "⚡ Otimizar codec"}
-          </button>
-        )}
-        {info.avgQp !== null && <span title="QP médio — quanto maior, mais comprimido/blocado">QP {info.avgQp}</span>}
-        {info.hasAudio && <span>🔊 áudio</span>}
+        {stats.map((s) => (
+          <div key={s.label} className="live-stat" title={s.title}>
+            <span className="live-stat-value">{s.value}</span>
+            <span className="live-stat-label">{s.label}</span>
+          </div>
+        ))}
       </div>
+
+      {(isCpuLimited(info) || info.avgQp !== null || info.hasAudio) && (
+        <div className="live-extra">
+          {info.hasAudio && <span>Áudio do sistema ativo</span>}
+          {info.avgQp !== null && <span title="QP médio — quanto maior, mais comprimido/blocado">QP {info.avgQp}</span>}
+          {isCpuLimited(info) && (
+            <span
+              className="live-stats-warning"
+              title={[
+                isSoftwareEncoder(info.encoderImplementation)
+                  ? `Codificando por software (${info.encoderImplementation}) — pode pesar a CPU. Confere se "usar aceleração de hardware" tá ligado nas configurações do navegador.`
+                  : "A camada principal tá em hardware, mas pelo menos uma camada menor do simulcast caiu em software.",
+                info.qualityLimitationReason && info.qualityLimitationReason !== "none"
+                  ? `Motivo reportado pelo navegador: ${info.qualityLimitationReason}.`
+                  : null,
+                info.avgEncodeMs !== null ? `Tempo médio de encode: ${info.avgEncodeMs}ms/frame.` : null,
+              ]
+                .filter(Boolean)
+                .join("\n")}
+            >
+              ⚠️ CPU limitando
+            </span>
+          )}
+          {isCpuLimited(info) && isSoftwareEncoder(info.encoderImplementation) && isHeavyCodec(info.codec) && (
+            <button
+              className="live-optimize-btn"
+              onClick={onOptimizeCodec}
+              disabled={optimizingCodec}
+              title="Trocar pra H.264 agora — mais leve que AV1/VP9 por software. Causa um soluço curto de vídeo pros espectadores."
+            >
+              {optimizingCodec ? "Otimizando..." : "⚡ Otimizar codec"}
+            </button>
+          )}
+        </div>
+      )}
 
       {/* HUD de dev — mesmos campos que hoje só aparecem no tooltip do aviso de CPU, sempre
           visíveis, sem precisar de hover. Só existe em build de dev. */}
@@ -119,6 +151,6 @@ export function LiveCard({ info, onStop, onOptimizeCodec, optimizingCodec }: Liv
       <button className="btn-danger" onClick={onStop}>
         Encerrar transmissão
       </button>
-    </div>
+    </section>
   );
 }
