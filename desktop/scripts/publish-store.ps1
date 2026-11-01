@@ -25,12 +25,13 @@ if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure falhou" }
 
 # publish cria a submissão, sobe o pacote e envia pra certificação (substitui os pacotes anteriores).
 # O argumento posicional é a PASTA do projeto (passar o pacote ali falha com "could not find a project
-# publisher"); o pacote vai por --inputDirectory, que só procura .msix/.msixupload — o .appx do
-# electron-builder é o mesmo formato, então vai copiado com extensão .msix pra uma pasta só dele.
+# publisher"); o pacote vai por --inputDirectory, numa pasta só dele. Mantém a extensão .appx — em
+# projeto Electron o msstore procura .appx (renomeado pra .msix ele "subiu" um bundle sem pacote e a
+# submissão saiu só com o pacote antigo) — e tira os espaços do nome.
 $inputDir = Join-Path ([IO.Path]::GetTempPath()) "msstore-input-$version"
 Remove-Item $inputDir -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $inputDir | Out-Null
-Copy-Item $msix.FullName (Join-Path $inputDir ([IO.Path]::ChangeExtension($msix.Name, ".msix")))
+Copy-Item $msix.FullName (Join-Path $inputDir ($msix.Name -replace "\s", ""))
 msstore publish (Resolve-Path "$PSScriptRoot\..").Path --inputDirectory $inputDir --appId $env:MSSTORE_PRODUCT_ID
 if ($LASTEXITCODE -ne 0) { throw "msstore publish falhou" }
 
