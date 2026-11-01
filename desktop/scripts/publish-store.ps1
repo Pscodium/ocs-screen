@@ -24,9 +24,14 @@ msstore reconfigure --tenantId $env:MSSTORE_TENANT_ID --sellerId $env:MSSTORE_SE
 if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure falhou" }
 
 # publish cria a submissão, sobe o pacote e envia pra certificação (substitui os pacotes anteriores).
-# O argumento posicional é a PASTA do projeto (o msstore detecta o tipo — Electron — pelo package.json);
-# passar o .appx ali falha com "could not find a project publisher". O pacote pronto vai em --inputFile.
-msstore publish (Resolve-Path "$PSScriptRoot\..").Path --inputFile $msix.FullName --appId $env:MSSTORE_PRODUCT_ID
+# O argumento posicional é a PASTA do projeto (passar o pacote ali falha com "could not find a project
+# publisher"); o pacote vai por --inputDirectory, que só procura .msix/.msixupload — o .appx do
+# electron-builder é o mesmo formato, então vai copiado com extensão .msix pra uma pasta só dele.
+$inputDir = Join-Path ([IO.Path]::GetTempPath()) "msstore-input-$version"
+Remove-Item $inputDir -Recurse -Force -ErrorAction SilentlyContinue
+New-Item -ItemType Directory $inputDir | Out-Null
+Copy-Item $msix.FullName (Join-Path $inputDir ([IO.Path]::ChangeExtension($msix.Name, ".msix")))
+msstore publish (Resolve-Path "$PSScriptRoot\..").Path --inputDirectory $inputDir --appId $env:MSSTORE_PRODUCT_ID
 if ($LASTEXITCODE -ne 0) { throw "msstore publish falhou" }
 
 Write-Host "Versão $version enviada pra certificação da Store."
