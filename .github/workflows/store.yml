@@ -55,6 +55,13 @@ jobs:
       - run: npm ci
       - run: npm run dist:store
 
+      # Antes do envio: se o envio automático falhar (ou estiver desligado), o pacote continua
+      # disponível pra subir à mão no Partner Center (Pacotes → arrastar o .appx).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: store-package
+          path: desktop/dist/*.appx
+
       - uses: microsoft/setup-msstore-cli@v1
 
       - name: Enviar pra Store
@@ -67,7 +74,3 @@ jobs:
           MSSTORE_PRODUCT_ID: ${{ secrets.MSSTORE_PRODUCT_ID }}
         run: ./scripts/publish-store.ps1
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: store-package
-          path: desktop/dist/*.appx
