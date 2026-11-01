@@ -123,6 +123,8 @@ Relatar: links dos runs, link do release, e que a Store está "Em certificação
 | GitHub Release falhou depois do upload | Release ficou rascunho. Re-rodar o job (`gh run rerun <id> --failed`) |
 | Store: `Version must be higher` / submissão pendente | Outra submissão em certificação. Esperar ou excluir o rascunho no Partner Center, depois `gh run rerun` |
 | Store: 401/403 | `MSSTORE_CLIENT_SECRET` expirou → usuário gera chave nova (ver Credenciais) |
+| Store: `Could not retrieve your application` | App do Entra sem acesso ao produto: o diretório dele precisa estar associado ao Partner Center (Tenants) e o app adicionado em Gerenciamento de usuários → Aplicativos do Microsoft Entra como Gerente. Conta pessoal (hotmail) não associa — usar uma conta corporativa `admin@<dominio>.onmicrosoft.com` com Administrador Global criada no mesmo diretório |
+| Envio automático da Store indisponível | O workflow sobe o `.appx` como artefato `store-package` antes do envio: `gh run download <id> -n store-package` e o usuário sobe à mão em Partner Center → Pacotes |
 | Um canal publicou e o outro não | Não criar tag nova. Corrigir e re-rodar só o job que falhou (`workflow_dispatch` com a mesma versão) |
 
 Nunca: `--force` em tag já publicada no Store/Release, editar workflow pra imprimir segredo, rodar
