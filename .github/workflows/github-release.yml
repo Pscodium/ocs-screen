@@ -1,0 +1,84 @@
+# Publica o instalador NSIS no GitHub Releases a cada tag vX.Y.Z — roda junto com store.yml (mesma tag).
+# A versão vem da tag; o texto do release (= changelog do modal de atualização do app) vem da seção
+# "## X.Y.Z" do CHANGELOG.md — sem essa seção o job falha antes de buildar.
+# Usa só o GITHUB_TOKEN automático do Actions (sem PAT pessoal guardado em lugar nenhum).
+name: GitHub Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão (ex.: 1.0.14) — a tag vX.Y.Z precisa existir"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: github-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Definir versão
+        id: version
+        shell: pwsh
+        run: |
+          $v = "${{ github.event.inputs.version }}"
+          if (-not $v) { $v = "${{ github.ref_name }}".TrimStart("v") }
+          npm version $v --no-git-tag-version --allow-same-version
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      # Seção "## X.Y.Z" do CHANGELOG.md até a próxima "## " (sem o título — o release já tem o nome).
+      - name: Extrair changelog
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $lines = Get-Content ../CHANGELOG.md -Encoding utf8
+          $start = ($lines | Select-String -Pattern "^## $([regex]::Escape($v))\b" | Select-Object -First 1).LineNumber
+          if (-not $start) { throw "CHANGELOG.md não tem a seção '## $v'" }
+          $body = @()
+          for ($i = $start; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match "^## ") { break }
+            $body += $lines[$i]
+          }
+          ($body -join "`n").Trim() | Out-File ../release-notes.md -Encoding utf8NoBOM
+
+      - name: Gerar .env.production
+        shell: pwsh
+        run: |
+          if (-not "${{ secrets.VITE_BACKEND_URL }}") { throw "Secret VITE_BACKEND_URL não definido" }
+          "VITE_BACKEND_URL=${{ secrets.VITE_BACKEND_URL }}" | Out-File .env.production -Encoding utf8NoBOM
+
+      - run: npm ci
+
+      # electron-builder sobe .exe + latest.yml + .blockmap num release RASCUNHO da tag vX.Y.Z
+      # (o mesmo que `npm run dist:publish` fazia à mão).
+      - name: Build e upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist:publish
+
+      # Rascunho → publicado, com o changelog. Só aqui as instalações antigas passam a ver a versão nova.
+      - name: Publicar release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "v${{ steps.version.outputs.version }}"
+          gh release edit $tag --repo ${{ github.repository }} --title $tag --notes-file ../release-notes.md --draft=false --latest

@@ -51,6 +51,9 @@ export interface RoomSummary {
   createdAt: number;
   hasPassword?: boolean;
   viewerUrl: string;
+  settings?: Pick<StreamSettings, "resolution" | "fps" | "quality">;
+  // null quando o backend não consegue saber (LiveKit fora do ar).
+  viewerCount?: number | null;
 }
 
 export async function fetchActiveRooms(): Promise<RoomSummary[]> {

@@ -93,18 +93,22 @@ app.commandLine.appendSwitch("disable-gpu-sandbox");
 
 const ICON_PATH = join(__dirname, "../../build/icon.png");
 
-// Altura baixada de 720 pra 420 — a tela inicial (`HomePage`) voltou a ser só título/abas/botão
-// (configs migraram pro rodapé do `SourcePicker`, que tem sua própria janela maior), 720 sobrava
-// bem mais que o conteúdo real precisa. 420 (não 400) porque a aba "Assistir" (`RoomsBrowser`,
-// estado vazio "Nenhuma transmissão ativa") mede 378px de conteúdo real contra 400 — medido com
-// Playwright `_electron`, sobrava scrollbar por ~16px em 400.
-const NORMAL_SIZE = { width: 440, height: 420 };
-// Em dev, o widget cresce um pouco pra caber a HUD de estatísticas sempre visível (sem hover) —
-// só existe em `import.meta.env.DEV` no renderer, então em produção o widget continua 340×140.
-const WIDGET_SIZE = app.isPackaged ? { width: 340, height: 140 } : { width: 340, height: 320 };
+// O app abre direto na tela de transmissão (configurações + grade de telas/janelas, ver HomePage) —
+// sem tela inicial pequena antes. Mínimo garante sidebar (300px) + 2 colunas de miniaturas.
+const NORMAL_SIZE = { width: 1000, height: 680 };
+const NORMAL_MIN_SIZE = { width: 800, height: 540 };
+// Widget ao vivo: status/tempo/ações, sala, link e uma faixa de estatísticas. Em dev cresce pra caber
+// o painel de diagnóstico (só existe em `import.meta.env.DEV` no renderer). Com o preview ligado,
+// ganha a altura da miniatura 16:9 (largura útil 352px → 198px + espaçamento).
+const WIDGET_BASE = { width: 380, height: app.isPackaged ? 262 : 330 };
+const WIDGET_PREVIEW_EXTRA = 208;
+let widgetPreview = false;
+function widgetSize(): { width: number; height: number } {
+  return { width: WIDGET_BASE.width, height: WIDGET_BASE.height + (widgetPreview ? WIDGET_PREVIEW_EXTRA : 0) };
+}
 const WIDGET_MARGIN = 24;
-// Configurações numa barra lateral (290px) + grade de fontes com 3 colunas ao lado.
-const PICKER_SIZE = { width: 960, height: 680 };
+// Seletor aberto a partir do widget (troca de fonte ao vivo) — mesmo tamanho da tela normal.
+const PICKER_SIZE = NORMAL_SIZE;
 
 // `mainWindow` continua existindo só pra coisas que são inerentemente singulares (tray
 // mostrar/focar, mensagens de update) — a primeira janela criada. Comandos que agem "na janela
@@ -129,8 +133,8 @@ function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: NORMAL_SIZE.width,
     height: NORMAL_SIZE.height,
-    minWidth: 340,
-    minHeight: 200,
+    minWidth: NORMAL_MIN_SIZE.width,
+    minHeight: NORMAL_MIN_SIZE.height,
     frame: false,
     show: false,
     backgroundColor: "#0e0f13",
@@ -340,7 +344,8 @@ function applyWidgetBounds(mainWindow: BrowserWindow): void {
   // Pega o monitor onde a janela JÁ está (não sempre o primário) — se o usuário deixou o app no
   // monitor 2, o widget deve aparecer lá também, não "puxar" de volta pro monitor 1.
   const display = screen.getDisplayMatching(mainWindow.getBounds());
-  mainWindow.setSize(WIDGET_SIZE.width, WIDGET_SIZE.height);
+  const size = widgetSize();
+  mainWindow.setSize(size.width, size.height);
   mainWindow.setResizable(false);
   // Nível "floating" (padrão de setAlwaysOnTop(true)) ainda fica atrás de outros always-on-top
   // (jogos fullscreen, outros overlays) — "screen-saver" é o nível mais alto que o Electron expõe,
@@ -349,8 +354,8 @@ function applyWidgetBounds(mainWindow: BrowserWindow): void {
   // vai fullscreen exclusivo).
   mainWindow.setAlwaysOnTop(true, "screen-saver");
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  const x = display.workArea.x + display.workArea.width - WIDGET_SIZE.width - WIDGET_MARGIN;
-  const y = display.workArea.y + display.workArea.height - WIDGET_SIZE.height - WIDGET_MARGIN;
+  const x = display.workArea.x + display.workArea.width - size.width - WIDGET_MARGIN;
+  const y = display.workArea.y + display.workArea.height - size.height - WIDGET_MARGIN;
   mainWindow.setPosition(Math.round(x), Math.round(y));
 }
 
@@ -362,9 +367,9 @@ ipcMain.on("window:set-widget-mode", (event, isLive: boolean) => {
   if (isLive) {
     if (win.isMaximized()) win.unmaximize();
     if (win.isFullScreen()) win.setFullScreen(false);
-    // setSize() é clampado pelo minWidth/minHeight definidos na criação da janela (340x200) —
-    // sem abaixar o mínimo primeiro, o widget nunca encolhia de verdade pra 340x140.
-    win.setMinimumSize(WIDGET_SIZE.width, WIDGET_SIZE.height);
+    // setSize() é clampado pelo minWidth/minHeight definidos na criação da janela — sem abaixar o
+    // mínimo primeiro, o widget nunca encolhia de verdade pro tamanho do widget.
+    win.setMinimumSize(WIDGET_BASE.width, WIDGET_BASE.height);
     applyWidgetBounds(win);
     isWidgetMode = true;
   } else {
@@ -372,10 +377,24 @@ ipcMain.on("window:set-widget-mode", (event, isLive: boolean) => {
     win.setAlwaysOnTop(false);
     win.setVisibleOnAllWorkspaces(false);
     win.setResizable(true);
-    win.setMinimumSize(340, 200);
+    win.setMinimumSize(NORMAL_MIN_SIZE.width, NORMAL_MIN_SIZE.height);
     win.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
     win.center();
   }
+});
+
+// Preview ligado/desligado no widget — cresce/encolhe pra cima, mantendo a borda de baixo onde o
+// usuário deixou (o widget pode ter sido arrastado). Mesma ordem do applyWidgetBounds: destrava,
+// redimensiona, trava.
+ipcMain.on("window:set-widget-preview", (event, on: boolean) => {
+  widgetPreview = on === true;
+  const win = resolveWindow(event);
+  if (!win || !isWidgetMode || win.isFullScreen()) return;
+  const bounds = win.getBounds();
+  const size = widgetSize();
+  win.setResizable(true);
+  win.setBounds({ x: bounds.x, y: bounds.y + bounds.height - size.height, width: size.width, height: size.height });
+  win.setResizable(false);
 });
 
 // Expande a janela temporariamente enquanto o seletor de fonte tá aberto — a grade de
@@ -390,10 +409,12 @@ ipcMain.on("window:set-picker-mode", (event, open: boolean) => {
     win.setResizable(true);
     win.setAlwaysOnTop(false);
     win.setVisibleOnAllWorkspaces(false);
+    win.setMinimumSize(NORMAL_MIN_SIZE.width, NORMAL_MIN_SIZE.height);
     win.setSize(PICKER_SIZE.width, PICKER_SIZE.height);
     win.center();
   } else if (isWidgetMode) {
     // Voltando de uma troca de fonte ao vivo — reaplica o widget em vez do tamanho normal.
+    win.setMinimumSize(WIDGET_BASE.width, WIDGET_BASE.height);
     applyWidgetBounds(win);
   } else {
     win.setSize(NORMAL_SIZE.width, NORMAL_SIZE.height);
@@ -468,10 +489,16 @@ ipcMain.handle("clipboard:write-text", (_event, text: string) => {
   clipboard.writeText(text);
 });
 
+// Miniatura do seletor: tiles têm ~240px de largura lógica (até ~360px físicos em 150% de escala).
+const THUMBNAIL_SIZE = { width: 384, height: 240 };
+const THUMBNAIL_JPEG_QUALITY = 78;
+let lastScreenSources: { id: string; name: string; type: "screen" | "window"; thumbnailDataUrl: string; appIconDataUrl: string | null }[] = [];
+
 // Fontes de captura (monitores/janelas) — substitui o diálogo padrão do getDisplayMedia por
 // uma lista que a própria UI do app renderiza, sem passar pela permissão do browser.
-ipcMain.handle("capture:list-sources", async (_event, options?: { windowsOnly?: boolean }) => {
+ipcMain.handle("capture:list-sources", async (_event, options?: { windowsOnly?: boolean; screensOnly?: boolean }) => {
   const windowsOnly = options?.windowsOnly === true;
+  const screensOnly = !windowsOnly && options?.screensOnly === true;
   // Bug real (relatado trocando de fonte AO VIVO com Monitor 1 compartilhado via pipeline nativo):
   // só "Tela cheia" aparecia na aba "Telas" do seletor, os monitores individuais sumiam. Causa:
   // `desktopCapturer.getSources({types:["screen"]})` do Chromium tenta capturar UMA miniatura POR
@@ -485,19 +512,24 @@ ipcMain.handle("capture:list-sources", async (_event, options?: { windowsOnly?: 
   // enquanto o Chromium enumera, e retomar a MESMA fonte de antes logo em seguida — janela curta o
   // bastante (só a duração do próprio `getSources`) pra não derrubar viewers conectados, só perde
   // uns frames de vídeo nesse intervalo (mesmo tipo de gap tolerado por timeout normal no loop).
+  // Atualização periódica das miniaturas de TELA vinda de um seletor aberto (ex.: segunda janela do
+  // `dev:multi`) enquanto uma transmissão nativa de monitor está no ar: cada uma pararia a captura
+  // por um instante (abaixo) — a cada poucos segundos isso vira vídeo engasgando/parado pros
+  // espectadores. Devolve as últimas miniaturas de tela em vez de tirar novas.
+  if (screensOnly && ntActive && ntMonitorIndex !== null) return lastScreenSources;
   const pauseNativeCapture = !windowsOnly && ntActive && ntMonitorIndex !== null && !!nativeCapture;
   if (pauseNativeCapture) nativeCapture!.stop();
   let sources;
   try {
     sources = await desktopCapturer.getSources({
-      types: windowsOnly ? ["window"] : ["screen", "window"],
-      thumbnailSize: { width: 300, height: 200 },
-      fetchWindowIcons: true,
+      types: windowsOnly ? ["window"] : screensOnly ? ["screen"] : ["screen", "window"],
+      thumbnailSize: THUMBNAIL_SIZE,
+      fetchWindowIcons: !screensOnly,
     });
   } finally {
     if (pauseNativeCapture) nativeCapture!.start(ntMonitorIndex!);
   }
-  return sources
+  const list = sources
     .filter((source) => {
       // Janelas sem UI real (utilitários invisíveis tipo helper de tray, processo de shutdown,
       // etc. — Raycast e alguns overlays de driver criam várias dessas) não têm conteúdo visual
@@ -510,12 +542,16 @@ ipcMain.handle("capture:list-sources", async (_event, options?: { windowsOnly?: 
     .map((source) => ({
       id: source.id,
       name: source.name,
-      type: source.id.startsWith("screen:") ? "screen" : ("window" as const),
-      thumbnailDataUrl: source.thumbnail.toDataURL(),
+      type: source.id.startsWith("screen:") ? ("screen" as const) : ("window" as const),
+      // JPEG em vez do PNG de toDataURL(): encode bem mais rápido na thread main e ~5x menos bytes
+      // atravessando o IPC/decodificando no renderer — miniatura não precisa de transparência.
+      thumbnailDataUrl: `data:image/jpeg;base64,${source.thumbnail.toJPEG(THUMBNAIL_JPEG_QUALITY).toString("base64")}`,
       // Ícone do app dono da janela — só existe pra fontes do tipo "window" (fetchWindowIcons:
       // true acima). Discord mostra isso sobre a miniatura, ajuda a reconhecer a janela mais rápido.
       appIconDataUrl: source.appIcon && !source.appIcon.isEmpty() ? source.appIcon.toDataURL() : null,
     }));
+  if (!windowsOnly) lastScreenSources = list.filter((source) => source.type === "screen");
+  return list;
 });
 
 // Miniaturas ao vivo do seletor de fonte (ver addon.cpp `ThumbnailsUpdate`) — o renderer manda o
@@ -542,6 +578,15 @@ ipcMain.on("capture:live-thumbnails", (event, items: unknown, clip: unknown) => 
 
 // Janelas de topo abertas agora (HWNDs) — o seletor compara com a lista anterior pra saber se
 // precisa relistar fontes (relistar é caro, ver addon.cpp `ListTopLevelWindows`).
+// Preview da própria transmissão (widget ao vivo) — só no pipeline nativo. Nunca espera a GPU (ver
+// addon.cpp `CapturePreview`); null quando ainda não há frame pronto.
+const PREVIEW_MAX_WIDTH = 320;
+ipcMain.handle("capture:preview", () => {
+  if (!ntActive || !nativeCapture) return null;
+  const frame = nativeCapture.capturePreview(PREVIEW_MAX_WIDTH);
+  return frame && { width: frame.width, height: frame.height, data: new Uint8Array(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength) };
+});
+
 ipcMain.handle("capture:top-level-windows", () => nativeCapture?.listTopLevelWindows() ?? []);
 
 // Captura nativa (DXGI Desktop Duplication + Direct3D 11) — alternativa ao WGC-via-Chromium do
@@ -615,6 +660,8 @@ interface NativeCaptureAddon {
   thumbnailsUpdate(destHwnd: number, items: { hwnd: number; x: number; y: number; w: number; h: number }[], clip: { x: number; y: number; w: number; h: number }): void;
   thumbnailsClear(): void;
   listTopLevelWindows(): number[];
+  // Miniatura RGBA da textura composta (downscale por mipmap na GPU) — preview do widget ao vivo.
+  capturePreview(maxWidth: number): { width: number; height: number; data: Buffer } | null;
   // Encoder NVENC (Fase 3) — opera sobre a captura já em andamento (mesmo device/dimensões do
   // CaptureCore). Ver addon.cpp: InitEncoder/EncodeCurrentFrame/ForceKeyframe/SetEncoderBitrate.
   // `codec` opcional ("h264"/"hevc", padrão "h264") é o PEDIDO — cascata de fallback interna

@@ -74,6 +74,13 @@ let hostExit = null;
 
   const win = await app.firstWindow();
   await win.waitForLoadState("domcontentloaded");
+  // O app abre direto no seletor, que lista telas (miniatura via DXGI do Chromium) ao carregar —
+  // começar a captura nativa no meio dessa listagem falha (duplicação disputada). Espera a lista.
+  await win.waitForSelector(".source-tile", { timeout: 15000 }).catch(() => {});
+  // Sai da aba Transmitir: com ela visível o seletor relista telas a cada poucos segundos (fora do
+  // fluxo normal, onde a transmissão no ar desmonta o seletor) e isso derruba a duplicação DXGI.
+  await win.click(".nav-tab >> nth=1").catch(() => {});
+  await new Promise((r) => setTimeout(r, 1000));
   const ok = await win.evaluate((args) => window.screenshare.nativeTransport.start(args), {
     roomId: room.roomId,
     backendUrl: BACKEND,

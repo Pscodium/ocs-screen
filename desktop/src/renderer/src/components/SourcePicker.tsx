@@ -1,40 +1,24 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { CaptureSource } from "../../../preload/index";
 import { isNativeCaptureAvailable } from "../services/nativeCapture";
-import { SettingsAdvanced, SettingsPrimary } from "./SettingsForm";
 import { AudioAppsSettings } from "./AudioAppsSettings";
-import { AccessOptions, type AccessSettings } from "./AccessOptions";
-import type { StreamSettings } from "../types/stream";
-
-// `settings`/`slug` (+ callbacks) só existem no fluxo de "começar a compartilhar" (HomePage) — a
-// troca de fonte ao vivo (LiveCard, `onSwapSource`) reaproveita as configurações já em uso, não
-// faz sentido reconfigurar resolução/FPS/sala no meio de uma transmissão. Sem eles, a barra
-// lateral só mostra o áudio da transmissão (ajustável ao vivo).
-interface SourcePickerConfigurable {
-  settings: StreamSettings;
-  onSettingsChange: (settings: StreamSettings) => void;
-  slug: string;
-  onSlugChange: (slug: string) => void;
-  access: AccessSettings;
-  onAccessChange: (access: AccessSettings) => void;
-}
-
-type SourcePickerProps = (SourcePickerConfigurable | Partial<Record<keyof SourcePickerConfigurable, undefined>>) & {
-  onSelect: (source: CaptureSource) => void;
-  onCancel: () => void;
-};
+import { AppWindowIcon, MonitorIcon } from "./Icons";
 
 type Tab = "screen" | "window";
+type Scope = "all" | Tab;
 
-// Ao vivo: só a checagem barata de janelas abertas (relista quando muda). Fora do ar: relista tudo
-// (atualiza também as miniaturas de tela — sem transmissão, o custo na thread main não importa).
-const POLL_LIVE_MS = 1000;
-const POLL_IDLE_MS = 2000;
+// Checagem barata de janelas abertas (EnumWindows no main) — só relista janelas quando ela muda.
+const POLL_WINDOWS_MS = 1500;
+// Miniaturas de tela (fora do ar): refeitas de tempos em tempos só com a aba "Telas" visível. As de
+// janela já são ao vivo pelo DWM (`useLiveThumbnails`), não precisam de relistagem periódica.
+const SCREEN_REFRESH_MS = 4000;
 
 // Captura nativa: telas ganham o índice de monitor equivalente (DXGI — ordem de enumeração do
 // Electron/Chromium e do EnumOutputs é a mesma que o Windows expõe; testado com 1 monitor,
 // multi-monitor cai de volta pro desktopCapturer se não bater) e janelas o HWND, que vem embutido
 // no id do desktopCapturer ("window:<hwnd>:<n>" no Windows) — ver capture.ts/docs/NATIVE_CAPTURE.md.
+// O índice de monitor depende da ordem da lista completa de telas — por isso só listas que contêm
+// TODAS as telas (escopo "all" ou "screen") passam por aqui com telas.
 function tagSources(list: CaptureSource[], nativeAvailable: boolean): CaptureSource[] {
   let screenIndex = 0;
   return list.map((source) => {
@@ -48,13 +32,14 @@ function tagSources(list: CaptureSource[], nativeAvailable: boolean): CaptureSou
 }
 
 // Mantém a ordem que o usuário já está vendo (tile não pula de lugar a cada atualização): atualiza
-// as que continuam, some com as fechadas, novas vão pro fim. `keepScreens` = a lista nova só tem
-// janelas (atualização ao vivo), as telas anteriores ficam como estão.
-function mergeSources(prev: CaptureSource[] | null, fresh: CaptureSource[], keepScreens: boolean): CaptureSource[] {
+// as que continuam, some com as fechadas, novas vão pro fim. Fontes fora do `scope` relistado ficam
+// intactas (mesmo objeto — o tile memoizado nem re-renderiza).
+function mergeSources(prev: CaptureSource[] | null, fresh: CaptureSource[], scope: Scope): CaptureSource[] {
   if (!prev) return fresh;
+  const inScope = (s: CaptureSource) => scope === "all" || s.type === scope;
   const byId = new Map(fresh.map((s) => [s.id, s]));
   const kept = prev.flatMap((s) => {
-    if (keepScreens && s.type === "screen") return [s];
+    if (!inScope(s)) return [s];
     const next = byId.get(s.id);
     return next ? [next] : [];
   });
@@ -62,233 +47,204 @@ function mergeSources(prev: CaptureSource[] | null, fresh: CaptureSource[], keep
   return [...kept, ...fresh.filter((s) => !known.has(s.id))];
 }
 
-export function SourcePicker({
-  settings,
-  onSettingsChange,
-  slug,
-  onSlugChange,
-  access,
-  onAccessChange,
-  onSelect,
-  onCancel,
-}: SourcePickerProps) {
+// Lista de telas/janelas do seletor. `getSources` trava a thread main enquanto tira as miniaturas
+// (numa transmissão no ar isso é engasgo no vídeo), então nada aqui relista à toa:
+// - janelas: só quando a lista barata de janelas de topo muda;
+// - telas: só fora do ar, com a aba "Telas" visível, a cada SCREEN_REFRESH_MS (ao vivo, relistar
+//   telas pausa a captura nativa de monitor — ver main `capture:list-sources`);
+// - nada com `active` falso (outra aba do app, modal por cima) ou com a janela escondida/minimizada.
+function useCaptureSources(active: boolean, live: boolean, tab: Tab, onFirstLoad: (sources: CaptureSource[]) => void) {
   const [sources, setSources] = useState<CaptureSource[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>("screen");
-  // Feedback visual imediato no clique — a track real do LiveKit só fica pronta um instante
-  // depois (captura + publish), mas o tile já reage na hora pra não parecer travado.
-  const [pendingId, setPendingId] = useState<string | null>(null);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-
-  useEffect(() => {
-    // A grade precisa de mais espaço que a janela normal do app — expande enquanto o seletor
-    // estiver aberto, volta ao tamanho normal ao fechar (seleciona ou cancela).
-    window.screenshare.window.setPickerMode(true);
-    return () => window.screenshare.window.setPickerMode(false);
-  }, []);
+  const activeRef = useRef(active);
+  const tabRef = useRef(tab);
+  activeRef.current = active;
+  tabRef.current = tab;
+  const wakeRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let knownWindows = "";
-    // Ao vivo (troca de fonte = sem `settings`), relistar só JANELAS — relistar telas pausa a
-    // captura nativa de monitor por um instante (ver preload `listSources`).
-    const live = !settings;
+    let knownWindows: string | null = null;
+    let lastScreens = Date.now();
+    let busy = false;
 
-    // Janela aberta/fechada com o seletor aberto aparece/some sozinha (antes a lista era montada
-    // uma vez: janela nova só aparecia saindo e voltando). Relistar (`getSources`) trava a thread
-    // main ~50ms — numa transmissão no ar isso é engasgo no vídeo —, então só relista quando a
-    // lista barata de janelas de topo mudou. As miniaturas de janela são ao vivo à parte (DWM,
-    // `useLiveThumbnails`); as de tela ficam fixas ao vivo, e fora dele são refeitas junto.
-    const load = async (first: boolean) => {
+    const load = async (scope: Scope) => {
+      const options = scope === "window" ? { windowsOnly: true } : scope === "screen" ? { screensOnly: true } : undefined;
+      const [list, nativeAvailable] = await Promise.all([
+        window.screenshare.capture.listSources(options),
+        isNativeCaptureAvailable(),
+      ]);
+      if (cancelled) return;
+      const fresh = tagSources(list, nativeAvailable);
+      setSources((prev) => mergeSources(prev, fresh, scope));
+      if (scope !== "window") lastScreens = Date.now();
+      return fresh;
+    };
+
+    const tick = async () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (busy || cancelled) return;
+      busy = true;
       try {
-        const [list, nativeAvailable] = await Promise.all([
-          window.screenshare.capture.listSources(first || !live ? undefined : { windowsOnly: true }),
-          isNativeCaptureAvailable(),
-        ]);
-        if (cancelled) return;
-        const fresh = tagSources(list, nativeAvailable);
-        setSources((prev) => mergeSources(prev, fresh, !first && live));
-        if (first && !fresh.some((s) => s.type === "screen") && fresh.some((s) => s.type === "window")) {
-          setTab("window");
+        if (activeRef.current && !document.hidden) {
+          const windows = (await window.screenshare.capture.topLevelWindows()).sort((x, y) => x - y).join(",");
+          if (cancelled) return;
+          if (knownWindows !== null && windows !== knownWindows) await load("window");
+          knownWindows = windows;
+          if (!live && tabRef.current === "screen" && Date.now() - lastScreens >= SCREEN_REFRESH_MS) await load("screen");
         }
       } catch {
-        if (first && !cancelled) setError("Não foi possível listar telas/janelas.");
-      }
-    };
-    const poll = async () => {
-      try {
-        const windows = (await window.screenshare.capture.topLevelWindows()).sort((x, y) => x - y).join(",");
-        if (cancelled) return;
-        const changed = windows !== knownWindows;
-        knownWindows = windows;
-        if (changed || !live) await load(false);
+        // Falha pontual de relistagem — mantém o que já está na tela e tenta no próximo ciclo.
       } finally {
-        if (!cancelled) timer = setTimeout(poll, live ? POLL_LIVE_MS : POLL_IDLE_MS);
+        busy = false;
+        if (!cancelled) timer = setTimeout(tick, POLL_WINDOWS_MS);
       }
     };
-    load(true).then(() => window.screenshare.capture.topLevelWindows()).then((w) => {
-      if (cancelled) return;
-      knownWindows = w.sort((x, y) => x - y).join(",");
-      timer = setTimeout(poll, live ? POLL_LIVE_MS : POLL_IDLE_MS);
-    });
+    wakeRef.current = () => {
+      // Volta a ficar visível/ativo: força miniatura de tela nova no próximo ciclo, que roda já.
+      lastScreens = 0;
+      tick();
+    };
+
+    busy = true;
+    load("all")
+      .then((fresh) => {
+        if (fresh) onFirstLoad(fresh);
+        return window.screenshare.capture.topLevelWindows();
+      })
+      .then((w) => {
+        knownWindows = w.sort((x, y) => x - y).join(",");
+      })
+      .catch(() => {
+        if (!cancelled) setError("Não foi possível listar telas/janelas.");
+      })
+      .finally(() => {
+        busy = false;
+        if (!cancelled) timer = setTimeout(tick, POLL_WINDOWS_MS);
+      });
+
+    const onVisibility = () => {
+      if (!document.hidden && activeRef.current) wakeRef.current();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
-    // `settings` só decide o modo (ao vivo ou não) — não reinicia a cada mudança de configuração.
+    // Monta uma vez — `active`/`tab` são lidos por ref a cada ciclo.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+
+  // Reativou (voltou pra aba de transmitir, modal fechou) — atualiza sem esperar o próximo ciclo.
+  useEffect(() => {
+    if (active) wakeRef.current();
+  }, [active]);
+
+  return { sources, error };
+}
+
+interface SourceBrowserProps {
+  // Falso com outra aba do app por cima: para relistagem e miniaturas ao vivo (o DWM desenha por
+  // cima de tudo, inclusive de modais).
+  active: boolean;
+  // Troca de fonte ao vivo — não relista telas (ver useCaptureSources).
+  live?: boolean;
+  // Fonte que está iniciando (spinner no tile, demais bloqueados).
+  pendingId: string | null;
+  onPick: (source: CaptureSource) => void;
+  footer?: ReactNode;
+}
+
+export function SourceBrowser({ active, live = false, pendingId, onPick, footer }: SourceBrowserProps) {
+  const [tab, setTab] = useState<Tab>("screen");
+  const onFirstLoad = useCallback((fresh: CaptureSource[]) => {
+    if (!fresh.some((s) => s.type === "screen") && fresh.some((s) => s.type === "window")) setTab("window");
   }, []);
+  const { sources, error } = useCaptureSources(active, live, tab, onFirstLoad);
 
   const bodyRef = useRef<HTMLDivElement>(null);
-  useLiveThumbnails(bodyRef, tab === "window" && pendingId === null, sources);
+  useLiveThumbnails(bodyRef, active && tab === "window" && pendingId === null, sources);
 
   const filtered = useMemo(() => sources?.filter((s) => s.type === tab) ?? [], [sources, tab]);
   const screenCount = sources?.filter((s) => s.type === "screen").length ?? 0;
   const windowCount = sources?.filter((s) => s.type === "window").length ?? 0;
 
-  // Um clique no tile já começa a transmitir — então senha ligada e vazia é barrada aqui (senão
-  // a sala nasceria sem senha, sem o usuário perceber).
-  const passwordMissing = !!access && access.usePassword && access.password.trim() === "";
-  const handlePick = (source: CaptureSource) => {
-    if (pendingId) return;
-    if (passwordMissing) {
-      setError("Digite a senha da sala (ou desligue \"Proteger com senha\") antes de escolher a tela.");
-      return;
-    }
-    setPendingId(source.id);
-    onSelect(source);
-  };
+  // Callback estável pros tiles memoizados — senão todos re-renderizam a cada atualização.
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
+  const handlePick = useCallback((source: CaptureSource) => pickRef.current(source), []);
 
   return (
-    <div className="picker-overlay">
-      <div className="picker-modal">
-        <div className="picker-header">
-          <button className="picker-back" onClick={onCancel} aria-label="Voltar">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-              <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z" />
-            </svg>
-            Voltar
+    <div className="source-browser">
+      <div className="source-browser-head">
+        <h2 className="source-browser-title">Escolha o que compartilhar</h2>
+        <div className="segmented" role="tablist">
+          <button
+            role="tab"
+            aria-selected={tab === "screen"}
+            className={`segmented-btn ${tab === "screen" ? "segmented-btn-active" : ""}`}
+            onClick={() => setTab("screen")}
+          >
+            <MonitorIcon size={15} />
+            Telas
+            {screenCount > 0 && <span className="segmented-count">{screenCount}</span>}
           </button>
-          <h2>Escolha o que compartilhar</h2>
-          <button className="picker-close" onClick={onCancel} aria-label="Cancelar">
-            &#10005;
+          <button
+            role="tab"
+            aria-selected={tab === "window"}
+            className={`segmented-btn ${tab === "window" ? "segmented-btn-active" : ""}`}
+            onClick={() => setTab("window")}
+          >
+            <AppWindowIcon size={15} />
+            Janelas
+            {windowCount > 0 && <span className="segmented-count">{windowCount}</span>}
           </button>
-        </div>
-
-        {/* Layout em 2 colunas: configurações na lateral esquerda (o que importa em evidência,
-            o resto em "Avançado"), fontes à direita — cada coluna rola sozinha, lado a lado (antes
-            eram dois scrolls empilhados, grade espremida pelo rodapé). */}
-        <div className="picker-layout">
-          <aside className="picker-sidebar">
-            {settings ? (
-              <>
-                <section className="picker-section">
-                  <h3 className="picker-section-title">Transmissão</h3>
-                  <SettingsPrimary settings={settings} onChange={onSettingsChange!} />
-                </section>
-
-                <section className="picker-section">
-                  <h3 className="picker-section-title">Sala</h3>
-                  <label className="settings-field">
-                    <span>Nome (opcional)</span>
-                    <input
-                      className="slug-input"
-                      type="text"
-                      placeholder="ex.: reuniao-time"
-                      value={slug}
-                      onChange={(e) => onSlugChange!(e.target.value)}
-                      maxLength={32}
-                    />
-                  </label>
-                  <AccessOptions
-                    access={access!}
-                    onChange={(next) => {
-                      onAccessChange!(next);
-                      if (error?.startsWith("Digite a senha")) setError(null);
-                    }}
-                  />
-                </section>
-
-                <details
-                  className="picker-section picker-advanced"
-                  open={advancedOpen}
-                  onToggle={(e) => setAdvancedOpen((e.target as HTMLDetailsElement).open)}
-                >
-                  <summary className="picker-section-title picker-advanced-summary">Avançado</summary>
-                  <div className="picker-advanced-body">
-                    <SettingsAdvanced settings={settings} onChange={onSettingsChange!} />
-                    {settings.nativeTransport && (
-                      <div className="picker-subsection">
-                        <h4 className="picker-subsection-title">Áudio da transmissão</h4>
-                        {advancedOpen && <AudioAppsSettings />}
-                      </div>
-                    )}
-                  </div>
-                </details>
-              </>
-            ) : (
-              // Troca de fonte ao vivo: sem reconfigurar resolução/sala, mas dá pra ajustar quais
-              // apps entram no áudio (aplica na hora na transmissão no ar).
-              <section className="picker-section">
-                <h3 className="picker-section-title">Áudio da transmissão</h3>
-                <AudioAppsSettings />
-              </section>
-            )}
-          </aside>
-
-          <div className="picker-main">
-            <div className="picker-tabs">
-              <button
-                className={`picker-tab ${tab === "screen" ? "picker-tab-active" : ""}`}
-                onClick={() => setTab("screen")}
-              >
-                Telas {screenCount > 0 && <span className="picker-tab-count">{screenCount}</span>}
-              </button>
-              <button
-                className={`picker-tab ${tab === "window" ? "picker-tab-active" : ""}`}
-                onClick={() => setTab("window")}
-              >
-                Janelas {windowCount > 0 && <span className="picker-tab-count">{windowCount}</span>}
-              </button>
-            </div>
-
-            {error && <p className="error-text picker-error">{error}</p>}
-
-            <div className="picker-body" ref={bodyRef}>
-              {!sources && !error && (
-                <div className="picker-grid">
-                  {Array.from({ length: 6 }).map((_, i) => (
-                    <div key={i} className="picker-tile-skeleton" />
-                  ))}
-                </div>
-              )}
-
-              {sources && filtered.length === 0 && <p className="subtitle">Nada encontrado aqui.</p>}
-
-              {sources && filtered.length > 0 && (
-                <div className="picker-grid">
-                  {filtered.map((source) => (
-                    <SourceTile
-                      key={source.id}
-                      source={source}
-                      pending={pendingId === source.id}
-                      disabled={pendingId !== null}
-                      onPick={() => handlePick(source)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-            <p className="picker-hint">Clique numa tela ou janela pra começar a transmitir.</p>
-          </div>
         </div>
       </div>
+
+      {error && <p className="error-text source-browser-error">{error}</p>}
+
+      <div className="source-browser-body" ref={bodyRef}>
+        {!sources && !error && (
+          <div className={`source-grid source-grid-${tab}`}>
+            {Array.from({ length: tab === "screen" ? 2 : 6 }).map((_, i) => (
+              <div key={i} className="source-tile-skeleton" />
+            ))}
+          </div>
+        )}
+
+        {sources && filtered.length === 0 && (
+          <div className="empty-state">
+            <p className="empty-state-title">Nada encontrado aqui.</p>
+            <p className="empty-state-hint">
+              {tab === "window" ? "Abra a janela que quer mostrar — ela aparece aqui sozinha." : "Nenhum monitor disponível."}
+            </p>
+          </div>
+        )}
+
+        {sources && filtered.length > 0 && (
+          <div className={`source-grid source-grid-${tab}`}>
+            {filtered.map((source) => (
+              <SourceTile
+                key={source.id}
+                source={source}
+                pending={pendingId === source.id}
+                disabled={pendingId !== null}
+                onPick={handlePick}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+      {footer}
     </div>
   );
 }
 
-function SourceTile({
+const SourceTile = memo(function SourceTile({
   source,
   pending,
   disabled,
@@ -297,7 +253,7 @@ function SourceTile({
   source: CaptureSource;
   pending: boolean;
   disabled: boolean;
-  onPick: () => void;
+  onPick: (source: CaptureSource) => void;
 }) {
   // Defesa extra além do filtro no main process (`capture:list-sources`, thumbnail.isEmpty()):
   // se uma miniatura ainda assim vier corrompida/vazia, o navegador desenharia o ícone de imagem
@@ -308,15 +264,15 @@ function SourceTile({
 
   return (
     <button
-      className={`picker-tile ${pending ? "picker-tile-pending" : ""}`}
-      onClick={onPick}
+      className={`source-tile ${pending ? "source-tile-pending" : ""}`}
+      onClick={() => onPick(source)}
       disabled={disabled}
     >
-      <div className="picker-thumbnail-wrap" data-live-hwnd={source.nativeWindowHandle}>
+      <div className="source-thumb" data-live-hwnd={source.nativeWindowHandle}>
         {thumbnailBroken ? (
-          <div className="picker-thumbnail picker-thumbnail-fallback">
+          <div className="source-thumb-img source-thumb-fallback">
             {source.appIconDataUrl ? (
-              <img src={source.appIconDataUrl} alt="" className="picker-thumbnail-fallback-icon" />
+              <img src={source.appIconDataUrl} alt="" className="source-thumb-fallback-icon" />
             ) : (
               <span>{source.name.charAt(0).toUpperCase()}</span>
             )}
@@ -325,23 +281,78 @@ function SourceTile({
           <img
             src={source.thumbnailDataUrl}
             alt=""
-            className="picker-thumbnail"
+            className="source-thumb-img"
+            decoding="async"
+            draggable={false}
             onError={() => setThumbnailBroken(true)}
           />
         )}
-        {!thumbnailBroken && source.appIconDataUrl && (
-          <img src={source.appIconDataUrl} alt="" className="picker-app-icon" />
-        )}
+        <span className="source-thumb-cta">{pending ? "Iniciando..." : "Transmitir"}</span>
         {pending && (
-          <div className="picker-tile-spinner">
+          <div className="source-thumb-spinner">
             <span className="spinner" />
           </div>
         )}
       </div>
-      <span className="picker-tile-label" title={source.name}>
-        {source.name}
+      <span className="source-tile-label" title={source.name}>
+        {source.appIconDataUrl ? (
+          <img src={source.appIconDataUrl} alt="" className="source-tile-icon" draggable={false} />
+        ) : source.type === "screen" ? (
+          <MonitorIcon size={14} />
+        ) : (
+          <AppWindowIcon size={14} />
+        )}
+        <span className="source-tile-name">{source.name}</span>
       </span>
     </button>
+  );
+});
+
+interface SourcePickerProps {
+  onSelect: (source: CaptureSource) => void;
+  onCancel: () => void;
+}
+
+// Troca de fonte AO VIVO (aberto pelo widget): sobrepõe tudo, expande a janela e reaproveita as
+// configurações já em uso — só dá pra ajustar quais apps entram no áudio (aplica na hora).
+export function SourcePicker({ onSelect, onCancel }: SourcePickerProps) {
+  const [pendingId, setPendingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    window.screenshare.window.setPickerMode(true);
+    return () => window.screenshare.window.setPickerMode(false);
+  }, []);
+
+  return (
+    <div className="picker-overlay">
+      <div className="picker-header">
+        <button className="picker-back" onClick={onCancel}>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+            <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z" />
+          </svg>
+          Voltar pra transmissão
+        </button>
+      </div>
+      <div className="setup-layout">
+        <aside className="setup-sidebar">
+          <section className="setup-section">
+            <h3 className="setup-section-title">Áudio da transmissão</h3>
+            <AudioAppsSettings />
+          </section>
+        </aside>
+        <SourceBrowser
+          active
+          live
+          pendingId={pendingId}
+          onPick={(source) => {
+            if (pendingId) return;
+            setPendingId(source.id);
+            onSelect(source);
+          }}
+          footer={<p className="source-browser-hint">A troca é instantânea pros espectadores — a sala e o link continuam os mesmos.</p>}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -358,6 +369,7 @@ function useLiveThumbnails(bodyRef: RefObject<HTMLDivElement | null>, enabled: b
       return;
     }
     let frame = 0;
+    let lastSent = "";
     const send = () => {
       frame = 0;
       const dpr = window.devicePixelRatio;
@@ -366,12 +378,12 @@ function useLiveThumbnails(bodyRef: RefObject<HTMLDivElement | null>, enabled: b
         const r = el.getBoundingClientRect();
         return { hwnd: Number(el.dataset.liveHwnd), x: r.left * dpr, y: r.top * dpr, w: r.width * dpr, h: r.height * dpr };
       });
-      window.screenshare.capture.setLiveThumbnails(items, {
-        x: clipRect.left * dpr,
-        y: clipRect.top * dpr,
-        w: clipRect.width * dpr,
-        h: clipRect.height * dpr,
-      });
+      const clip = { x: clipRect.left * dpr, y: clipRect.top * dpr, w: clipRect.width * dpr, h: clipRect.height * dpr };
+      // A rede de segurança abaixo chama isso a cada 500ms — sem mudança, nem atravessa o IPC.
+      const key = JSON.stringify([items, clip]);
+      if (key === lastSent) return;
+      lastSent = key;
+      window.screenshare.capture.setLiveThumbnails(items, clip);
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(send);
@@ -381,7 +393,7 @@ function useLiveThumbnails(bodyRef: RefObject<HTMLDivElement | null>, enabled: b
     window.addEventListener("resize", schedule);
     const observer = new ResizeObserver(schedule);
     observer.observe(body);
-    // Janela redimensionando (seletor abrindo) e fontes mudando de tamanho — rede de segurança.
+    // Janela redimensionando e fontes mudando de tamanho — rede de segurança.
     const interval = setInterval(schedule, 500);
     return () => {
       body.removeEventListener("scroll", schedule);

@@ -77,6 +77,7 @@ const api = {
     close: () => ipcRenderer.send("window:close"),
     setWidgetMode: (isLive: boolean) => ipcRenderer.send("window:set-widget-mode", isLive),
     setPickerMode: (open: boolean) => ipcRenderer.send("window:set-picker-mode", open),
+    setWidgetPreview: (on: boolean) => ipcRenderer.send("window:set-widget-preview", on),
   },
   viewer: {
     // Abre o viewer web da sala numa janela própria (aba "Assistir", ver main/index.ts "viewer:open").
@@ -92,7 +93,8 @@ const api = {
     // `windowsOnly` — atualização periódica do seletor (miniaturas ao vivo + janelas novas) sem
     // tocar nas telas: listar telas pausa a captura nativa de monitor por um instante (ver
     // "capture:list-sources"), o que a cada ~1s viraria buraco no vídeo de uma transmissão no ar.
-    listSources: (options?: { windowsOnly?: boolean }): Promise<CaptureSource[]> =>
+    // `windowsOnly`/`screensOnly` relistam só um tipo (mais barato — `getSources` trava a thread main).
+    listSources: (options?: { windowsOnly?: boolean; screensOnly?: boolean }): Promise<CaptureSource[]> =>
       ipcRenderer.invoke("capture:list-sources", options),
     // Miniaturas AO VIVO das janelas (desenhadas pelo DWM por cima do app): retângulo de cada
     // tile + área visível, em pixels físicos da área cliente. Lista vazia remove todas.
@@ -101,6 +103,8 @@ const api = {
       clip: { x: number; y: number; w: number; h: number },
     ) => ipcRenderer.send("capture:live-thumbnails", items, clip),
     topLevelWindows: (): Promise<number[]> => ipcRenderer.invoke("capture:top-level-windows"),
+    // Miniatura RGBA da transmissão no ar (pipeline nativo) — null sem frame pronto/fora do nativo.
+    preview: (): Promise<{ width: number; height: number; data: Uint8Array } | null> => ipcRenderer.invoke("capture:preview"),
   },
   updater: {
     onAvailable: (callback: (info: UpdateAvailableInfo) => void) => {

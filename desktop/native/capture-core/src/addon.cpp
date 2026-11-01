@@ -14,6 +14,8 @@
 #include <shellapi.h>
 #include <tlhelp32.h>
 #include <dwmapi.h>
+#include <d3d11.h>
+#include <wrl/client.h>
 #pragma comment(lib, "dwmapi.lib") // miniaturas ao vivo do seletor (ThumbnailsUpdate)
 #include "CaptureCore.h"
 #include "WindowCaptureCore.h"
@@ -1409,11 +1411,119 @@ Napi::Value TransportOnStateChange(const Napi::CallbackInfo& info) {
     return env.Undefined();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Preview da própria transmissão (widget ao vivo): miniatura BGRA→RGBA da textura composta, sem
+// readback do frame inteiro. GPU faz o downscale (GenerateMips numa cópia da textura) e só o nível
+// de mip pequeno (~240px) volta pra CPU. Readback em ANEL de 2 stagings com DO_NOT_WAIT: a chamada
+// N copia pro staging A e lê o staging B (copiado na chamada N-1, já pronto) — nunca espera a GPU,
+// a thread main não trava. Devolve o frame anterior (atraso de 1 chamada, irrelevante a ~4/s).
+// Roda na mesma thread do loop de captura/encode (JS main) — contexto imediato não é concorrente.
+struct PreviewState {
+    ID3D11Device* device = nullptr;  // só identidade (recria tudo se o device mudou/resetou)
+    int width = 0, height = 0, mip = 0, mipW = 0, mipH = 0;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> mipTexture;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srv;
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> staging[2];
+    int next = 0;
+    bool filled[2] = {false, false};
+};
+static PreviewState g_preview;
+
+static bool EnsurePreview(ID3D11Device* device, int w, int h, int maxWidth) {
+    if (g_preview.device == device && g_preview.width == w && g_preview.height == h && g_preview.mipTexture) return true;
+    g_preview = PreviewState{};
+    int mip = 0, mw = w, mh = h;
+    while (mw / 2 >= maxWidth && mh / 2 >= 1) { mw /= 2; mh /= 2; mip++; }
+    if (mip == 0) return false;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = w;
+    desc.Height = h;
+    desc.MipLevels = mip + 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+    if (FAILED(device->CreateTexture2D(&desc, nullptr, g_preview.mipTexture.GetAddressOf()))) return false;
+    if (FAILED(device->CreateShaderResourceView(g_preview.mipTexture.Get(), nullptr, g_preview.srv.GetAddressOf()))) return false;
+
+    D3D11_TEXTURE2D_DESC sd = {};
+    sd.Width = mw;
+    sd.Height = mh;
+    sd.MipLevels = 1;
+    sd.ArraySize = 1;
+    sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    sd.SampleDesc.Count = 1;
+    sd.Usage = D3D11_USAGE_STAGING;
+    sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    for (auto& st : g_preview.staging) {
+        if (FAILED(device->CreateTexture2D(&sd, nullptr, st.GetAddressOf()))) return false;
+    }
+    g_preview.device = device;
+    g_preview.width = w;
+    g_preview.height = h;
+    g_preview.mip = mip;
+    g_preview.mipW = mw;
+    g_preview.mipH = mh;
+    return true;
+}
+
+// `info[0]` = largura máxima desejada (px). Retorna { width, height, data: Buffer RGBA } ou null
+// (sem captura ativa, formato inesperado, ou primeira chamada ainda sem frame pronto).
+Napi::Value CapturePreview(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    int maxWidth = info.Length() > 0 && info[0].IsNumber() ? info[0].As<Napi::Number>().Int32Value() : 240;
+    ID3D11Device* device = ActiveDevice();
+    ID3D11Texture2D* compose = ActiveComposeTexture();
+    if (!device || !compose) return env.Null();
+    D3D11_TEXTURE2D_DESC cd;
+    compose->GetDesc(&cd);
+    if (cd.Format != DXGI_FORMAT_B8G8R8A8_UNORM || cd.SampleDesc.Count != 1) return env.Null();
+    if (!EnsurePreview(device, (int)cd.Width, (int)cd.Height, std::max(32, maxWidth))) return env.Null();
+
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> ctx;
+    device->GetImmediateContext(ctx.GetAddressOf());
+    int write = g_preview.next;
+    int read = write ^ 1;
+    ctx->CopySubresourceRegion(g_preview.mipTexture.Get(), 0, 0, 0, 0, compose, 0, nullptr);
+    ctx->GenerateMips(g_preview.srv.Get());
+    ctx->CopySubresourceRegion(g_preview.staging[write].Get(), 0, 0, 0, 0, g_preview.mipTexture.Get(), g_preview.mip, nullptr);
+    g_preview.filled[write] = true;
+    g_preview.next = read;
+    if (!g_preview.filled[read]) return env.Null();
+
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    HRESULT hr = ctx->Map(g_preview.staging[read].Get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &mapped);
+    if (FAILED(hr)) return env.Null();  // DXGI_ERROR_WAS_STILL_DRAWING: tenta na próxima
+    const int w = g_preview.mipW, h = g_preview.mipH;
+    Napi::Buffer<uint8_t> out = Napi::Buffer<uint8_t>::New(env, (size_t)w * h * 4);
+    uint8_t* dst = out.Data();
+    for (int y = 0; y < h; y++) {
+        const uint8_t* src = static_cast<const uint8_t*>(mapped.pData) + (size_t)y * mapped.RowPitch;
+        for (int x = 0; x < w; x++, src += 4, dst += 4) {
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+            dst[3] = 255;
+        }
+    }
+    ctx->Unmap(g_preview.staging[read].Get(), 0);
+
+    Napi::Object obj = Napi::Object::New(env);
+    obj.Set("width", w);
+    obj.Set("height", h);
+    obj.Set("data", out);
+    return obj;
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("initialize", Napi::Function::New(env, Initialize));
     exports.Set("nowUs", Napi::Function::New(env, NowUs));
     exports.Set("thumbnailsUpdate", Napi::Function::New(env, ThumbnailsUpdate));
     exports.Set("thumbnailsClear", Napi::Function::New(env, ThumbnailsClear));
+    exports.Set("capturePreview", Napi::Function::New(env, CapturePreview));
     exports.Set("listTopLevelWindows", Napi::Function::New(env, ListTopLevelWindows));
     exports.Set("setCapturedAppGpuBoost", Napi::Function::New(env, SetCapturedAppGpuBoost));
     exports.Set("setGpuPriorityClass", Napi::Function::New(env, SetGpuPriorityClass));

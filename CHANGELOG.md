@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.15 — 2026-11-01
+
+### Novidades
+- **App redesenhado, abre direto no compartilhamento.** Acabou a tela inicial: o app já abre com as
+  configurações de qualidade e sala de um lado e as telas/janelas do outro — um clique e a
+  transmissão começa. Visual igual ao do site.
+- **Aba "Ao vivo agora".** As transmissões públicas aparecem em cards com quem está ao vivo, há
+  quanto tempo, resolução/FPS e número de espectadores. Clicar abre a transmissão numa janela do app.
+- **Preview da sua transmissão.** O botão de olho no painel ao vivo mostra uma miniatura do que está
+  saindo, sem pesar na transmissão. "Ampliar" abre em tela maior, do jeito que o espectador vê.
+- **Painel ao vivo com mais informações.** Tempo no ar, espectadores, resolução, FPS, bitrate e
+  codec sempre visíveis, além de avisos de sala com senha/privada e de áudio ligado.
+
+### Melhorias
+- **Seletor de telas mais leve.** As miniaturas carregam mais rápido e o app não fica atualizando
+  nada em segundo plano quando você está em outra aba ou com ele minimizado.
+
+### Correções
+- **Transmissão podia cair pro modo compatível ao iniciar** se a lista de telas estivesse
+  atualizando bem na hora do clique. Agora a lista pausa enquanto a transmissão começa.
+
+### Observações
+- A partir desta versão o app também está na **Microsoft Store** com o nome **OCS Screen**.
+
 ## 1.0.13 — 2026-10-17
 
 ### Melhorias

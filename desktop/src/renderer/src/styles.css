@@ -1,9 +1,11 @@
+/* Tokens alinhados com o viewer web (viewer/src/styles.css) — mesma cara nos dois clientes. */
 :root {
   color-scheme: dark;
-  --bg: #0e0f13;
-  --surface: #17191f;
-  --surface-2: #1e2129;
-  --border: #2a2d36;
+  --bg: #0b0d10;
+  --surface: #15181d;
+  --surface-2: #1c2027;
+  --border: #2a2e35;
+  --border-strong: #3a3e4a;
   --text: #e8eaed;
   --muted: #8a8f98;
   --accent: #5865f2;
@@ -11,6 +13,7 @@
   --danger: #ed4245;
   --danger-hover: #c53437;
   --live: #23a55a;
+  --warning: #f0b132;
 }
 
 * {
@@ -38,6 +41,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+button,
+input,
+select {
+  font-family: inherit;
+}
+
 .app-shell {
   display: flex;
   flex-direction: column;
@@ -45,39 +54,57 @@ body {
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
+  background: var(--bg);
 }
 
 .app-shell-widget {
   border-radius: 12px;
+  background: linear-gradient(180deg, #13161b 0%, var(--bg) 100%);
 }
 
-/* Titlebar */
+/* ---------- Barra de título ---------- */
 .titlebar {
-  height: 36px;
-  display: flex;
+  height: 44px;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
-  padding-left: 12px;
+  padding-left: 14px;
   background: var(--surface);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   -webkit-app-region: drag;
 }
 
 .titlebar-compact {
-  height: 28px;
+  height: 30px;
+  padding-left: 10px;
+  background: transparent;
+  border-bottom-color: transparent;
 }
 
 .titlebar-title {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  font-size: 0.78rem;
-  color: var(--muted);
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text);
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.01em;
+}
+
+.titlebar-compact .titlebar-title {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+/* Região de arrastar engole cliques mesmo de elementos por cima — tudo clicável sai dela. */
+.titlebar-nav {
+  -webkit-app-region: no-drag;
 }
 
 .titlebar-controls {
+  grid-column: 3;
+  justify-self: end;
   display: flex;
   height: 100%;
 }
@@ -89,7 +116,6 @@ body {
   border: none;
   background: transparent;
   color: var(--muted);
-  font-size: 0.85rem;
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -107,10 +133,66 @@ body {
   color: white;
 }
 
-/* Content */
+.nav-tabs {
+  display: flex;
+  gap: 0.2rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 3px;
+}
+
+.nav-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.32rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.nav-tab:hover {
+  color: var(--text);
+}
+
+.nav-tab-active,
+.nav-tab-active:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nav-tab-count {
+  background: var(--danger);
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 0.42rem;
+  font-size: 0.66rem;
+  line-height: 1.35rem;
+  min-width: 1.35rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Conteúdo ---------- */
 .app-content {
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* App, não página: texto de interface não seleciona (arrastar o mouse destacando rótulo/botão parece
+   site quebrado). Só o que a pessoa pode querer copiar continua selecionável — campos de texto já
+   são por padrão. */
+.live-link-text,
+.live-room-name,
+.update-notes,
+.error-text {
   user-select: text;
 }
 
@@ -122,27 +204,140 @@ body {
 }
 
 .home-page {
+  height: 100%;
+}
+
+.home-page[data-tab="share"] .home-view-watch,
+.home-page[data-tab="watch"] .home-view-share {
+  display: none;
+}
+
+/* Configurações (lateral) + fontes — tela principal e seletor de troca ao vivo. */
+.setup-layout {
+  height: 100%;
+  display: flex;
+  min-height: 0;
+}
+
+.setup-sidebar {
+  width: 300px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  /* Espaço da barra de rolagem sempre reservado: sem isso, abrir "Avançado" fazia a barra aparecer,
+     a coluna estreitava 8px, textos quebravam linha e ficavam mais altos — e ao fechar o conteúdo
+     continuava passando da altura por causa dessa quebra, então a barra nunca mais sumia. */
+  scrollbar-gutter: stable;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 1rem 1rem 1.1rem;
+  text-align: left;
+}
+
+/* Barra só aparece com o mouse em cima (o espaço continua reservado pelo gutter, nada pula). Via
+   ::-webkit-scrollbar, não `scrollbar-color` — a propriedade padrão desliga o estilo fino/arredondado
+   global (fim do arquivo) e volta pra barra nativa. */
+.setup-sidebar::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.setup-sidebar:hover::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+
+.setup-sidebar:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+.setup-sidebar,
+.setup-sidebar > .settings-fieldset {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 2.25rem 1.5rem 1.75rem;
-  gap: 0.4rem;
-  text-align: center;
+  gap: 1.1rem;
 }
 
-.home-page h1 {
-  margin: 0.9rem 0 0;
-  font-size: 1.5rem;
+.setup-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.setup-section-title {
+  margin: 0;
+  font-size: 0.7rem;
   font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-.subtitle {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--muted);
-  margin: 0.15rem 0 1.75rem;
-  font-size: 0.88rem;
 }
 
+.setup-advanced {
+  border-top: 1px solid var(--border);
+  padding-top: 0.85rem;
+}
+
+.setup-advanced-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.setup-advanced-summary::-webkit-details-marker {
+  display: none;
+}
+
+.setup-advanced-summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  transition: transform 0.15s ease;
+}
+
+.setup-advanced[open] .setup-advanced-summary::before {
+  transform: rotate(90deg);
+}
+
+.setup-advanced-summary:hover {
+  color: var(--text);
+}
+
+.setup-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-top: 0.85rem;
+}
+
+.setup-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding-top: 0.85rem;
+  border-top: 1px dashed var(--border);
+}
+
+.setup-subsection-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.settings-fieldset:disabled {
+  opacity: 0.55;
+}
+
+.settings-fieldset:disabled * {
+  cursor: not-allowed;
+}
+
+/* ---------- Campos ---------- */
 .settings-field {
   display: flex;
   flex-direction: column;
@@ -154,26 +349,251 @@ body {
 }
 
 .settings-field select {
+  width: 100%;
   appearance: none;
-  background: var(--surface) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%238a8f98' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+  background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%238a8f98' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
     no-repeat right 0.85rem center;
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 0.6rem 2.2rem 0.6rem 0.75rem;
-  font-size: 0.9rem;
+  padding: 0.55rem 2.2rem 0.55rem 0.75rem;
+  font-size: 0.88rem;
   font-weight: 400;
   cursor: pointer;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition: border-color 0.15s ease;
 }
 
 .settings-field select:hover {
-  border-color: #3a3e4a;
+  border-color: var(--border-strong);
 }
 
 .settings-field select:focus-visible {
   outline: none;
   border-color: var(--accent);
+}
+
+/* FPS + Qualidade lado a lado (Resolução fica sozinha). */
+.settings-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.text-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+  color: var(--text);
+  font-size: 0.88rem;
+  transition: border-color 0.15s ease;
+}
+
+.text-input:hover {
+  border-color: var(--border-strong);
+}
+
+.text-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.slug-input-group {
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 0.15s ease;
+}
+
+.slug-input-group:hover {
+  border-color: var(--border-strong);
+}
+
+.slug-input-group:focus-within {
+  border-color: var(--accent);
+}
+
+.slug-input-prefix {
+  padding-left: 0.75rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.slug-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 0.55rem 0.75rem 0.55rem 0.2rem;
+  color: var(--text);
+  font-size: 0.88rem;
+}
+
+.visibility-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.visibility-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.55rem;
+  align-items: center;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.visibility-option svg {
+  grid-row: span 2;
+}
+
+.visibility-option:hover {
+  border-color: var(--border-strong);
+}
+
+.visibility-option-active,
+.visibility-option-active:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg));
+  color: var(--accent);
+}
+
+.visibility-option-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.visibility-option-hint {
+  font-size: 0.68rem;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.password-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  padding: 0.7rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition: border-color 0.12s ease;
+}
+
+.password-box-on {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
+.password-box .toggle-row-label {
+  flex: 1;
+}
+
+.password-box-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.password-box-on .password-box-icon {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent);
+}
+
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  animation: password-reveal-in 0.18s ease;
+}
+
+.password-input-wrap .password-input {
+  flex: 1;
+  padding-right: 4.8rem;
+  background: var(--surface);
+}
+
+.password-reveal {
+  position: absolute;
+  right: 0.35rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.password-reveal:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+@keyframes password-reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.profile-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.profile-summary-name {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.profile-summary-rows {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  row-gap: 0.15rem;
+  column-gap: 0.5rem;
+  font-size: 0.7rem;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.profile-summary-rows strong {
+  color: var(--text);
+  font-weight: 600;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Linha de toggle estilo Discord — label+descrição curta à esquerda, switch à direita. */
@@ -199,6 +619,7 @@ body {
   font-size: 0.7rem;
   font-weight: 400;
   color: var(--muted);
+  margin: 0;
 }
 
 .toggle-switch {
@@ -252,9 +673,7 @@ body {
 }
 
 /* Trick de grid-template-rows (0fr↔1fr) — anima altura de um conteúdo de altura variável sem JS
-   medindo pixels. O wrapper externo é sempre display:grid com 1 linha/coluna implícita; o interno
-   precisa de min-height:0 (senão o item do grid não respeita o 0fr) + overflow:hidden (esconde o
-   conteúdo enquanto a linha ainda tá encolhendo). */
+   medindo pixels. O interno precisa de min-height:0 + overflow:hidden. */
 .settings-advanced-extra {
   display: grid;
   grid-template-rows: 0fr;
@@ -277,18 +696,28 @@ body {
   margin-top: 0.85rem;
 }
 
-/* Buttons */
+.audio-apps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* ---------- Botões ---------- */
 .btn-primary,
 .btn-secondary,
 .btn-danger {
   border: none;
   border-radius: 8px;
-  padding: 0.75rem 1.2rem;
-  font-size: 0.9rem;
+  padding: 0.7rem 1.2rem;
+  font-size: 0.88rem;
   font-weight: 600;
   cursor: pointer;
   width: 100%;
   transition: background 0.1s ease;
+}
+
+.btn-inline {
+  width: auto;
 }
 
 .btn-primary {
@@ -321,7 +750,6 @@ body {
   background: transparent;
   color: var(--danger);
   border: 1px solid var(--danger);
-  margin-top: 1.5rem;
 }
 
 .btn-danger:hover {
@@ -331,712 +759,88 @@ body {
 
 .error-text {
   color: var(--danger);
-  font-size: 0.85rem;
-  margin: 0 0 0.75rem;
+  font-size: 0.82rem;
+  margin: 0;
 }
 
-/* Live card — barra compacta estilo overlay de screen share do Discord, tamanho fixo (ver
-   WIDGET_SIZE no main process — a janela não redimensiona nesse modo, então tudo aqui precisa
-   caber sem depender de espaço extra). */
-.live-card {
-  height: 100%;
-  padding: 0.6rem 0.75rem;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 0.4rem;
-}
-
-.live-top-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.live-badge {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--live);
-  min-width: 0;
-}
-
-.live-viewer-count {
-  color: var(--muted);
-  font-weight: 400;
-  font-size: 0.75rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.live-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--live);
-  flex-shrink: 0;
-  animation: pulse 1.6s infinite;
-}
-
-.live-badge-warning {
-  color: #f0b132;
-}
-
-.live-dot-warning {
-  background: #f0b132;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-
-.live-top-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  flex-shrink: 0;
-}
-
-.live-swap-btn {
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: var(--surface-2);
-  color: var(--text);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 0;
-  transition: background 0.12s ease, transform 0.1s ease;
-}
-
-.live-swap-btn:hover:not(:disabled) {
-  background: var(--border);
-}
-
-.live-swap-btn:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.live-swap-btn-spinning svg {
-  animation: spin 0.9s linear infinite;
-}
-
-/* Botão de cursor ao vivo (só pipeline nativo) — apagado quando o cursor tá escondido, pra
-   diferenciar visualmente do estado "ligado" sem precisar de outro ícone. */
-.live-swap-btn-off {
-  color: var(--muted);
-}
-
-.live-stop-btn {
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: var(--danger);
-  color: white;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 0;
-  transition: background 0.12s ease, transform 0.1s ease;
-}
-
-.live-stop-btn svg {
-  display: block;
-}
-
-.live-stop-btn:hover {
-  background: var(--danger-hover);
-}
-
-.live-stop-btn:active {
-  transform: scale(0.94);
-}
-
-.live-link-btn {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.5rem 0.65rem;
-  cursor: pointer;
-  width: 100%;
-  text-align: left;
-  flex-shrink: 0;
-  transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.live-link-btn:hover {
-  background: var(--surface-2);
-  border-color: #3a3e4a;
-}
-
-.live-link-text {
-  flex: 1;
-  min-width: 0;
-  color: var(--text);
-  font-size: 0.76rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.live-link-copy {
-  color: var(--accent);
-  font-size: 0.72rem;
-  font-weight: 600;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-/* Widget de largura fixa (340px, não redimensionável) — cabe pouca coisa numa linha só. Texto
-   principal (resolução/fps/bitrate) fica à esquerda; ícones de diagnóstico (aviso/detalhe/áudio)
-   agrupados à direita como badges circulares, não soltos misturados com o texto. */
-.live-stats {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  color: var(--muted);
-  font-size: 0.72rem;
-  flex-shrink: 0;
-}
-
-.live-stats-primary {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.live-stats-icons {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  flex-shrink: 0;
-}
-
-.live-stats-badge {
+.chip {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--surface-2);
-  font-size: 0.65rem;
-  line-height: 1;
-  cursor: default;
-}
-
-.live-stats-badge-warning {
-  background: rgba(240, 177, 50, 0.18);
-}
-
-.live-capture-warning {
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: rgba(240, 177, 50, 0.14);
-  border: 1px solid rgba(240, 177, 50, 0.4);
-  color: var(--text);
-  font-size: 0.72rem;
-  line-height: 1.35;
-}
-
-.live-stats-optimize {
-  border: none;
-  padding: 0;
-  font-family: inherit;
-  color: var(--text);
-  cursor: pointer;
-}
-
-.live-stats-optimize:hover:not(:disabled) {
-  background: var(--border);
-}
-
-.live-stats-optimize:disabled {
-  opacity: 0.6;
-}
-
-.live-stats-optimize-spinning {
-  animation: spin 0.9s linear infinite;
-}
-
-/* HUD de dev — estilo contador de FPS de jogo, sempre visível (sem hover). Só existe em
-   import.meta.env.DEV; o widget já nasce mais alto nesse caso (ver WIDGET_SIZE no main process). */
-.live-stats-dev {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-  margin-top: 0.4rem;
-  padding-top: 0.4rem;
-  border-top: 1px dashed var(--border);
-  font-size: 0.62rem;
-  font-family: "Consolas", "Courier New", monospace;
-  color: #7bd88f;
-}
-
-/* Seletor de fonte — estilo "Ir ao vivo" do Discord (a janela expande enquanto isso fica
-   aberto, ver window:set-picker-mode no main process). */
-.picker-overlay {
-  position: fixed;
-  /* Começa ABAIXO da barra de título (36px) — bug real: cobrindo a barra, o botão "Voltar" ficava
-     em cima da região de arrastar a janela (`-webkit-app-region: drag`), e no Electron região de
-     arrastar engole o clique mesmo coberta por outro elemento: só a ponta de baixo do botão
-     (fora dos 36px) funcionava. Também deixa minimizar/fechar acessíveis com o seletor aberto. */
-  inset: 36px 0 0 0;
-  background: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10;
-}
-
-.picker-modal {
-  width: 100%;
-  height: 100%;
-  background: var(--bg);
-  display: flex;
-  flex-direction: column;
-}
-
-.picker-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-  flex-shrink: 0;
-}
-
-.picker-header h2 {
-  flex: 1;
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 700;
-}
-
-.picker-back {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 600;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.4rem 0.6rem 0.4rem 0.4rem;
-  border-radius: 6px;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-
-.picker-back:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
-
-.picker-close {
-  background: var(--surface-2);
-  border: none;
-  border-radius: 50%;
-  width: 28px;
-  height: 28px;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 0.8rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-
-.picker-close:hover {
-  background: var(--danger);
-  color: white;
-}
-
-.picker-tabs {
-  display: flex;
-  gap: 0.4rem;
-  padding: 0 1.25rem 0.75rem;
-  flex-shrink: 0;
-}
-
-.picker-tab {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 600;
-  padding: 0.45rem 0.9rem;
-  border-radius: 6px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-
-.picker-tab:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
-
-.picker-tab-active,
-.picker-tab-active:hover {
-  background: var(--accent);
-  color: white;
-}
-
-.picker-tab-count {
-  background: rgba(255, 255, 255, 0.18);
-  border-radius: 999px;
-  font-size: 0.68rem;
-  padding: 0.05rem 0.4rem;
-}
-
-.picker-tab:not(.picker-tab-active) .picker-tab-count {
-  background: var(--surface-2);
-}
-
-.picker-body {
-  flex: 1;
-  /* Sem isso, o `min-height` implícito de um item flex é `auto` (= tamanho do conteúdo), não 0 —
-     `.picker-body` nunca encolhe abaixo do grid inteiro, então é o `.picker-modal` (altura fixa da
-     janela) que estoura, não o `overflow-y:auto` daqui que entra em ação. Resultado visível: com
-     rodapé de config mais alto (mais campos) ou grid com mais linhas, sobra menos espaço e o corpo
-     inteiro (grid + rodapé) fica espremido/cortado contra o fim da janela em vez de só rolar por
-     dentro. `min-height: 0` deixa o flexbox respeitar a altura disponível de verdade. */
-  min-height: 0;
-  overflow-y: auto;
-  /* Sem isso, "overflow-x: visible" (default) computa sozinho pra "auto" só por causa do
-     overflow-y:auto (regra da spec CSS: um eixo overflow != visible força o outro a virar auto) —
-     isso expõe scroll horizontal fantasma (~60px, visto rodando com várias janelas na aba
-     "Janelas") por causa de um paradoxo grid+scrollbar (a barra vertical reduz a largura, o grid
-     recalcula colunas, e o resultado do recálculo ainda registra overflow horizontal por uns
-     pixels). O grid só devia quebrar linha, nunca rolar de lado — trava explícito. */
-  overflow-x: hidden;
-  padding: 0 1.25rem 1.25rem;
-  text-align: left;
-  /* Com poucas fontes (1-2 telas), o grid não preenche a `PICKER_SIZE` (720x640, dimensionada pra
-     caber telas+janelas+config juntos) — sobrava espaço vazio embaixo do grid, acima do rodapé.
-     `display:flex` + `justify-content:center` centraliza o conteúdo (grid ou skeleton ou mensagem
-     "nada encontrado") no espaço disponível em vez de empurrar tudo pro topo; quando o conteúdo já
-     preenche/excede (muitas janelas), o scroll (`overflow-y:auto`) continua funcionando normal. */
-  display: flex;
-  flex-direction: column;
-  /* `safe center`, não `center` — bug real (aba "Janelas" com muitas janelas): com `center`, quando
-     o grid fica MAIS ALTO que o corpo, o flexbox centraliza mesmo assim e empurra a primeira linha
-     pra CIMA do início da área de scroll — região que o scroll nunca alcança (tiles cortados/
-     escondidos, parecia que o scroll "não contemplava" todas as janelas). `safe` volta pro início
-     quando não cabe, e continua centralizando quando sobra espaço (poucas fontes). */
-  justify-content: safe center;
-}
-
-/* Seletor em 2 colunas: configurações (lateral) + fontes. */
-.picker-layout {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  border-top: 1px solid var(--border);
-}
-
-.picker-sidebar {
-  width: 290px;
-  flex-shrink: 0;
-  overflow-y: auto;
-  background: var(--surface);
-  border-right: 1px solid var(--border);
-  padding: 1rem 1rem 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1.1rem;
-  text-align: left;
-}
-
-.picker-section {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.picker-section-title {
-  margin: 0;
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.picker-sidebar .settings-field select,
-.picker-sidebar .slug-input {
-  width: 100%;
-  background-color: var(--bg);
-}
-
-/* FPS + Qualidade lado a lado (Resolução fica sozinha, rótulos maiores). */
-.settings-pair {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.6rem;
-}
-
-.picker-sidebar .access-options {
-  background: var(--bg);
-}
-
-.picker-advanced {
-  border-top: 1px solid var(--border);
-  padding-top: 0.9rem;
-}
-
-.picker-advanced-summary {
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-}
-
-.picker-advanced-summary::-webkit-details-marker {
-  display: none;
-}
-
-.picker-advanced-summary::before {
-  content: "▸";
-  display: inline-block;
-  width: 1em;
-  transition: transform 0.15s ease;
-}
-
-.picker-advanced[open] .picker-advanced-summary::before {
-  transform: rotate(90deg);
-}
-
-.picker-advanced-summary:hover {
-  color: var(--text);
-}
-
-.picker-advanced-body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.85rem;
-  margin-top: 0.85rem;
-}
-
-.picker-subsection {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  padding-top: 0.85rem;
-  border-top: 1px dashed var(--border);
-}
-
-.picker-subsection-title {
-  margin: 0;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.picker-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.picker-main .picker-tabs {
-  padding-top: 0.9rem;
-}
-
-.picker-error {
-  margin: 0 1.25rem 0.5rem;
-}
-
-.picker-hint {
-  margin: 0;
-  padding: 0.6rem 1.25rem;
-  border-top: 1px solid var(--border);
-  font-size: 0.72rem;
-  color: var(--muted);
-  text-align: left;
-}
-
-/* Sala privada / senha (mesmo visual do viewer web, ver viewer/src/styles.css). */
-.access-options {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.8rem 0.9rem;
+  gap: 0.28rem;
   background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 10px;
-}
-
-.password-input-wrap {
-  position: relative;
-  display: flex;
-  animation: password-reveal-in 0.18s ease;
-}
-
-.password-input-wrap .password-input {
-  flex: 1;
-  padding-right: 4.8rem;
-  background: var(--surface);
-}
-
-.password-reveal {
-  position: absolute;
-  right: 0.35rem;
-  top: 50%;
-  transform: translateY(-50%);
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  padding: 0.3rem 0.55rem;
-  color: var(--muted);
-  font-size: 0.72rem;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.66rem;
   font-weight: 600;
-  cursor: pointer;
-}
-
-.password-reveal:hover {
-  color: var(--text);
-  background: var(--surface-2);
-}
-
-@keyframes password-reveal-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-/* Lista de apps do áudio da transmissão (AudioAppsSettings) — dentro da barra lateral, que já rola. */
-.audio-apps {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-
-.picker-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 0.75rem;
-}
-
-/* Um clique já compartilha (sem passo de confirmação extra) — feedback tem que ser instantâneo:
-   hover reage rápido, o clique escala pra baixo na hora, sem esperar nada de rede. */
-.picker-tile {
-  background: var(--surface);
-  border: 2px solid transparent;
-  border-radius: 8px;
-  padding: 0.5rem;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  text-align: left;
-  transition: border-color 0.08s ease, background 0.08s ease, transform 0.08s ease;
-  /* Sem isso, o item do grid herda o min-content do nome da janela (`.picker-tile-label`,
-     white-space:nowrap) como largura mínima — um nome sem espaço (ex. "RzMonitorForegroundWindow")
-     estica o track do grid além de 150px e joga a grade inteira pra scroll horizontal (grid
-     blowout). min-width:0 deixa o item encolher normalmente e o ellipsis do label fazer o trabalho. */
-  min-width: 0;
-}
-
-.picker-tile:hover {
-  background: var(--surface-2);
-  border-color: #3a3e4a;
-}
-
-.picker-tile:active {
-  transform: scale(0.97);
-}
-
-.picker-tile:disabled {
-  cursor: default;
-}
-
-.picker-tile-pending {
-  border-color: var(--accent);
-  background: var(--surface-2);
-}
-
-.picker-thumbnail-wrap {
-  position: relative;
-  overflow: hidden;
-  border-radius: 5px;
-}
-
-.picker-thumbnail {
-  width: 100%;
-  aspect-ratio: 16 / 10;
-  object-fit: cover;
-  border-radius: 5px;
-  background: var(--surface-2);
-  display: block;
-}
-
-.picker-thumbnail-fallback {
-  display: flex;
-  align-items: center;
-  justify-content: center;
   color: var(--muted);
-  font-size: 1.3rem;
+  white-space: nowrap;
+}
+
+.count-pill {
+  background: var(--surface-2);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.72rem;
+  letter-spacing: 0;
+}
+
+.live-tag {
+  display: inline-block;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.58rem;
   font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0.08rem 0.35rem;
+  border-radius: 3px;
 }
 
-.picker-thumbnail-fallback-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 6px;
-}
-
-.picker-app-icon {
-  position: absolute;
-  bottom: 0.35rem;
-  left: 0.35rem;
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.6);
-  padding: 2px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-}
-
-.picker-tile-spinner {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  border-radius: 5px;
+.empty-state {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 0.3rem;
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--muted);
+}
+
+.empty-state p {
+  margin: 0;
+}
+
+.empty-state-boxed {
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  padding: 3rem 1.5rem;
+}
+
+.empty-state-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 0.5rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.empty-state-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.empty-state-hint {
+  font-size: 0.8rem;
+}
+
+.empty-state .btn-primary {
+  margin-top: 1rem;
 }
 
 .spinner {
@@ -1054,28 +858,6 @@ body {
   }
 }
 
-.picker-tile-label {
-  font-size: 0.75rem;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  /* Mesma causa do grid blowout do `.picker-tile` (ver comentário lá) um nível mais fundo: como
-     item flex (coluna) com nowrap, o min-content (nome inteiro sem quebra) vira a largura mínima
-     do PRÓPRIO label mesmo esticado (align-items:stretch não anula min-width:auto) — sem isso o
-     texto vazava pra fora da caixa em vez de virar "...". */
-  min-width: 0;
-  width: 100%;
-}
-
-.picker-tile-skeleton {
-  aspect-ratio: 16 / 10;
-  border-radius: 8px;
-  background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
-  background-size: 200% 100%;
-  animation: skeleton-shimmer 1.2s ease-in-out infinite;
-}
-
 @keyframes skeleton-shimmer {
   0% {
     background-position: 200% 0;
@@ -1085,134 +867,962 @@ body {
   }
 }
 
-/* Abas Transmitir/Assistir — segmented control, mais robusto visualmente que picker-tab isolado. */
-.mode-tabs {
+/* ---------- Fontes de captura ---------- */
+.source-browser {
+  flex: 1;
+  min-width: 0;
   display: flex;
-  gap: 0.25rem;
-  background: var(--surface);
-  border-radius: 10px;
-  padding: 0.25rem;
-  margin-bottom: 1rem;
-  width: 100%;
+  flex-direction: column;
+  background: radial-gradient(ellipse at top, #12151b 0%, var(--bg) 60%);
 }
 
-.mode-tab {
-  flex: 1;
+.source-browser-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.5rem 0.9rem;
+  flex-shrink: 0;
+}
+
+.source-browser-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.segmented {
+  display: flex;
+  gap: 0.2rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 3px;
+}
+
+.segmented-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   background: transparent;
   border: none;
-  border-radius: 7px;
-  padding: 0.5rem 0.75rem;
-  font-size: 0.85rem;
+  border-radius: 6px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.8rem;
   font-weight: 600;
   color: var(--muted);
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
 }
 
-.mode-tab:hover {
+.segmented-btn:hover {
   color: var(--text);
 }
 
-.mode-tab-active,
-.mode-tab-active:hover {
+.segmented-btn-active,
+.segmented-btn-active:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.segmented-count {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  font-size: 0.66rem;
+  padding: 0 0.4rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.segmented-btn:not(.segmented-btn-active) .segmented-count {
   background: var(--surface-2);
-  color: var(--text);
 }
 
-.slug-input {
-  width: 100%;
+.source-browser-error {
+  margin: 0 1.5rem 0.5rem;
+}
+
+.source-browser-body {
+  flex: 1;
+  /* Item flex: sem min-height:0 o corpo nunca encolhe abaixo da grade e quem estoura é a janela,
+     não o scroll daqui. */
+  min-height: 0;
+  overflow-y: auto;
+  /* overflow-y:auto força overflow-x a auto — com a grade recalculando colunas pela largura da
+     barra de rolagem isso vira scroll horizontal fantasma. A grade só quebra linha. */
+  overflow-x: hidden;
+  padding: 0.25rem 1.5rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  /* `safe`: centraliza com poucas fontes, volta pro início quando a grade é mais alta que o corpo
+     (com `center` puro a primeira linha subia pra fora da área de scroll). */
+  justify-content: safe center;
+}
+
+.source-browser-footer {
+  flex-shrink: 0;
+  padding: 0.65rem 1.5rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.source-browser-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.source-browser > .source-browser-hint {
+  flex-shrink: 0;
+  padding: 0.65rem 1.5rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.source-grid {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.source-grid-screen {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.source-grid-window {
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+
+/* Um clique já compartilha — feedback instantâneo, sem esperar rede. Sem transform no hover: as
+   miniaturas ao vivo de janela são desenhadas pelo DWM na posição medida do tile, e um tile que
+   se mexe sozinho descasaria da miniatura por cima. */
+.source-tile {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.6rem 0.75rem;
-  color: var(--text);
-  font-size: 0.9rem;
-  transition: border-color 0.15s ease;
-}
-
-.slug-input:hover {
-  border-color: #3a3e4a;
-}
-
-.slug-input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-}
-
-/* Lista de salas ativas — linhas simples, sem os cards de thumbnail do picker de fontes. */
-.room-list {
-  /* Mesmo problema do slug-input: home-page centraliza por conteúdo, e um skeleton vazio (sem
-     texto) não tem largura própria nenhuma pra herdar — sem isso aqui a lista inteira colapsa
-     pra quase 0px de largura durante o loading (skeleton "fininho" reportado). */
-  width: 100%;
+  border-radius: 12px;
+  padding: 0.5rem;
+  cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-}
-
-.room-list-empty {
-  text-align: center;
-  padding: 1.5rem 0;
-}
-
-.room-row {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
-  background: var(--surface);
-  border: none;
-  border-radius: 8px;
-  padding: 0.65rem 0.75rem;
-  cursor: pointer;
   text-align: left;
-  transition: background 0.1s ease;
-}
-
-.room-row:hover {
-  background: var(--surface-2);
-}
-
-.room-row-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #2ecc71;
-  flex-shrink: 0;
-}
-
-.room-row-info {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+  color: var(--text);
+  transition: border-color 0.08s ease, background 0.08s ease, box-shadow 0.08s ease;
+  /* Grid blowout: sem isso o min-content do nome (nowrap) estica a coluna além do minmax. */
   min-width: 0;
 }
 
-.room-row-name {
-  font-size: 0.85rem;
+.source-tile:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.source-tile:disabled {
+  cursor: default;
+}
+
+.source-tile:disabled:not(.source-tile-pending) {
+  opacity: 0.5;
+}
+
+.source-tile-pending {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.source-thumb {
+  position: relative;
+  overflow: hidden;
+  border-radius: 7px;
+  background: #000;
+  aspect-ratio: 16 / 10;
+}
+
+.source-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.source-grid-screen .source-thumb-img {
+  object-fit: contain;
+}
+
+.source-thumb-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.source-thumb-fallback-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+}
+
+.source-thumb-cta {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.75rem;
   font-weight: 600;
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 0.1s ease;
+  pointer-events: none;
+}
+
+.source-tile:hover:not(:disabled) .source-thumb-cta {
+  opacity: 1;
+}
+
+.source-thumb-spinner {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.source-tile-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0 0.15rem 0.1rem;
+  /* Item flex (coluna) com nome nowrap: sem largura explícita o min-content do nome vira a largura
+     mínima mesmo esticado, e o texto vaza pra fora do tile em vez de virar "...". */
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+}
+
+.source-tile-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.source-tile-name {
+  font-size: 0.78rem;
+  font-weight: 500;
   color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.source-tile-skeleton {
+  aspect-ratio: 16 / 12;
+  border-radius: 12px;
+  background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+/* Seletor de troca de fonte ao vivo (aberto pelo widget): cobre o conteúdo, abaixo da barra de
+   título compacta — cobrindo a barra, a região de arrastar engoliria os cliques do "Voltar". */
+.picker-overlay {
+  position: fixed;
+  inset: 30px 0 0 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+}
+
+.picker-header {
+  display: flex;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.picker-back {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.65rem 0.4rem 0.45rem;
+  border-radius: 6px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.picker-back:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.picker-overlay .setup-layout {
+  flex: 1;
+  height: auto;
+}
+
+/* ---------- Ao vivo agora ---------- */
+.home-view-watch {
+  height: 100%;
+  overflow-y: auto;
+  padding: 1.75rem 2rem 2rem;
+}
+
+.home-view-watch > * {
+  max-width: 1080px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.watch-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.watch-title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.watch-subtitle {
+  margin: 0.3rem 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex-shrink: 0;
+  animation: pulse 1.6s infinite;
+}
+
+.live-dot-ring {
+  background: var(--live);
+  animation: live-pulse 1.8s ease-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(35, 165, 90, 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(35, 165, 90, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(35, 165, 90, 0);
+  }
+}
+
+.rooms-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.room-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: 360px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 0.75rem;
+  color: var(--muted);
+  transition: border-color 0.12s ease;
+}
+
+.room-search:focus-within {
+  border-color: var(--accent);
+}
+
+.room-search input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 0.85rem;
+  padding: 0.55rem 0;
+}
+
+.room-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.9rem;
+}
+
+.room-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  min-width: 0;
+  transition: background 0.1s ease, border-color 0.1s ease;
+}
+
+.room-card:hover,
+.room-card:focus-visible {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+  outline: none;
+}
+
+.room-card-top {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.room-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1rem;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--danger);
+}
+
+.room-card:hover .room-avatar {
+  box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 4px var(--danger);
+}
+
+.room-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.room-card-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.room-card-name-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.room-row-meta {
-  font-size: 0.7rem;
+.room-card-lock {
+  display: inline-flex;
   color: var(--muted);
 }
 
-.room-row-cta {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--accent);
-  flex-shrink: 0;
+.room-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.74rem;
+  color: var(--muted);
 }
 
-.room-row-skeleton {
-  height: 52px;
+.room-card-bottom {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.room-card-viewers {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.room-card-cta {
+  margin-left: auto;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.35rem 0.85rem;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.room-card:hover .room-card-cta,
+.room-card:focus-visible .room-card-cta {
+  opacity: 1;
+}
+
+.room-card-skeleton {
+  height: 118px;
+  cursor: default;
   background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%);
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+/* ---------- Widget ao vivo ---------- */
+/* Janela de tamanho fixo (WIDGET_SIZE no main) — tudo precisa caber sem rolar. */
+.live-card {
+  height: 100%;
+  padding: 0.35rem 0.85rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  overflow: hidden;
+}
+
+.live-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: #ff7a7c;
+  border-radius: 999px;
+  padding: 0.2rem 0.6rem 0.2rem 0.5rem;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.live-pill .live-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.live-pill-warning {
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  color: var(--warning);
+}
+
+.live-pill-warning .live-dot {
+  background: var(--warning);
+}
+
+.live-timer {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.live-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: var(--border);
+  border-color: var(--border-strong);
+}
+
+.icon-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.icon-btn-off {
+  color: var(--muted);
+}
+
+.icon-btn-spinning svg {
+  animation: spin 0.9s linear infinite;
+}
+
+.live-stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 28px;
+  padding: 0 0.7rem;
+  border: none;
+  border-radius: 7px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.live-stop:hover {
+  background: var(--danger-hover);
+}
+
+.live-stop:active {
+  transform: scale(0.96);
+}
+
+.live-room {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.live-room-name {
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.live-room-chips {
+  display: flex;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.live-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.25rem 0.25rem 0.25rem 0.7rem;
+  flex-shrink: 0;
+}
+
+.live-link-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-link-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.38rem 0.7rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.live-link-copy:hover {
+  background: var(--accent-hover);
+}
+
+.live-link-copied,
+.live-link-copied:hover {
+  background: var(--live);
+}
+
+.live-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  color: var(--text);
+  font-size: 0.7rem;
+  line-height: 1.35;
+  flex-shrink: 0;
+}
+
+.live-warning svg {
+  color: var(--warning);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.live-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.live-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.5rem;
+  min-width: 0;
+}
+
+.live-stat-value {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-stat-label {
+  font-size: 0.58rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.live-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.live-viewers {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.live-foot-right {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.live-foot-right > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.live-foot-warning {
+  color: var(--warning);
+  cursor: help;
+}
+
+.live-optimize {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.12rem 0.45rem;
+  color: var(--text);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.live-optimize:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.live-optimize:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Diagnóstico de dev — grade compacta de pares rótulo/valor. Só existe em import.meta.env.DEV. */
+.live-diag {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.3rem 0.5rem;
+  margin: 0;
+  padding: 0.45rem 0.55rem;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.live-diag div {
+  min-width: 0;
+}
+
+.live-diag dt {
+  font-size: 0.55rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.live-diag dd {
+  margin: 0;
+  font-size: 0.68rem;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  color: #7bd88f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-preview {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.live-preview-canvas {
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.live-preview-expand {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.live-preview:hover .live-preview-expand,
+.live-preview-expand:focus-visible {
+  opacity: 1;
+}
+
+.live-preview-expand:hover {
+  background: var(--accent);
+}
+
+.live-preview .spinner {
+  grid-area: 1 / 1;
+}
+
+.icon-btn-active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+/* Barras de rolagem finas e discretas (a padrão do Windows, grossa e com setas, destoava do tema). */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
 }
 
 /* Modal de nova versão disponível (electron-updater + release do GitHub). */
@@ -1427,25 +2037,3 @@ body {
   object-fit: contain;
 }
 
-/* Barras de rolagem finas e discretas nas áreas que rolam do seletor (a padrão do Windows, grossa e
-   com setas, destoava do tema escuro). */
-.picker-sidebar::-webkit-scrollbar,
-.picker-body::-webkit-scrollbar {
-  width: 8px;
-}
-
-.picker-sidebar::-webkit-scrollbar-track,
-.picker-body::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.picker-sidebar::-webkit-scrollbar-thumb,
-.picker-body::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 4px;
-}
-
-.picker-sidebar::-webkit-scrollbar-thumb:hover,
-.picker-body::-webkit-scrollbar-thumb:hover {
-  background: #3a3e4a;
-}

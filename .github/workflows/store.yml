@@ -12,6 +12,10 @@ on:
         description: "Versão (ex.: 1.0.14)"
         required: true
 
+# Só lê o repositório — os segredos da Store ficam em Actions secrets (nunca no código, nunca em PR de fork).
+permissions:
+  contents: read
+
 jobs:
   publish:
     runs-on: windows-latest
