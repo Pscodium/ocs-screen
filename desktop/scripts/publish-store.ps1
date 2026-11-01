@@ -24,7 +24,9 @@ msstore reconfigure --tenantId $env:MSSTORE_TENANT_ID --sellerId $env:MSSTORE_SE
 if ($LASTEXITCODE -ne 0) { throw "msstore reconfigure falhou" }
 
 # publish cria a submissão, sobe o pacote e envia pra certificação (substitui os pacotes anteriores).
-msstore publish $msix.FullName --appId $env:MSSTORE_PRODUCT_ID
+# O argumento posicional é a PASTA do projeto (o msstore detecta o tipo — Electron — pelo package.json);
+# passar o .appx ali falha com "could not find a project publisher". O pacote pronto vai em --inputFile.
+msstore publish (Resolve-Path "$PSScriptRoot\..").Path --inputFile $msix.FullName --appId $env:MSSTORE_PRODUCT_ID
 if ($LASTEXITCODE -ne 0) { throw "msstore publish falhou" }
 
 Write-Host "Versão $version enviada pra certificação da Store."
