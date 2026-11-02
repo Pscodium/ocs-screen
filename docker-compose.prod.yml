@@ -79,6 +79,11 @@ services:
       TURN_SECRET: ${TURN_SECRET}
       TURN_REALM: ${TURN_REALM:-ocs-screen}
       TURN_URLS: ${TURN_URLS}
+      REDIS_URL: ${REDIS_URL:-}
+      DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID:-}
+      DISCORD_PUBLIC_KEY: ${DISCORD_PUBLIC_KEY:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      DISCORD_NOTIFY_ENABLED: ${DISCORD_NOTIFY_ENABLED:-false}
     # API é só HTTP — proxy do EasyPanel alcança pela rede interna; mapeie o domínio pra porta 4000 na UI.
     expose:
       - "4000"

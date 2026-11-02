@@ -43,4 +43,18 @@ export const config = {
     urls: (process.env.TURN_URLS ?? "turn:localhost:3478").split(",").map((u) => u.trim()),
     ttlSeconds: Number(process.env.TURN_CREDENTIAL_TTL_SECONDS ?? 60 * 60), // 1h
   },
+  // Redis compartilhado (o mesmo de produção, inclusive em dev local — igual LiveKit/coturn). Sem
+  // REDIS_URL, tudo que depende dele (inscritos do bot do Discord) fica desligado, nunca trava o boot.
+  redisUrl: process.env.REDIS_URL ?? null,
+  // Bot do Discord que manda DM avisando que uma transmissão começou (services/discordNotify.ts).
+  // `publicKey` valida a assinatura das interações (botões/slash commands) e `botToken` envia as
+  // DMs. `notifyEnabled` é separado de propósito: como dev local usa o MESMO Redis de produção (e
+  // portanto a mesma lista de inscritos), um backend local com token configurado mandaria DM de
+  // verdade pra todo mundo a cada teste — por padrão só produção dispara.
+  discord: {
+    applicationId: process.env.DISCORD_APPLICATION_ID ?? null,
+    publicKey: process.env.DISCORD_PUBLIC_KEY ?? null,
+    botToken: process.env.DISCORD_BOT_TOKEN ?? null,
+    notifyEnabled: process.env.DISCORD_NOTIFY_ENABLED === "true",
+  },
 } as const;

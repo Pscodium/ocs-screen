@@ -4,6 +4,7 @@ import { createHostToken, createViewerToken, getLiveRoomViewerCounts } from "../
 import { cancelRoomCleanup, checkRoomPassword, createRoom, deleteRoom, getRoom, listRooms, SlugTakenError } from "../services/rooms.js";
 import { getNativeViewerCount, registerHostSocket, registerViewerSocket } from "../services/nativeWsRelay.js";
 import { getIceServers } from "../services/turn.js";
+import { notifyStreamStarted } from "../services/discordNotify.js";
 import { generateIdentity, isValidSlug, normalizeSlug } from "../utils/ids.js";
 import type {
   CreateRoomRequest,
@@ -84,6 +85,9 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       throw err;
     }
     const hostToken = await createHostToken(room.id, hostIdentity);
+    // Sala LiveKit: host publica logo em seguida, então "sala criada" ≈ "transmissão começou".
+    // Sala nativa avisa só quando o host conecta de verdade no WS de sinalização (abaixo).
+    if (!room.nativeMode) void notifyStreamStarted(room);
 
     const response: CreateRoomResponse = {
       roomId: room.id,
@@ -180,8 +184,11 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
         socket.close();
         return;
       }
-      if (role === "host") registerHostSocket(roomId, socket);
-      else registerViewerSocket(roomId, socket);
+      if (role === "host") {
+        registerHostSocket(roomId, socket);
+        // Reconexões do host caem no cooldown por sala (discordNotify.ts) — só avisa uma vez.
+        void notifyStreamStarted(room);
+      } else registerViewerSocket(roomId, socket);
     },
   );
 }

@@ -4,6 +4,7 @@ import cors from "@fastify/cors";
 import websocket from "@fastify/websocket";
 import { config } from "./config.js";
 import { roomRoutes } from "./routes/rooms.js";
+import { discordRoutes } from "./routes/discord.js";
 
 const app = Fastify({ logger: true });
 
@@ -27,6 +28,7 @@ await app.register(websocket);
 app.get("/health", async () => ({ status: "ok" }));
 
 await app.register(roomRoutes);
+await app.register(discordRoutes);
 
 try {
   await app.listen({ port: config.port, host: config.host });
