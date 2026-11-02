@@ -21,6 +21,7 @@ export function createRoom(
   slug?: string,
   nativeMode = false,
   access: { isPrivate?: boolean; password?: string } = {},
+  isWebLive = false,
 ): Room {
   const id = slug ?? generateRoomId();
   if (slug && rooms.has(slug)) throw new SlugTakenError(`Sala "${slug}" já está em uso.`);
@@ -33,6 +34,7 @@ export function createRoom(
     nativeMode,
     isPrivate: access.isPrivate ?? false,
     passwordHash: access.password ? hashPassword(access.password) : null,
+    isWebLive,
   };
   rooms.set(room.id, room);
   // Sala nativa nunca aparece no cruzamento de órfãs de `GET /rooms` (`isOrphan` em

@@ -21,6 +21,9 @@ export interface Room {
   isPrivate: boolean;
   // Hash scrypt (`salt:hash` em hex) — nunca a senha em texto puro. null = sala aberta.
   passwordHash: string | null;
+  // Host transmitindo pelo navegador (viewer web) em vez do app desktop. Opcional no POST /rooms
+  // com padrão false — o desktop já publicado não manda o campo e continua contando como desktop.
+  isWebLive: boolean;
 }
 
 export interface CreateRoomRequest {
@@ -29,6 +32,7 @@ export interface CreateRoomRequest {
   nativeMode?: boolean;
   isPrivate?: boolean;
   password?: string;
+  isWebLive?: boolean;
 }
 
 export interface CreateRoomResponse {

@@ -29,6 +29,7 @@ export async function createRoom(
       isPrivate: access.isPrivate,
       password: access.password || undefined,
       nativeMode,
+      isWebLive: true,
     }),
   });
   if (!res.ok) {

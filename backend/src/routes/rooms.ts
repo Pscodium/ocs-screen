@@ -79,7 +79,7 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       room = createRoom(hostIdentity, request.body?.settings, slug, request.body?.nativeMode, {
         isPrivate: request.body?.isPrivate === true,
         password: password || undefined,
-      });
+      }, request.body?.isWebLive === true);
     } catch (err) {
       if (err instanceof SlugTakenError) return reply.code(409).send({ error: "slug_taken" });
       throw err;
