@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 — 2026-11-06
+
+### Correções
+- **Botão "Assistir" voltou pra dentro do card.** Na aba "Ao vivo agora", o botão podia ficar
+  cortado pra fora do card quando a transmissão tinha várias informações; agora quebra a linha.
+
 ## 1.1.0 — 2026-11-05
 
 ### Novidades

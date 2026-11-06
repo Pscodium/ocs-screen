@@ -1372,8 +1372,10 @@ select {
 
 .room-card-bottom {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.6rem;
+  min-width: 0;
 }
 
 .room-card-viewers {
