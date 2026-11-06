@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.0 — 2026-11-05
+
+### Novidades
+- **Recuperação automática quando o vídeo trava.** Se alguém entra na sua transmissão e o vídeo
+  não chega até a pessoa porque o encoder da placa de vídeo parou de responder, o app tenta sozinho:
+  reinicia o encoder, troca pro encoder alternativo da placa e, em último caso, usa o processador.
+  Na maioria dos casos a transmissão volta sem você precisar encerrar.
+- **Aviso no painel ao vivo.** Quando um espectador está conectado mas sem receber vídeo, o painel
+  mostra um aviso amarelo explicando o que está acontecendo (e o que fazer, se não resolver sozinho).
+- **Origem nas transmissões ao vivo.** A aba "Ao vivo agora" mostra se cada transmissão vem do
+  app ou do navegador.
+
+### Melhorias
+- **Espectadores reconectam sozinhos.** Se a sua conexão cair e voltar, quem está assistindo
+  continua na transmissão sem precisar recarregar a página.
+- **Mensagem de erro mais clara pra quem assiste.** Quando o vídeo não chega por um problema do
+  lado de quem transmite, o espectador vê isso, em vez de achar que o navegador dele não é suportado.
+- **Diagnóstico de falhas.** Quando uma transmissão falha, o app envia um relatório técnico curto
+  (sem nenhum conteúdo da tela) que ajuda a encontrar a causa de problemas que só acontecem com
+  algumas pessoas.
+
 ## 1.0.15 — 2026-11-01
 
 ### Novidades
