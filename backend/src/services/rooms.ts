@@ -2,7 +2,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { generateRoomId } from "../utils/ids.js";
 import { cleanupNativeSockets } from "./nativeWsRelay.js";
-import type { Room, RoomSettings } from "../types/room.js";
+import type { Room, RoomSettings, RoomSource } from "../types/room.js";
 
 const defaultSettings: RoomSettings = {
   resolution: "auto",
@@ -21,7 +21,7 @@ export function createRoom(
   slug?: string,
   nativeMode = false,
   access: { isPrivate?: boolean; password?: string } = {},
-  isWebLive = false,
+  origin: { source: RoomSource; appVersion: string | null } = { source: "desktop", appVersion: null },
 ): Room {
   const id = slug ?? generateRoomId();
   if (slug && rooms.has(slug)) throw new SlugTakenError(`Sala "${slug}" já está em uso.`);
@@ -34,7 +34,8 @@ export function createRoom(
     nativeMode,
     isPrivate: access.isPrivate ?? false,
     passwordHash: access.password ? hashPassword(access.password) : null,
-    isWebLive,
+    source: origin.source,
+    appVersion: origin.appVersion,
   };
   rooms.set(room.id, room);
   // Sala nativa nunca aparece no cruzamento de órfãs de `GET /rooms` (`isOrphan` em

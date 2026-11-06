@@ -127,6 +127,10 @@ export function onNativeTransportCaptureWarning(callback: (message: string | nul
   return window.screenshare.nativeTransport.onCaptureWarning(callback);
 }
 
+export function onNativeTransportViewerWarning(callback: (message: string | null) => void): () => void {
+  return window.screenshare.nativeTransport.onViewerWarning(callback);
+}
+
 export function onNativeTransportEncoderInfo(
   callback: (info: { software: boolean; hardwareMft: boolean; nvencFailure: "none" | "no-driver" | "driver-too-old" | "other" | "disabled"; codec: "h264" | "hevc" | "av1" }) => void,
 ): () => void {

@@ -94,6 +94,12 @@ export function LiveCard({ info, onStop, onOptimizeCodec, optimizingCodec }: Liv
         </button>
       </div>
 
+      {info.viewerWarning && (
+        <div className="live-warning" role="alert">
+          ⚠️ <span>{info.viewerWarning}</span>
+        </div>
+      )}
+
       <div className="live-stats">
         {stats.map((s) => (
           <div key={s.label} className="live-stat" title={s.title}>

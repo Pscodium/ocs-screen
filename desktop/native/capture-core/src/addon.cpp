@@ -738,6 +738,15 @@ Napi::Value GetActiveCodec(const Napi::CallbackInfo& info) {
 // Exposto pro host avisar o usuário/HUD de dev quando caiu pro fallback de software (Media
 // Foundation) por NVENC não estar disponível — bem mais pesado em CPU, vale saber que caiu nesse
 // caminho (ver docs/NATIVE_CAPTURE.md Fase 3 "Fallback de encoder por software").
+// Paliativo "encoder sem saída" (main/index.ts): força o próximo `initEncoder*` a pular o NVENC
+// (1) ou ir direto pro encoder de CPU (2). 0 volta ao automático. Não mexe no encoder atual.
+Napi::Value SetEncoderFallbackLevelJs(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) return Napi::Boolean::New(env, false);
+    SetEncoderFallbackLevel(info[0].As<Napi::Number>().Int32Value());
+    return Napi::Boolean::New(env, true);
+}
+
 Napi::Value IsUsingSoftwareEncoder(const Napi::CallbackInfo& info) {
     std::lock_guard<std::mutex> lock(g_encoderMutex);
     return Napi::Boolean::New(info.Env(), g_encoder && g_encoder->IsUsingSoftwareFallback());
@@ -1544,6 +1553,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("isUsingHardwareMft", Napi::Function::New(env, IsUsingHardwareMft));
     exports.Set("getNvencFailure", Napi::Function::New(env, GetNvencFailure));
     exports.Set("isUsingSoftwareEncoder", Napi::Function::New(env, IsUsingSoftwareEncoder));
+    exports.Set("setEncoderFallbackLevel", Napi::Function::New(env, SetEncoderFallbackLevelJs));
     exports.Set("getActiveCodec", Napi::Function::New(env, GetActiveCodec));
     exports.Set("destroyEncoder", Napi::Function::New(env, DestroyEncoder));
     exports.Set("destroyEncoderLow", Napi::Function::New(env, DestroyEncoderLow));

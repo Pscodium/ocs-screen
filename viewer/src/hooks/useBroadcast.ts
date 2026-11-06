@@ -24,6 +24,8 @@ export interface BroadcastInfo {
   qualityLimitationReason: string | null;
   avgEncodeMs: number | null;
   hasSoftwareLayer: boolean;
+  // Espectador conectado sem receber vídeo (ver services/webNativeHost.ts).
+  viewerWarning?: string | null;
 }
 
 const STATS_POLL_MS = 2000;
@@ -65,6 +67,7 @@ export function useBroadcast() {
           bitrateBps: getMaxBitrate(width, height, settings),
           fps: settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps,
           onViewerCount: (count) => setInfo((prev) => (prev ? { ...prev, viewerCount: count } : prev)),
+          onViewerWarning: (viewerWarning) => setInfo((prev) => (prev ? { ...prev, viewerWarning } : prev)),
         });
         nativeHostRef.current = host;
         await host.start();

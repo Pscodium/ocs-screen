@@ -105,7 +105,7 @@ function buildMessage(room: Room): unknown {
         fields: [
           { name: "Resolução", value: RESOLUTION_LABEL[room.settings.resolution], inline: true },
           { name: "FPS", value: fps, inline: true },
-          { name: "Origem", value: room.isWebLive ? "web" : "desktop", inline: true },
+          { name: "Origem", value: room.appVersion ? `${room.source} ${room.appVersion}` : room.source, inline: true },
           ...(room.passwordHash ? [{ name: "Acesso", value: "🔒 Protegida por senha", inline: true }] : []),
         ],
         timestamp: new Date(room.createdAt).toISOString(),

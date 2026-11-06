@@ -161,7 +161,7 @@ function WatchRoomView({
 
   return (
     <div className="watch-page">
-      {phase === "connecting" && <StatusMessage text="Conectando à transmissão..." overlay />}
+      {phase === "connecting" && <StatusMessage text={error ?? "Conectando à transmissão..."} overlay />}
       {phase === "connected" && isReconnecting && <StatusMessage text="Reconectando..." overlay />}
       <VideoPlayer
         videoRef={videoRef}

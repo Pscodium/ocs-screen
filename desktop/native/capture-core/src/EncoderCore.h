@@ -21,6 +21,15 @@
 // (composeTexture_, já com cursor desenhado) é copiado direto (GPU→GPU, `CopyResource`) pro
 // buffer de entrada que o NVENC aloca, sem passar pela CPU. Isso é o zero-copy real que o
 // caminho atual (WebCodecs `VideoFrame` via bytes crus) não tem.
+// Nível de fallback do encoder pedido em tempo real pelo main (paliativo de "encoder sem saída",
+// ver main/index.ts `restartNativeEncoders`) — vale pra todo `Initialize` seguinte, até voltar a 0:
+//   0 = automático (NVENC → MFT de hardware → CPU)
+//   1 = pula o NVENC (MFT de hardware → CPU)
+//   2 = só CPU
+// Equivalente em tempo real de `OCS_FORCE_MF`/`OCS_NO_HW_MFT` (que só valem no início do processo).
+void SetEncoderFallbackLevel(int level);
+int GetEncoderFallbackLevel();
+
 class EncoderCore {
 public:
     EncoderCore();

@@ -7,6 +7,11 @@ function required(name: string, fallback?: string): string {
 export const config = {
   port: Number(process.env.PORT ?? 4000),
   host: process.env.HOST ?? "0.0.0.0",
+  // Quantos proxies reversos ficam na frente do backend (produção: 1, o do EasyPanel). Com isso o
+  // Fastify lê o IP real do cliente do `X-Forwarded-For` — sem isso todo log/rate limit via só o IP
+  // do proxy. Conta de saltos (não `true`) de propósito: `true` confiaria no valor mais à esquerda,
+  // que o próprio cliente consegue forjar. 0 = desliga (backend exposto direto).
+  trustProxyHops: Number(process.env.TRUST_PROXY_HOPS ?? 1),
   // Lista separada por vírgula. O app desktop Electron não roda no domínio do viewer:
   // - build de produção → carrega via file://, cujo Origin em fetch/XHR é a string literal "null"
   // - `npm run dev` → http://localhost:5174 (servidor Vite do electron-vite, porta fixa — ver

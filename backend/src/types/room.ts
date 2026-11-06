@@ -21,10 +21,14 @@ export interface Room {
   isPrivate: boolean;
   // Hash scrypt (`salt:hash` em hex) — nunca a senha em texto puro. null = sala aberta.
   passwordHash: string | null;
-  // Host transmitindo pelo navegador (viewer web) em vez do app desktop. Opcional no POST /rooms
-  // com padrão false — o desktop já publicado não manda o campo e continua contando como desktop.
-  isWebLive: boolean;
+  // De onde o host transmite — app desktop ou navegador (viewer web). Vem no `source` do POST
+  // /rooms; cliente antigo sem o campo cai no `isWebLive` legado (ver `resolveRoomSource`).
+  source: RoomSource;
+  // Versão do app desktop que criou a sala (null no web ou em app antigo que não manda).
+  appVersion: string | null;
 }
+
+export type RoomSource = "desktop" | "web";
 
 export interface CreateRoomRequest {
   settings?: Partial<RoomSettings>;
@@ -32,6 +36,10 @@ export interface CreateRoomRequest {
   nativeMode?: boolean;
   isPrivate?: boolean;
   password?: string;
+  source?: RoomSource;
+  appVersion?: string;
+  // LEGADO (web 1.0.15 e anteriores) — substituído por `source`. Mantido pra salas criadas por
+  // clientes já publicados continuarem com a origem certa.
   isWebLive?: boolean;
 }
 
@@ -59,6 +67,7 @@ export interface RoomSummary {
   viewerCount: number | null;
   // Link do viewer web — o app desktop abre ele numa janela própria pra assistir (aba "Assistir").
   viewerUrl: string;
+  source: RoomSource;
 }
 
 export interface ListRoomsResponse {

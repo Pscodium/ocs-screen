@@ -312,7 +312,10 @@ app.on("before-quit", (event) => {
     try {
       const abort = new AbortController();
       const timeout = setTimeout(() => abort.abort(), 2000);
-      await fetch(`${backendUrl}/rooms/${roomId}`, { method: "DELETE", signal: abort.signal }).catch(() => {});
+      await Promise.all([
+        fetch(`${backendUrl}/rooms/${roomId}`, { method: "DELETE", signal: abort.signal }).catch(() => {}),
+        sendNativeTelemetry("end"),
+      ]);
       clearTimeout(timeout);
     } finally {
       stopNativeTransport();
@@ -677,6 +680,7 @@ interface NativeCaptureAddon {
   // SoftwareEncoderCore.cpp) — bem mais pesado em CPU, o host quer saber pra avisar o usuário.
   // Reflete só o encoder "high" (o "low" segue a mesma cascata, mas não tem HUD próprio ainda).
   isUsingSoftwareEncoder(): boolean;
+  setEncoderFallbackLevel(level: 0 | 1 | 2): boolean;
   // Fallback via MFT de hardware (Quick Sync/AMF...) em vez de CPU — ver SoftwareEncoderCore.h.
   isUsingHardwareMft(): boolean;
   // Por que o NVENC não ficou de pé (aviso específico pro usuário, ex.: driver desatualizado).
@@ -1187,7 +1191,150 @@ let ntAudioActive = false;
 // Origem (QPC µs, `nativeCapture.nowUs()`) dos timestamps de vídeo e áudio da transmissão atual.
 let ntStartUs = 0;
 
+// Diagnóstico do pipeline nativo (ver backend/src/routes/telemetry.ts) — o vídeo vai direto pro
+// espectador, então sem isso uma transmissão que falha não deixa rastro nenhum no servidor.
+// Contadores acumulados da transmissão inteira; UM relatório por motivo por transmissão (falha
+// detectada ou fim), nunca periódico.
+function freshNativeTelemetry() {
+  return {
+    sessionId: Math.random().toString(36).slice(2, 10),
+    startedAt: Date.now(),
+    reasons: new Set<string>(),
+    counters: {
+      wsOpens: 0,
+      framesAcquired: 0,
+      acquireTimeouts: 0,
+      encodedPackets: 0,
+      emptyEncodeCalls: 0,
+      sendOk: 0,
+      sendFail: 0,
+      bytesEncoded: 0,
+      sessionsCreated: 0,
+      sessionCreateFailures: 0,
+      sessionsConnected: 0,
+      sessionsFailed: 0,
+      deviceLost: 0,
+    },
+  };
+}
+let ntTelemetry = freshNativeTelemetry();
+// Por espectador: timer "canal conectado mas nenhum frame saiu" (ver transportOnStateChange).
+const ntNoDataTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const NT_NO_DATA_REPORT_MS = 10_000;
+
+function sendNativeTelemetry(reason: string, extra: Record<string, string | number | boolean | null> = {}): Promise<void> {
+  if (!ntRoomId || !ntBackendUrl || ntTelemetry.reasons.has(reason)) return Promise.resolve();
+  ntTelemetry.reasons.add(reason);
+  const info = encoderInfo();
+  const body = {
+    role: "host",
+    source: "desktop",
+    reason,
+    sessionId: ntTelemetry.sessionId,
+    data: {
+      ...ntTelemetry.counters,
+      elapsedMs: Date.now() - ntTelemetry.startedAt,
+      appVersion: app.getVersion(),
+      codec: info.codec,
+      softwareEncoder: info.software,
+      hardwareMft: info.hardwareMft,
+      nvencFailure: String(info.nvencFailure).slice(0, 200),
+      targetFps: ntTargetFps,
+      bitrateBps: ntBitrateBps,
+      captureKind: ntHwnd !== null ? "window" : "monitor",
+      audio: ntAudioActive,
+      viewersConnected: nativeCapture?.transportConnectedCount() ?? 0,
+      ...extra,
+    },
+  };
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 3000);
+  return fetch(`${ntBackendUrl}/rooms/${encodeURIComponent(ntRoomId)}/telemetry`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: abort.signal,
+  })
+    .then(() => undefined)
+    .catch(() => undefined)
+    .finally(() => clearTimeout(timeout));
+}
+
+// Paliativo do "conecta mas nenhum vídeo chega" (encoder aceita frame e não devolve nada — sessão
+// NVENC/MFT travada, driver ruim). Escada, uma vez por transmissão, cada degrau só se o anterior
+// não trouxe saída em NT_ENCODER_RECHECK_MS:
+//   1. recria os encoders como estão (resolve sessão travada passageira)
+//   2. recria pulando o NVENC (MFT de hardware da GPU, ou CPU)
+//   3. recria só com encoder de CPU
+const NT_ENCODER_RECHECK_MS = 5_000;
+const NT_ENCODER_STEPS: { level: 0 | 1 | 2; reason: string; warning: string }[] = [
+  { level: 0, reason: "encoder_restart", warning: "Um espectador conectou mas não está recebendo vídeo — reiniciando o encoder..." },
+  { level: 1, reason: "encoder_fallback_mf", warning: "O encoder NVENC não respondeu — trocando pro encoder alternativo da placa de vídeo..." },
+  { level: 2, reason: "encoder_fallback_cpu", warning: "O encoder da placa de vídeo não respondeu — usando o encoder por CPU (mais pesado)..." },
+];
+let ntEncoderRecoveryStep = 0;
+let ntEncoderRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
+// Aviso no LiveCard "espectador sem vídeo" ligado — some no 1º frame enviado com sucesso.
+let ntViewerWarningShown = false;
+
+function restartNativeEncoders(fallbackLevel: 0 | 1 | 2, win: BrowserWindow): boolean {
+  if (!nativeCapture) return false;
+  nativeCapture.setEncoderFallbackLevel(fallbackLevel);
+  nativeCapture.destroyEncoder();
+  nativeCapture.destroyEncoderLow();
+  if (!nativeCapture.initEncoder(ntTargetFps, ntBitrateBps, ntActiveCodec)) return false;
+  const newCodec = nativeCapture.getActiveCodec();
+  nativeCapture.initEncoderLow(SIMULCAST_LOW_FPS, SIMULCAST_LOW_BITRATE_BPS, newCodec);
+  restartCompatEncoders();
+  win.webContents.send("native-transport:encoder", { ...encoderInfo(), codec: newCodec });
+  if (newCodec !== ntActiveCodec) {
+    // Encoder alternativo não tem o codec negociado (ex.: HEVC no NVENC → H.264 no MF) — os
+    // espectadores não decodificariam: renegocia todo mundo no codec novo (sessão nova = offer
+    // novo, o viewer recria a conexão sozinho), igual o fallback de codec por decode.
+    console.warn(`[native-transport] encoder alternativo só tem ${newCodec.toUpperCase()} — renegociando ${ntViewerTiers.size} espectador(es).`);
+    ntActiveCodec = newCodec;
+    for (const viewerId of ntViewerTiers.keys()) nativeCapture.transportCloseSession(viewerId);
+    ntViewerCompat.clear();
+    for (const [viewerId, tier] of ntViewerTiers) {
+      if (!createViewerSession(viewerId, tier)) ntViewerTiers.delete(viewerId);
+    }
+  }
+  return true;
+}
+
+// Sobe um degrau da escada e agenda a checagem do próximo.
+function stepEncoderRecovery(win: BrowserWindow): void {
+  if (!ntActive || ntEncoderRecoveryStep >= NT_ENCODER_STEPS.length) return;
+  const step = NT_ENCODER_STEPS[ntEncoderRecoveryStep++];
+  ntViewerWarningShown = true;
+  win.webContents.send("native-transport:viewer-warning", step.warning);
+  const ok = restartNativeEncoders(step.level, win);
+  console.warn(`[native-transport] encoder sem saída — ${step.reason} (ok=${ok}).`);
+  void sendNativeTelemetry(step.reason, { ok, codecAfter: ntActiveCodec });
+  const encodedAtStep = ntTelemetry.counters.encodedPackets;
+  ntEncoderRecoveryTimer = setTimeout(() => {
+    ntEncoderRecoveryTimer = null;
+    if (!ntActive || ntTelemetry.counters.encodedPackets > encodedAtStep) return;
+    if (ntEncoderRecoveryStep < NT_ENCODER_STEPS.length) {
+      stepEncoderRecovery(win);
+    } else {
+      win.webContents.send(
+        "native-transport:viewer-warning",
+        "Nenhum encoder de vídeo respondeu. Encerre e inicie a transmissão de novo; se repetir, reinicie o PC ou atualize o driver da placa de vídeo.",
+      );
+      void sendNativeTelemetry("encoder_recovery_failed");
+    }
+  }, NT_ENCODER_RECHECK_MS);
+}
+
 function stopNativeTransport(): void {
+  if (ntActive) void sendNativeTelemetry("end");
+  for (const timer of ntNoDataTimers.values()) clearTimeout(timer);
+  ntNoDataTimers.clear();
+  if (ntEncoderRecoveryTimer) clearTimeout(ntEncoderRecoveryTimer);
+  ntEncoderRecoveryTimer = null;
+  // Fallback forçado vale só pra transmissão em que aconteceu.
+  nativeCapture?.setEncoderFallbackLevel(0);
   ntActive = false;
   ntViewerTiers.clear();
   ntAutoDemoted.clear();
@@ -1224,6 +1371,7 @@ function sendWhenOpen(ws: WebSocket, payload: Record<string, unknown>): void {
 // nunca derruba os outros espectadores — cada um vive/morre independente.
 function createViewerSession(viewerId: string, tier: "high" | "low" = "high"): boolean {
   if (!nativeCapture) return false;
+  ntTelemetry.counters.sessionsCreated++;
   const codec = ntViewerCompat.has(viewerId) ? "h264" : ntActiveCodec;
   if (!nativeCapture.transportCreateSession(viewerId, ntStunUrls, codec, streamKeyFor(viewerId, tier))) return false;
   if (!nativeCapture.transportAddVideoChannel(viewerId)) return false;
@@ -1246,6 +1394,10 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   const { roomId, backendUrl, monitorIndex, hwnd, targetFps, bitrateBps, stunUrls, showCursor, codec } = args;
   ntRoomId = roomId;
   ntBackendUrl = backendUrl;
+  ntTelemetry = freshNativeTelemetry();
+  ntEncoderRecoveryStep = 0;
+  nativeCapture.setEncoderFallbackLevel(0);
+  ntViewerWarningShown = false;
   ntTargetFps = targetFps;
   ntBitrateBps = bitrateBps;
   ntStunUrls = stunUrls;
@@ -1254,9 +1406,13 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   ntHwnd = hwnd ?? null;
   resetAppGpuBoost();
 
-  if (!startNativeCaptureSource(monitorIndex, hwnd)) return false;
+  if (!startNativeCaptureSource(monitorIndex, hwnd)) {
+    void sendNativeTelemetry("capture_start_failed");
+    return false;
+  }
   nativeCapture.setCursorEnabled(showCursor);
   if (!nativeCapture.initEncoder(targetFps, bitrateBps, codec ?? "h264")) {
+    void sendNativeTelemetry("encoder_init_failed", { requestedCodec: codec ?? "h264" });
     nativeCapture.stop();
     return false;
   }
@@ -1300,6 +1456,42 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       state,
       connectedCount: nativeCapture?.transportConnectedCount() ?? 0,
     });
+    if (state === "connected" && !ntNoDataTimers.has(viewerId)) {
+      ntTelemetry.counters.sessionsConnected++;
+      // Conectou mas nenhum frame saiu com sucesso em NT_NO_DATA_REPORT_MS = host não está
+      // produzindo/mandando vídeo (encoder/GPU travada, envio falhando) — o espectador vê "nenhum
+      // vídeo chegou". Contador GLOBAL de envio (não por sessão — o addon não expõe por sessão),
+      // suficiente pro caso que importa: ninguém recebendo nada.
+      const sendOkAtConnect = ntTelemetry.counters.sendOk;
+      const encodedAtConnect = ntTelemetry.counters.encodedPackets;
+      ntNoDataTimers.set(
+        viewerId,
+        setTimeout(() => {
+          if (!ntActive) return;
+          if (ntTelemetry.counters.sendOk > sendOkAtConnect) return;
+          const encodedSinceConnect = ntTelemetry.counters.encodedPackets - encodedAtConnect;
+          void sendNativeTelemetry("viewer_no_data", { encodedSinceConnect });
+          // Encoder sem saída nenhuma = problema do encoder → escada de recuperação (avisa o host
+          // a cada degrau). Encoder produzindo mas envio falhando = rede/transporte — recriar
+          // encoder não ajuda, só avisa.
+          if (encodedSinceConnect === 0) {
+            if (ntEncoderRecoveryStep === 0 && !ntEncoderRecoveryTimer) stepEncoderRecovery(win);
+          } else {
+            ntViewerWarningShown = true;
+            win.webContents.send("native-transport:viewer-warning", "Um espectador conectou mas o vídeo não está chegando até ele (problema de rede entre vocês).");
+          }
+        }, NT_NO_DATA_REPORT_MS),
+      );
+    }
+    if (state === "failed") {
+      ntTelemetry.counters.sessionsFailed++;
+      void sendNativeTelemetry("viewer_failed");
+    }
+    if (state === "failed" || state === "closed") {
+      const noDataTimer = ntNoDataTimers.get(viewerId);
+      if (noDataTimer) clearTimeout(noDataTimer);
+      ntNoDataTimers.delete(viewerId);
+    }
     const pendingClose = ntDisconnectTimers.get(viewerId);
     if (pendingClose && state === "connected") {
       clearTimeout(pendingClose);
@@ -1387,6 +1579,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   function attachNativeWsHandlers(ws: WebSocket): void {
     ws.on("open", () => {
       wsReconnectAttempt = 0; // conexão de verdade estabeleceu — reseta o backoff pra próxima queda
+      ntTelemetry.counters.wsOpens++;
     });
     ws.on("close", scheduleNativeWsReconnect);
     attachNativeWsMessageAndErrorHandlers(ws);
@@ -1417,6 +1610,8 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // Fase 4 "Simulcast".
       if (!createViewerSession(msg.viewerId, "high")) {
         console.error(`[native-transport] falha ao criar sessão pro espectador ${msg.viewerId}`);
+        ntTelemetry.counters.sessionCreateFailures++;
+        void sendNativeTelemetry("session_error");
       } else {
         ntViewerTiers.set(msg.viewerId, "high");
       }
@@ -1724,6 +1919,12 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   const DEVICE_RECOVERY_RETRY_MS = 1000;
 
   const testDeviceLostS = Number(process.env.OCS_TEST_DEVICE_LOST_S ?? "");
+  // Teste da falha "conecta mas nenhum vídeo chega" (encoder/GPU travada no host): `OCS_TEST_NO_VIDEO=1`
+  // captura normal mas não codifica nem manda nada — valida o relatório `viewer_no_data` e a
+  // mensagem do espectador sem precisar de uma GPU quebrada. `=nvenc` trava só o NVENC (encoder
+  // alternativo funciona) — valida a escada de recuperação (`stepEncoderRecovery`).
+  const testNoVideoMode = process.env.OCS_TEST_NO_VIDEO;
+  const isTestNoVideo = () => testNoVideoMode === "1" || (testNoVideoMode === "nvenc" && !nativeCapture?.isUsingSoftwareEncoder());
   let testDeviceLostAt: number | null = testDeviceLostS > 0 ? Date.now() + testDeviceLostS * 1000 : null;
 
   function recoverFromDeviceLost(attempt: number): void {
@@ -1742,6 +1943,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
         return;
       }
       console.error("[native-transport] não deu pra recuperar o device D3D11 — encerrando a transmissão nativa.");
+      void sendNativeTelemetry("device_lost_fatal");
       nativeCapture.destroyEncoder();
       activeWin.webContents.send("native-transport:capture-warning", null);
       activeWin.webContents.send("native-transport:error", "A GPU reiniciou (sobrecarga) e a transmissão precisou parar. Tenta de novo.");
@@ -1779,6 +1981,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // crash sem log medido jogando Rocket League). Tarefa D2: recria device → captura →
       // encoders sem fechar as sessões dos espectadores (só o vídeo congela uns segundos).
       console.error("[native-transport] device D3D11 perdido (TDR) — recriando captura e encoders.");
+      ntTelemetry.counters.deviceLost++;
       activeWin.webContents.send("native-transport:capture-warning", "A GPU reiniciou (sobrecarga) — reconectando a captura...");
       recoverFromDeviceLost(1);
       return;
@@ -1804,6 +2007,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       nativeCapture.destroyEncoderLow();
       if (!nativeCapture.initEncoder(targetFps, bitrateBps, ntActiveCodec)) {
         console.error("[native-transport] falha ao reiniciar encoder após resize — encerrando a transmissão nativa.");
+        void sendNativeTelemetry("encoder_resize_failed");
         activeWin.webContents.send("native-transport:error", "A janela mudou de tamanho e o encoder não conseguiu reiniciar. A transmissão precisou parar.");
         activeWin.webContents.send("native-transport:ended");
         stopNativeTransport();
@@ -1828,8 +2032,13 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
         stopNativeTransport();
         return;
       }
+    } else if (frame && isTestNoVideo()) {
+      dbgAcquired++;
+      ntTelemetry.counters.framesAcquired++;
+      lastFrameAt = Date.now();
     } else if (frame) {
       dbgAcquired++;
+      ntTelemetry.counters.framesAcquired++;
       lastFrameAt = Date.now();
       if (fullscreenWarningShown) {
         fullscreenWarningShown = false;
@@ -1840,34 +2049,49 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       // chamadas, já que foi inicializado com SIMULCAST_LOW_FPS bem menor que targetFps).
       const packetsHigh = nativeCapture.encodeCurrentFrame();
       const packetsLow = nativeCapture.encodeCurrentFrameLow();
-      if (packetsHigh.length === 0) dbgEncodedEmptyCalls++;
+      if (packetsHigh.length === 0) {
+        dbgEncodedEmptyCalls++;
+        ntTelemetry.counters.emptyEncodeCalls++;
+      }
       for (const packet of packetsHigh) {
         dbgEncodedPackets++;
         dbgBytes += packet.length;
+        ntTelemetry.counters.encodedPackets++;
+        ntTelemetry.counters.bytesEncoded += packet.length;
         dumpStream?.write(packet);
         const ok = nativeCapture.transportSendVideoFrame("high", packet, timestampUs);
-        if (ok) dbgSendOk++;
-        else dbgSendFail++;
+        if (ok) {
+          dbgSendOk++;
+          ntTelemetry.counters.sendOk++;
+          if (ntViewerWarningShown) {
+            ntViewerWarningShown = false;
+            activeWin.webContents.send("native-transport:viewer-warning", null);
+          }
+        } else {
+          dbgSendFail++;
+          ntTelemetry.counters.sendFail++;
+        }
       }
       for (const packet of packetsLow) {
-        nativeCapture.transportSendVideoFrame("low", packet, timestampUs);
+        if (nativeCapture.transportSendVideoFrame("low", packet, timestampUs)) ntTelemetry.counters.sendOk++;
       }
       // D1: streams H.264 paralelos, só enquanto tiver espectador neles (encoder lazy).
       if (ntViewerCompat.size > 0) {
         for (const tier of ["high-h264", "low-h264"] as const) {
           for (const packet of nativeCapture.encodeCurrentFrameTier(tier)) {
-            nativeCapture.transportSendVideoFrame(tier, packet, timestampUs);
+            if (nativeCapture.transportSendVideoFrame(tier, packet, timestampUs)) ntTelemetry.counters.sendOk++;
           }
         }
       }
-    } else {
+    } else if (!isTestNoVideo()) {
       dbgTimeouts++;
+      ntTelemetry.counters.acquireTimeouts++;
       // Tela parada: keyframe pendente (espectador acabou de entrar, trocou de tier, pediu 'K')
       // sairia só quando algo mudasse — espectador ficava com tela preta (teste A6).
       const pendingTiers: NativeStreamKey[] = ntViewerCompat.size > 0 ? ["high", "low", "high-h264", "low-h264"] : ["high", "low"];
       for (const tier of pendingTiers) {
         for (const packet of nativeCapture.encodePendingKeyframe(tier)) {
-          nativeCapture.transportSendVideoFrame(tier, packet, timestampUs);
+          if (nativeCapture.transportSendVideoFrame(tier, packet, timestampUs)) ntTelemetry.counters.sendOk++;
         }
       }
     }

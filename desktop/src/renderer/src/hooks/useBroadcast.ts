@@ -19,6 +19,7 @@ import {
   onNativeTransportState,
   onNativeTransportEncoderInfo,
   onNativeTransportCaptureWarning,
+  onNativeTransportViewerWarning,
   setNativeCursorEnabled,
   swapNativeTransportSource,
 } from "../services/nativeTransport";
@@ -62,6 +63,8 @@ export interface BroadcastInfo {
   // Aviso de captura ao vivo (só caminho nativo — hoje: jogo em tela cheia exclusiva, ver B2 em
   // docs/TASKS.md). Some sozinho quando a captura volta a receber frames.
   captureWarning?: string | null;
+  // Espectador conectado sem receber vídeo (ver main/index.ts `viewer_no_data`).
+  viewerWarning?: string | null;
   hasPassword: boolean;
 }
 
@@ -89,6 +92,7 @@ export function useBroadcast() {
   const unsubscribeNativeStateRef = useRef<(() => void) | null>(null);
   const unsubscribeNativeEncoderInfoRef = useRef<(() => void) | null>(null);
   const unsubscribeNativeCaptureWarningRef = useRef<(() => void) | null>(null);
+  const unsubscribeNativeViewerWarningRef = useRef<(() => void) | null>(null);
 
   // Assina (ou limpa, se a fonte nova não for nativa) as estatísticas de fps de captura — chamado
   // tanto no `start()` quanto no `swapSource()`, já que trocar de fonte pode entrar ou sair do
@@ -154,6 +158,9 @@ export function useBroadcast() {
         // novo se o host reiniciar em H.264 porque o viewer não decodifica HEVC.
         unsubscribeNativeCaptureWarningRef.current = onNativeTransportCaptureWarning((captureWarning) => {
           setInfo((prev) => (prev ? { ...prev, captureWarning } : prev));
+        });
+        unsubscribeNativeViewerWarningRef.current = onNativeTransportViewerWarning((viewerWarning) => {
+          setInfo((prev) => (prev ? { ...prev, viewerWarning } : prev));
         });
         unsubscribeNativeEncoderInfoRef.current = onNativeTransportEncoderInfo(({ software, hardwareMft, nvencFailure, codec }) => {
           const codecLabel = codec === "hevc" ? "HEVC" : codec === "av1" ? "AV1" : "H.264";
@@ -408,6 +415,8 @@ export function useBroadcast() {
     unsubscribeNativeEncoderInfoRef.current = null;
     unsubscribeNativeCaptureWarningRef.current?.();
     unsubscribeNativeCaptureWarningRef.current = null;
+    unsubscribeNativeViewerWarningRef.current?.();
+    unsubscribeNativeViewerWarningRef.current = null;
 
     if (isNativeTransportModeRef.current) {
       await stopNativeTransport().catch(() => {});

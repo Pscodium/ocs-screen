@@ -243,6 +243,13 @@ export function LiveCard({
         </div>
       )}
 
+      {info.viewerWarning && (
+        <div className="live-warning" role="alert">
+          <AlertIcon size={13} />
+          <span>{info.viewerWarning}</span>
+        </div>
+      )}
+
       {showPreview && <LivePreview onExpand={() => window.screenshare.viewer.open(info.viewerUrl)} />}
 
       <div className="live-stats">

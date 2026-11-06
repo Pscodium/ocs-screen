@@ -8,12 +8,23 @@ import { notifyStreamStarted } from "../services/discordNotify.js";
 import { generateIdentity, isValidSlug, normalizeSlug } from "../utils/ids.js";
 import type {
   CreateRoomRequest,
+  RoomSource,
   CreateRoomResponse,
   ListRoomsResponse,
   ViewerTokenResponse,
 } from "../types/room.js";
 
 const MAX_PASSWORD_LENGTH = 128;
+const APP_VERSION_PATTERN = /^[0-9A-Za-z.+-]{1,32}$/;
+
+// `source` novo tem prioridade; sem ele, `isWebLive` (web publicado até a 1.0.15) e, sem nenhum
+// dos dois, desktop — o app desktop já publicado não manda nada.
+function resolveRoomOrigin(body: CreateRoomRequest | undefined): { source: RoomSource; appVersion: string | null } {
+  const source: RoomSource =
+    body?.source === "web" || body?.source === "desktop" ? body.source : body?.isWebLive === true ? "web" : "desktop";
+  const appVersion = typeof body?.appVersion === "string" && APP_VERSION_PATTERN.test(body.appVersion) ? body.appVersion : null;
+  return { source, appVersion };
+}
 
 export async function roomRoutes(app: FastifyInstance): Promise<void> {
   app.get("/rooms", async (_request, reply) => {
@@ -54,6 +65,7 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
         hasPassword: room.passwordHash !== null,
         viewerCount: room.nativeMode ? getNativeViewerCount(room.id) : (liveCounts?.get(room.id) ?? null),
         viewerUrl: `${config.viewerUrl}/s/${room.id}`,
+        source: room.source,
       })),
     };
     return reply.send(response);
@@ -79,11 +91,15 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       room = createRoom(hostIdentity, request.body?.settings, slug, request.body?.nativeMode, {
         isPrivate: request.body?.isPrivate === true,
         password: password || undefined,
-      }, request.body?.isWebLive === true);
+      }, resolveRoomOrigin(request.body));
     } catch (err) {
       if (err instanceof SlugTakenError) return reply.code(409).send({ error: "slug_taken" });
       throw err;
     }
+    request.log.info(
+      { roomId: room.id, source: room.source, appVersion: room.appVersion, nativeMode: room.nativeMode, clientIp: request.ip },
+      "room created",
+    );
     const hostToken = await createHostToken(room.id, hostIdentity);
     // Sala LiveKit: host publica logo em seguida, então "sala criada" ≈ "transmissão começou".
     // Sala nativa avisa só quando o host conecta de verdade no WS de sinalização (abaixo).
@@ -122,6 +138,7 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       nativeMode: room.nativeMode,
       hasPassword: room.passwordHash !== null,
       viewerCount,
+      source: room.source,
     });
   });
 
@@ -184,11 +201,20 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
         socket.close();
         return;
       }
+      // Rastro mínimo de quem entrou/saiu (IP real via trustProxy, ver config.ts) — a mídia não
+      // passa pelo backend, então isso + POST /rooms/:id/telemetry é tudo que fica pra investigar
+      // uma transmissão que falhou.
+      const openedAt = Date.now();
+      let viewerId: string | undefined;
       if (role === "host") {
         registerHostSocket(roomId, socket);
         // Reconexões do host caem no cooldown por sala (discordNotify.ts) — só avisa uma vez.
         void notifyStreamStarted(room);
-      } else registerViewerSocket(roomId, socket);
+      } else viewerId = registerViewerSocket(roomId, socket);
+      request.log.info({ roomId, role, viewerId, clientIp: request.ip }, "native ws open");
+      socket.on("close", (code) => {
+        request.log.info({ roomId, role, viewerId, clientIp: request.ip, code, durationMs: Date.now() - openedAt }, "native ws close");
+      });
     },
   );
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { fetchActiveRooms, type RoomSummary } from "../services/backend";
+import { fetchActiveRooms, roomSourceLabel, type RoomSummary } from "../services/backend";
 import { EyeIcon, LockIcon, SearchIcon } from "./Icons";
 
 const POLL_MS = 4000;
@@ -97,6 +97,7 @@ export function RoomsBrowser({ openInNewTab, ownRoomId, onCountChange }: RoomsBr
   } else {
     body = visible.map((room) => {
       const specs = formatSettings(room.settings);
+      const source = roomSourceLabel(room.source);
       const isOwn = room.roomId === ownRoomId;
       return (
         <button key={room.roomId} className="room-row" onClick={() => open(room.roomId)}>
@@ -113,6 +114,11 @@ export function RoomsBrowser({ openInNewTab, ownRoomId, onCountChange }: RoomsBr
                 </span>
               )}
               {isOwn && <span className="room-row-own">Você</span>}
+              {source && (
+                <span className="room-row-source" title={room.source === "web" ? "Transmitindo pelo navegador" : "Transmitindo pelo app desktop"}>
+                  {source}
+                </span>
+              )}
             </span>
             <span className="room-row-meta">
               <span className="room-row-live">AO VIVO</span>

@@ -1,4 +1,5 @@
 import { fetchIceServers, type IceServerDescriptor } from "./backend";
+import { newTelemetrySessionId, selectedCandidateInfo, sendTelemetry, type TelemetryData } from "./telemetry";
 
 // Host WEB falando o MESMO protocolo do transporte nativo do app desktop (ver
 // desktop/native/transport-core/src/TransportCore.cpp e desktop/src/main/index.ts) — o espectador
@@ -35,6 +36,12 @@ const BITRATE_DECREASE = 0.75;
 const BITRATE_INCREASE = 1.05;
 const MIN_BITRATE_FRACTION = 0.2;
 const WS_RECONNECT_MAX_MS = 10_000;
+// Canal de vídeo de um espectador aberto e nenhum frame enviado pra ele depois disso = host não
+// está produzindo vídeo (encoder/GPU) — manda relatório de diagnóstico (ver services/telemetry.ts).
+const NO_DATA_REPORT_MS = 10_000;
+// Depois de recriar o encoder (paliativo, ver `recoverSilentEncoder`), espera isso antes de checar
+// de novo e, se continuar sem saída, cair pro encoder de software.
+const ENCODER_RECHECK_MS = 5_000;
 
 export interface WebNativeHostStats {
   bitrateKbps: number;
@@ -52,6 +59,8 @@ export interface WebNativeHostOptions {
   bitrateBps: number;
   fps: number;
   onViewerCount: (count: number) => void;
+  // Aviso pro host "espectador conectado sem receber vídeo" — `null` = resolvido.
+  onViewerWarning?: (message: string | null) => void;
 }
 
 interface ViewerSession {
@@ -65,6 +74,9 @@ interface ViewerSession {
   minRttPrevMs: number;
   minRttWindowStart: number;
   dropped: number;
+  framesSent: number;
+  bytesSent: number;
+  noDataTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export function isWebNativeHostSupported(): boolean {
@@ -97,6 +109,11 @@ export class WebNativeHost {
   private audioEncoder: AudioEncoder | null = null;
   private encoderConfig: VideoEncoderConfig | null = null;
   private hardwareAccelerated = false;
+  // Paliativo: encoder de hardware que aceita frames mas não devolve nada (GPU/driver travado) —
+  // depois de uma recriação sem efeito, a transmissão passa a usar o encoder de software.
+  private forceSoftwareEncoder = false;
+  private encoderRecoveryStarted = false;
+  private viewerWarningShown = false;
   private forceKeyframe = true;
   private lastKeyframeAt = -Infinity;
   private targetBitrate: number;
@@ -116,6 +133,29 @@ export class WebNativeHost {
   private statEncodeCount = 0;
   private statSince = performance.now();
 
+  // Diagnóstico acumulado da transmissão inteira — só sai do navegador num relatório por evento
+  // (falha detectada ou fim), nunca periódico.
+  private readonly telemetrySessionId = newTelemetrySessionId();
+  private readonly startedAt = performance.now();
+  private readonly reportedReasons = new Set<string>();
+  private readonly tm = {
+    wsOpens: 0,
+    framesCaptured: 0,
+    framesSkippedQueue: 0,
+    encoderConfigures: 0,
+    chunksEncoded: 0,
+    keyframesEncoded: 0,
+    bytesEncoded: 0,
+    encoderErrors: 0,
+    lastEncoderError: null as string | null,
+    encodeExceptions: 0,
+    lastEncodeException: null as string | null,
+    sessionsCreated: 0,
+    sessionsConnected: 0,
+    sessionsFailed: 0,
+    sessionErrors: 0,
+  };
+
   constructor(opts: WebNativeHostOptions) {
     this.opts = opts;
     this.targetBitrate = opts.bitrateBps;
@@ -130,10 +170,16 @@ export class WebNativeHost {
     if (audioTrack) this.runAudio(audioTrack);
     this.connectWs();
     this.adaptTimer = setInterval(() => this.adaptBitrate(), ADAPT_INTERVAL_MS);
+    // Fechar a aba não passa pelo `stop()` — relatório de fim sai mesmo assim (`keepalive`).
+    window.addEventListener("pagehide", this.onPageHide);
   }
 
+  private readonly onPageHide = (): void => this.report("end");
+
   stop(): void {
+    if (!this.stopped) this.report("end");
     this.stopped = true;
+    window.removeEventListener("pagehide", this.onPageHide);
     if (this.adaptTimer) clearInterval(this.adaptTimer);
     if (this.wsReconnectTimer) clearTimeout(this.wsReconnectTimer);
     for (const reader of this.readers) reader.cancel().catch(() => {});
@@ -171,11 +217,15 @@ export class WebNativeHost {
     while (!this.stopped) {
       const { value: frame, done } = await reader.read();
       if (done || !frame) break;
+      this.tm.framesCaptured++;
       try {
         await this.encodeVideoFrame(frame);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("[web-native-host] falha ao codificar frame:", err);
+        this.tm.encodeExceptions++;
+        this.tm.lastEncodeException = errorText(err);
+        if (this.tm.encodeExceptions === 1) this.report("encode_exception");
       } finally {
         frame.close();
       }
@@ -191,7 +241,10 @@ export class WebNativeHost {
     }
     const encoder = this.videoEncoder;
     if (!encoder || encoder.state !== "configured") return;
-    if (encoder.encodeQueueSize > MAX_ENCODE_QUEUE) return;
+    if (encoder.encodeQueueSize > MAX_ENCODE_QUEUE) {
+      this.tm.framesSkippedQueue++;
+      return;
+    }
     // Ninguém assistindo — não gasta GPU, mas o próximo espectador vai precisar de keyframe.
     if (this.sessions.size === 0) {
       this.forceKeyframe = true;
@@ -218,9 +271,9 @@ export class WebNativeHost {
       bitrateMode: "variable",
       avc: { format: "annexb" },
     };
-    let config: VideoEncoderConfig = { ...base, hardwareAcceleration: "prefer-hardware" };
+    let config: VideoEncoderConfig = { ...base, hardwareAcceleration: this.forceSoftwareEncoder ? "prefer-software" : "prefer-hardware" };
     const hw = await VideoEncoder.isConfigSupported(config);
-    this.hardwareAccelerated = hw.supported === true;
+    this.hardwareAccelerated = hw.supported === true && !this.forceSoftwareEncoder;
     if (!hw.supported) {
       config = { ...base, hardwareAcceleration: "no-preference" };
       const sw = await VideoEncoder.isConfigSupported(config);
@@ -233,6 +286,9 @@ export class WebNativeHost {
         error: (err) => {
           // eslint-disable-next-line no-console
           console.error("[web-native-host] erro no VideoEncoder:", err);
+          this.tm.encoderErrors++;
+          this.tm.lastEncoderError = errorText(err);
+          this.report("encoder_error");
           // Recria na próxima frame (encoderConfig nulo força `configureVideoEncoder`).
           this.encoderConfig = null;
           this.videoEncoder = null;
@@ -240,6 +296,7 @@ export class WebNativeHost {
       });
     }
     this.videoEncoder.configure(config);
+    this.tm.encoderConfigures++;
     this.encoderConfig = config;
     this.forceKeyframe = true;
   }
@@ -255,6 +312,9 @@ export class WebNativeHost {
     chunk.copyTo(data);
     this.statBytes += data.byteLength;
     this.statFrames++;
+    this.tm.chunksEncoded++;
+    this.tm.bytesEncoded += data.byteLength;
+    if (chunk.type === "key") this.tm.keyframesEncoded++;
 
     const timestampUs = chunk.timestamp + (this.videoTsOffsetUs ?? 0);
     const isKey = chunk.type === "key";
@@ -305,6 +365,12 @@ export class WebNativeHost {
     } catch {
       return; // canal fechando — a sessão vai ser derrubada pelo estado da conexão
     }
+    session.framesSent++;
+    if (this.viewerWarningShown) {
+      this.viewerWarningShown = false;
+      this.opts.onViewerWarning?.(null);
+    }
+    session.bytesSent += data.byteLength;
     session.inflight.push({ timestampUs, sentAt: now });
     if (session.inflight.length > MAX_INFLIGHT) session.inflight.shift();
   }
@@ -431,6 +497,7 @@ export class WebNativeHost {
     this.ws = ws;
     ws.onopen = () => {
       this.wsReconnectAttempt = 0;
+      this.tm.wsOpens++;
     };
     ws.onmessage = (event) => this.handleWsMessage(event);
     // Mesma resiliência do host desktop: backend reenvia `viewer-joined` de quem ainda estiver na
@@ -465,6 +532,8 @@ export class WebNativeHost {
       this.createSession(viewerId).catch((err) => {
         // eslint-disable-next-line no-console
         console.error(`[web-native-host] falha ao criar sessão pro espectador ${viewerId}:`, err);
+        this.tm.sessionErrors++;
+        this.report("session_error", { error: errorText(err) });
         this.closeSession(viewerId);
       });
     } else if (msg.type === "viewer-left") {
@@ -498,10 +567,35 @@ export class WebNativeHost {
       minRttPrevMs: Infinity,
       minRttWindowStart: performance.now(),
       dropped: 0,
+      framesSent: 0,
+      bytesSent: 0,
+      noDataTimer: null,
     };
     this.sessions.set(viewerId, session);
+    this.tm.sessionsCreated++;
 
-    video.onopen = () => this.requestKeyframe();
+    video.onopen = () => {
+      this.requestKeyframe();
+      const chunksAtOpen = this.tm.chunksEncoded;
+      session.noDataTimer = setTimeout(() => {
+        session.noDataTimer = null;
+        if (this.stopped || this.sessions.get(viewerId) !== session || session.framesSent > 0) return;
+        const encodedSinceOpen = this.tm.chunksEncoded - chunksAtOpen;
+        void selectedCandidateInfo(pc).then((ice) =>
+          this.report("viewer_no_data", { ...ice, viewerBufferedAmount: video.bufferedAmount, encodedSinceOpen }),
+        );
+        // Encoder sem saída nenhuma = problema do encoder (não de rede) — tenta se recuperar.
+        const willRecover = encodedSinceOpen === 0 && !this.encoderRecoveryStarted;
+        this.showViewerWarning(
+          willRecover
+            ? "Um espectador conectou mas não está recebendo vídeo — reiniciando o encoder..."
+            : encodedSinceOpen === 0
+              ? "O encoder de vídeo do navegador parou de responder. Encerre e inicie a transmissão de novo; se repetir, reinicie o navegador."
+              : "Um espectador conectou mas o vídeo não está chegando até ele (problema de rede entre vocês).",
+        );
+        if (encodedSinceOpen === 0) this.recoverSilentEncoder();
+      }, NO_DATA_REPORT_MS);
+    };
     video.onmessage = (event) => this.handleVideoFeedback(session, event.data as ArrayBuffer);
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -509,6 +603,11 @@ export class WebNativeHost {
       }
     };
     pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "connected") this.tm.sessionsConnected++;
+      if (pc.connectionState === "failed") {
+        this.tm.sessionsFailed++;
+        this.report("viewer_failed");
+      }
       if (pc.connectionState === "failed" || pc.connectionState === "closed") this.closeSession(viewerId);
       this.emitViewerCount();
     };
@@ -522,9 +621,60 @@ export class WebNativeHost {
     const session = this.sessions.get(viewerId);
     if (!session) return;
     this.sessions.delete(viewerId);
+    if (session.noDataTimer) clearTimeout(session.noDataTimer);
     session.pc.onconnectionstatechange = null;
     session.pc.close();
     this.emitViewerCount();
+  }
+
+  private showViewerWarning(message: string): void {
+    this.viewerWarningShown = true;
+    this.opts.onViewerWarning?.(message);
+  }
+
+  // Paliativo do "conecta mas nenhum vídeo chega": 1º recria o encoder (mesma config); se em
+  // ENCODER_RECHECK_MS continuar sem saída, recria em software. Uma vez por transmissão.
+  private recoverSilentEncoder(): void {
+    if (this.encoderRecoveryStarted) return;
+    this.encoderRecoveryStarted = true;
+    const restart = (reason: string) => {
+      if (this.videoEncoder && this.videoEncoder.state !== "closed") this.videoEncoder.close();
+      this.videoEncoder = null;
+      this.encoderConfig = null; // próximo frame chama configureVideoEncoder
+      this.forceKeyframe = true;
+      for (const session of this.sessions.values()) session.waitingKeyframe = true;
+      this.report(reason, { forceSoftware: this.forceSoftwareEncoder });
+    };
+    restart("encoder_restart");
+    const chunksAtRestart = this.tm.chunksEncoded;
+    setTimeout(() => {
+      if (this.stopped || this.tm.chunksEncoded > chunksAtRestart) return;
+      this.forceSoftwareEncoder = true;
+      restart("encoder_software_fallback");
+      this.showViewerWarning("O encoder de vídeo por hardware não respondeu — usando o de software (mais pesado pra CPU)...");
+    }, ENCODER_RECHECK_MS);
+  }
+
+  // Um relatório por motivo por transmissão — falha repetida (ex.: todo espectador sem vídeo) não
+  // vira enxurrada de requisições.
+  private report(reason: string, extra: TelemetryData = {}): void {
+    if (this.reportedReasons.has(reason)) return;
+    this.reportedReasons.add(reason);
+    sendTelemetry(this.opts.roomId, "host", reason, this.telemetrySessionId, {
+      ...this.tm,
+      elapsedMs: Math.round(performance.now() - this.startedAt),
+      codec: this.encoderConfig?.codec ?? null,
+      width: this.encoderConfig?.width ?? null,
+      height: this.encoderConfig?.height ?? null,
+      fps: this.opts.fps,
+      targetBitrateBps: this.targetBitrate,
+      currentBitrateBps: this.currentBitrate,
+      hardwareAccelerated: this.hardwareAccelerated,
+      encoderState: this.videoEncoder?.state ?? null,
+      viewersNow: this.sessions.size,
+      visibility: document.visibilityState,
+      ...extra,
+    });
   }
 
   private emitViewerCount(): void {
@@ -532,4 +682,8 @@ export class WebNativeHost {
     for (const session of this.sessions.values()) if (session.pc.connectionState === "connected") connected++;
     this.opts.onViewerCount(connected);
   }
+}
+
+function errorText(err: unknown): string {
+  return (err instanceof Error ? `${err.name}: ${err.message}` : String(err)).slice(0, 200);
 }

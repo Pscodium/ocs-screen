@@ -5,8 +5,11 @@ import websocket from "@fastify/websocket";
 import { config } from "./config.js";
 import { roomRoutes } from "./routes/rooms.js";
 import { discordRoutes } from "./routes/discord.js";
+import { telemetryRoutes } from "./routes/telemetry.js";
 
-const app = Fastify({ logger: true });
+const app = Fastify({ logger: true, // Confia só nos N saltos mais próximos (ver `trustProxyHops` em config.ts).
+  trustProxy: (_address: string, hop: number) => hop < config.trustProxyHops,
+});
 
 // Rede de segurança: um erro não tratado aqui derruba o processo inteiro (Node mata o processo em
 // "uncaughtException"/"unhandledRejection" por padrão), o que mata TODA transmissão ativa na
@@ -29,6 +32,7 @@ app.get("/health", async () => ({ status: "ok" }));
 
 await app.register(roomRoutes);
 await app.register(discordRoutes);
+await app.register(telemetryRoutes);
 
 try {
   await app.listen({ port: config.port, host: config.host });

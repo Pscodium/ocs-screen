@@ -601,6 +601,18 @@ body {
   }
 }
 
+.live-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 7px;
+  background: color-mix(in srgb, #f0b132 12%, transparent);
+  border: 1px solid color-mix(in srgb, #f0b132 40%, transparent);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
 .live-stats-warning {
   color: #f0b132;
 }
@@ -1061,6 +1073,17 @@ body {
 .room-row-own {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   color: #c9cdfb;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.room-row-source {
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--muted);
   font-size: 0.62rem;
   font-weight: 700;
   padding: 0.05rem 0.4rem;

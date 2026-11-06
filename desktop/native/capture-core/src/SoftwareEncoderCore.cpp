@@ -1,4 +1,5 @@
 #include "SoftwareEncoderCore.h"
+#include "EncoderCore.h" // SetEncoderFallbackLevel/GetEncoderFallbackLevel
 #include <windows.h>
 #include <mferror.h>
 #include <d3d11_4.h> // ID3D11Multithread
@@ -39,7 +40,8 @@ bool SoftwareEncoderCore::Initialize(ID3D11Device* device, ID3D11DeviceContext* 
     context_ = context;
 
     // `OCS_NO_HW_MFT=1` pula o hardware (testar o caminho de CPU numa máquina que tem hardware).
-    const bool allowHardware = !getenv("OCS_NO_HW_MFT");
+    // `SetEncoderFallbackLevel(2)` (paliativo do main) é o mesmo em tempo real.
+    const bool allowHardware = !getenv("OCS_NO_HW_MFT") && GetEncoderFallbackLevel() < 2;
     if (allowHardware && TryInitialize(device, bitrateBps, codec, true)) {
         fprintf(stderr, "[SoftwareEncoderCore] usando MFT de HARDWARE (zero-copy).\n");
         return true;

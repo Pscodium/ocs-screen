@@ -30,6 +30,10 @@ bool EncoderCore::KeyframePending() const {
     return forceKeyframe_.load(std::memory_order_relaxed);
 }
 
+static std::atomic<int> g_fallbackLevel{0};
+void SetEncoderFallbackLevel(int level) { g_fallbackLevel.store(level < 0 ? 0 : level > 2 ? 2 : level); }
+int GetEncoderFallbackLevel() { return g_fallbackLevel.load(); }
+
 EncoderCore::~EncoderCore() {
     Destroy();
 }
@@ -45,7 +49,7 @@ bool EncoderCore::Initialize(ID3D11Device* device, int width, int height, int fp
     activeCodec_ = codec;
     nvencFailure_ = NvencFailure::None;
     // `OCS_FORCE_MF=1` pula o NVENC — testar o fallback do Media Foundation numa máquina NVIDIA.
-    if (getenv("OCS_FORCE_MF")) {
+    if (getenv("OCS_FORCE_MF") || GetEncoderFallbackLevel() >= 1) {
         nvencFailure_ = NvencFailure::Disabled;
     } else if (InitializeNvenc(device, width, height, fps, bitrateBps, codec)) return true;
 

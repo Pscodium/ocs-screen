@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConnectionState } from "livekit-client";
-import { fetchIceServers, openNativeSignalingSocket, type NativeVideoCodec } from "../services/backend";
+import { fetchIceServers, openNativeSignalingSocket, roomExists, type NativeVideoCodec } from "../services/backend";
 import type { ConnectionPhase, StreamStats } from "./useRoomStream";
 import { PLAYOUT_DELAY_MAX_MS } from "./useRoomStream";
 import { PlayoutClock } from "../services/playoutClock";
 import { NativeAudioPlayer } from "../services/nativeAudioPlayer";
 import { VideoPresenter } from "../services/videoPresenter";
+import { newTelemetrySessionId, selectedCandidateInfo, sendTelemetry, type TelemetryData } from "../services/telemetry";
 
 const STATS_POLL_MS = 2000;
 // Piso de "suavização" do caminho nativo — 0 = só o buffer adaptativo (`PlayoutClock` já cobre o
@@ -18,6 +19,13 @@ const KEYFRAME_REQUEST_INTERVAL_MS = 1000;
 // é recuperado recriando o decoder + keyframe; vários seguidos = decoder/dispositivo incompatível.
 const DECODER_ERROR_LIMIT = 3;
 const DECODER_ERROR_WINDOW_MS = 10_000;
+// Sem DataChannel de vídeo aberto depois disso = negociação/ICE travada — manda relatório (a UI
+// continua "conectando", só o diagnóstico sai).
+const NOT_CONNECTED_REPORT_MS = 20_000;
+// Conexão com o host caiu depois de já estar assistindo: espera o host voltar (queda de rede,
+// app reaberto na mesma sala) até isso antes de declarar "transmissão encerrada". Sala apagada
+// (host encerrou de propósito) encerra na hora, sem esperar.
+const RECOVERY_DEADLINE_MS = 60_000;
 
 // Espectador do transporte nativo (libdatachannel, ver docs/NATIVE_CAPTURE.md Fase 4) —
 // `RTCPeerConnection` cru do navegador (sem livekit-client) + vídeo por DATACHANNEL (não RTP
@@ -73,7 +81,54 @@ export function useNativeStream(roomId: string, password?: string) {
     // canal (`handleDataChannel` abaixo) lançava um `ReferenceError` não capturado — silencioso
     // pro usuário (só aparece no console), a UI nunca saía do estado "conectando". Falha cedo e
     // visível em vez de travar pra sempre.
+    // Setado ANTES do canal de vídeo abrir de verdade (só abre depois do SDP fechar) — o handler
+    // de `ondatachannel` mais abaixo lê essa variável já com o valor certo.
+    let negotiatedCodec: NativeVideoCodec = "h264";
+
+    // Diagnóstico (ver services/telemetry.ts) — contadores acumulados da sessão inteira, mandados
+    // pro backend só quando algo dá errado ou a sessão termina. Nada aqui gera tráfego por frame.
+    const telemetrySessionId = newTelemetrySessionId();
+    const sessionStartedAt = performance.now();
+    const sinceStart = () => Math.round(performance.now() - sessionStartedAt);
+    const tm = {
+      wsOpens: 0,
+      offers: 0,
+      answersSent: 0,
+      remoteCandidates: 0,
+      pcState: "new" as string,
+      iceState: "new" as string,
+      connectedAtMs: null as number | null,
+      videoChannelOpenAtMs: null as number | null,
+      audioChannel: false,
+      videoMessages: 0,
+      videoBytes: 0,
+      keyframesReceived: 0,
+      framesDecoded: 0,
+      firstFrameAtMs: null as number | null,
+      decoderErrors: 0,
+      lastDecoderError: null as string | null,
+      recoveries: 0,
+      ice: {} as TelemetryData,
+    };
+    const reportedReasons = new Set<string>();
+    const report = (reason: string, extra: TelemetryData = {}) => {
+      if (reportedReasons.has(reason)) return;
+      reportedReasons.add(reason);
+      const { ice, ...counters } = tm;
+      sendTelemetry(roomId, "viewer", reason, telemetrySessionId, {
+        ...counters,
+        ...ice,
+        codec: negotiatedCodec,
+        elapsedMs: sinceStart(),
+        webCodecs: typeof VideoDecoder !== "undefined",
+        trackGenerator: typeof MediaStreamTrackGenerator !== "undefined",
+        visibility: document.visibilityState,
+        ...extra,
+      });
+    };
+
     if (typeof MediaStreamTrackGenerator === "undefined" || typeof VideoDecoder === "undefined") {
+      report("unsupported");
       setError("Este navegador não suporta os recursos necessários (WebCodecs) para assistir a essa transmissão. Tente um Chrome/Edge recente.");
       setPhase("error");
       return () => {
@@ -98,9 +153,6 @@ export function useNativeStream(roomId: string, password?: string) {
       presenter.enqueue(writer, frame, now + Math.max(0, waitMs));
     }
 
-    // Setado ANTES do canal de vídeo abrir de verdade (só abre depois do SDP fechar) — o handler
-    // de `ondatachannel` mais abaixo lê essa variável já com o valor certo.
-    let negotiatedCodec: NativeVideoCodec = "h264";
 
     // Compartilhado entre vídeo e áudio, e entre RECRIAÇÕES de `pc` (ver `setupPeerConnection`
     // abaixo) — os dois canais podem abrir em qualquer ordem (áudio é opcional, só existe se a
@@ -141,9 +193,20 @@ export function useNativeStream(roomId: string, password?: string) {
     function setupPeerConnection(): RTCPeerConnection {
       const next = new RTCPeerConnection({ iceServers: latestIceServers });
 
+      next.oniceconnectionstatechange = () => {
+        if (pc === next) tm.iceState = next.iceConnectionState;
+      };
       next.onconnectionstatechange = () => {
         if (pc !== next) return; // pc antigo sendo fechado/substituído — ignora eco tardio
-        if (next.connectionState === "connected") everConnected = true;
+        tm.pcState = next.connectionState;
+        if (next.connectionState === "connected") {
+          everConnected = true;
+          if (tm.connectedAtMs === null) tm.connectedAtMs = sinceStart();
+          void selectedCandidateInfo(next).then((info) => {
+            tm.ice = info;
+          });
+        }
+        if (next.connectionState === "failed") report("ice_failed");
         const map: Record<RTCPeerConnectionState, ConnectionState> = {
           new: ConnectionState.Connecting,
           connecting: ConnectionState.Connecting,
@@ -152,9 +215,11 @@ export function useNativeStream(roomId: string, password?: string) {
           failed: ConnectionState.Disconnected,
           closed: ConnectionState.Disconnected,
         };
-        setConnectionState(map[next.connectionState]);
+        // Durante a recuperação o estado fica "Reconectando..." até o vídeo voltar (o `pc` velho
+        // chegando em "failed" no meio dela não pode tirar o aviso da tela).
+        if (!recovering) setConnectionState(map[next.connectionState]);
         if (next.connectionState === "failed" || next.connectionState === "closed") {
-          if (!cancelled) setPhase("ended");
+          startRecovery(`pc_${next.connectionState}`);
         }
       };
 
@@ -171,17 +236,72 @@ export function useNativeStream(roomId: string, password?: string) {
     // WS de sinalização (ver backend/src/services/nativeWsRelay.ts e desktop/src/main/index.ts,
     // lado espelhado do host) — substitui o REST+polling anterior.
     //
-    // Resiliência (item pendente do CLAUDE.md §Infraestrutura) — reconecta com backoff só ENQUANTO
-    // a negociação inicial ainda não terminou (`everConnected` continua `false`): é a janela real
-    // de risco (rede flakey bem no início). Depois de conectado, o DataChannel de mídia é
-    // independente do WS — perder a sinalização não derruba o vídeo/áudio já fluindo. Não tenta
-    // reagir a uma renegociação do host DEPOIS de já conectado (ex.: host caiu e voltou) — isso
-    // continua exigindo remontar o player (mesma limitação documentada desde o Sprint 23), só a
-    // fase de handshake inicial ficou resiliente.
+    // Resiliência — reconecta o WS com backoff enquanto a negociação inicial não terminou
+    // (`everConnected` false) OU durante uma recuperação (`recovering`, ver `startRecovery`).
+    // Assistindo normalmente, o DataChannel de mídia é independente do WS — perder só a
+    // sinalização não derruba o vídeo, então não reconecta à toa (reconectar = `viewerId` novo =
+    // o host derrubaria a sessão que está funcionando).
     let ws = openNativeSignalingSocket(roomId, password);
     let everConnected = false;
     let wsReconnectAttempt = 0;
     let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // Recuperação depois de já estar assistindo (host caiu e voltou, rede piscou): mantém o
+    // `<video>` com o último frame + "Reconectando...", reabre a sinalização (o host ganha um
+    // `viewer-joined` e manda um offer novo — cada offer já recria o `pc`, ver `handleWsMessage`)
+    // e só desiste se a sala sumiu ou passou RECOVERY_DEADLINE_MS. O 1º frame do canal novo
+    // encerra a recuperação (`finishRecovery`).
+    let recovering = false;
+    let recoveryDeadline: ReturnType<typeof setTimeout> | null = null;
+
+    const endStream = () => {
+      if (cancelled) return;
+      recovering = false;
+      if (recoveryDeadline) clearTimeout(recoveryDeadline);
+      recoveryDeadline = null;
+      report("end");
+      setPhase("ended");
+    };
+
+    const reopenSignaling = () => {
+      if (cancelled) return;
+      if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+      }
+      const old = ws;
+      old.onclose = null;
+      old.onerror = null;
+      old.onmessage = null;
+      old.close();
+      ws = openNativeSignalingSocket(roomId, password);
+      attachWsHandlers(ws);
+    };
+
+    function startRecovery(reason: string): void {
+      if (cancelled || recovering) return;
+      recovering = true;
+      tm.recoveries++;
+      report("connection_lost", { lostReason: reason });
+      setConnectionState(ConnectionState.Reconnecting);
+      recoveryDeadline = setTimeout(endStream, RECOVERY_DEADLINE_MS);
+      void roomExists(roomId).then((exists) => {
+        if (cancelled || !recovering) return;
+        if (exists === false) endStream();
+        else reopenSignaling();
+      });
+    }
+
+    function finishRecovery(): void {
+      if (!recovering) return;
+      recovering = false;
+      if (recoveryDeadline) clearTimeout(recoveryDeadline);
+      recoveryDeadline = null;
+      reportedReasons.delete("connection_lost"); // próxima queda também é relatada
+      report("reconnected");
+      reportedReasons.delete("reconnected");
+      setConnectionState(ConnectionState.Connected);
+    }
 
     const sendWhenOpen = (payload: Record<string, unknown>): void => {
       const json = JSON.stringify(payload);
@@ -193,20 +313,30 @@ export function useNativeStream(roomId: string, password?: string) {
     function attachWsHandlers(socket: WebSocket): void {
       socket.onopen = () => {
         wsReconnectAttempt = 0;
+        tm.wsOpens++;
       };
       socket.onmessage = handleWsMessage;
       socket.onerror = () => {
         if (cancelled) return;
+        report("signaling_error");
+        // Já assistindo/recuperando: o `onclose` seguinte cuida (reconexão ou fim) — não vira erro.
+        if (everConnected) return;
         setError("Erro na sinalização com o host.");
         setPhase("error");
       };
       socket.onclose = () => {
-        if (cancelled || everConnected || wsReconnectTimer) return;
+        if (cancelled || (everConnected && !recovering) || wsReconnectTimer) return;
         const delayMs = Math.min(10_000, 1000 * 2 ** wsReconnectAttempt);
         wsReconnectAttempt++;
-        wsReconnectTimer = setTimeout(() => {
+        wsReconnectTimer = setTimeout(async () => {
           wsReconnectTimer = null;
-          if (cancelled || everConnected) return;
+          if (cancelled || (everConnected && !recovering)) return;
+          // Backend fecha o WS na hora quando a sala não existe mais — host encerrou.
+          if (recovering && (await roomExists(roomId)) === false) {
+            endStream();
+            return;
+          }
+          if (cancelled) return;
           ws = openNativeSignalingSocket(roomId, password);
           attachWsHandlers(ws);
         }, delayMs);
@@ -227,6 +357,7 @@ export function useNativeStream(roomId: string, password?: string) {
             log?.push({ atMs: performance.now(), ...stats, bufferMs: playout.bufferMs });
           };
         }
+        tm.audioChannel = true;
         const player = audioPlayer;
         if (videoRef.current) player.attachVideoElement(videoRef.current);
         setHasAudio(true);
@@ -275,6 +406,13 @@ export function useNativeStream(roomId: string, password?: string) {
       // aqui, o problema real tá em outro lugar (upstream: encoder/rate-control, ver notas em
       // EncoderCore.cpp sobre VBV).
       teardownVideoChannel?.();
+      if (tm.videoChannelOpenAtMs === null) tm.videoChannelOpenAtMs = sinceStart();
+      // Canal fecha na hora quando o host encerra ou cai (o `pc` só vira "failed" ~30s depois) —
+      // a recuperação confere se a sala ainda existe: não existe = encerrou de propósito.
+      const channelPc = pc;
+      channel.addEventListener("close", () => {
+        if (!cancelled && pc === channelPc) startRecovery("channel_closed");
+      });
       const generator = new MediaStreamTrackGenerator<VideoFrame>({ kind: "video" });
       const writer = generator.writable.getWriter();
       currentVideoTrack?.stop();
@@ -292,10 +430,26 @@ export function useNativeStream(roomId: string, password?: string) {
       // (ex.: `decode()` engolido no catch de `channel.onmessage` sem NUNCA chamar `output`, sem
       // nunca fechar o decoder de propósito). Sem isso, o único jeito de perceber que a tela
       // ficou preta pra sempre era o usuário reportar depois de esperar sem saber se ia carregar.
+      //
+      // A mensagem distingue "nada chegou" (conexão aberta, 0 bytes — o host não está mandando
+      // vídeo: encoder/GPU ou rede de quem transmite) de "chegou mas não decodificou" (aí sim é o
+      // navegador/dispositivo de quem assiste). Antes tudo virava "navegador não suporta" — caso
+      // real: host com problema e espectadores no Chrome achando que o navegador deles era o culpado.
       const noFrameTimeout = setTimeout(() => {
         if (!cancelled && !gotFirstFrame) {
-          setError("Não foi possível exibir o vídeo neste navegador/dispositivo. Tente um Chrome/Edge em Windows, Mac ou Android.");
-          setPhase("error");
+          const nothingArrived = tm.videoBytes === 0;
+          report(nothingArrived ? "no_data" : "no_frame");
+          setError(
+            nothingArrived
+              ? "A conexão com quem está transmitindo abriu, mas nenhum vídeo chegou. O problema provavelmente está do lado de quem transmite — peça para encerrar e iniciar a transmissão de novo."
+              : tm.keyframesReceived === 0
+                ? "O vídeo está chegando, mas sem nenhum quadro completo (keyframe) de quem transmite. Peça para encerrar e iniciar a transmissão de novo."
+                : "Não foi possível exibir o vídeo neste navegador/dispositivo. Tente um Chrome/Edge em Windows, Mac ou Android.",
+          );
+          // Lado do host (nada chegou / sem keyframe): continua "conectando" com a mensagem por
+          // cima — o `<video>` fica montado e, se o host se recuperar (paliativo do encoder), o 1º
+          // frame limpa o erro sozinho. Só o caso de decode local vira erro definitivo.
+          if (!nothingArrived && tm.keyframesReceived > 0) setPhase("error");
         }
       }, 12000);
       // Enquanto o 1º keyframe não chega, repete o pedido — o pedido feito na abertura do canal
@@ -354,8 +508,16 @@ export function useNativeStream(roomId: string, password?: string) {
       const createDecoder = (): VideoDecoder => {
         const created = new VideoDecoder({
           output: (frame) => {
+            tm.framesDecoded++;
             if (!gotFirstFrame) {
               gotFirstFrame = true;
+              finishRecovery();
+              if (tm.firstFrameAtMs === null) tm.firstFrameAtMs = sinceStart();
+              // Host pode se recuperar depois do watchdog já ter mostrado "nenhum vídeo chegou"
+              // (paliativo de recriar o encoder, ver webNativeHost.ts/main) — o canal continua
+              // aberto, então o 1º frame que chegar limpa o erro.
+              if (tm.firstFrameAtMs > 12000) report("recovered_after_error");
+              setError(null);
               clearTimeout(noFrameTimeout);
               width = frame.displayWidth;
               height = frame.displayHeight;
@@ -378,11 +540,14 @@ export function useNativeStream(roomId: string, password?: string) {
             // aí é incompatibilidade real do decoder/dispositivo (ex.: iPhone, ver histórico).
             // eslint-disable-next-line no-console
             console.error("[native-stream] erro no VideoDecoder:", e);
+            tm.decoderErrors++;
+            tm.lastDecoderError = (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 200);
             const now = performance.now();
             decoderErrorTimes.push(now);
             while (decoderErrorTimes.length && now - decoderErrorTimes[0] > DECODER_ERROR_WINDOW_MS) decoderErrorTimes.shift();
             if (cancelled) return;
             if (decoderErrorTimes.length >= DECODER_ERROR_LIMIT) {
+              report("decode_error");
               setError(
                 `Falha ao decodificar o vídeo neste navegador/dispositivo (${e instanceof Error ? e.message : String(e)}). Tente um Chrome/Edge em Windows, Mac ou Android.`,
               );
@@ -428,6 +593,9 @@ export function useNativeStream(roomId: string, password?: string) {
           fragments = [];
         }
         bytesReceived += payload.byteLength;
+        tm.videoMessages++;
+        tm.videoBytes += payload.byteLength;
+        if (isKeyframe) tm.keyframesReceived++;
 
         try {
           channel.send(new Uint8Array(buffer, 1, 8).slice());
@@ -489,6 +657,7 @@ export function useNativeStream(roomId: string, password?: string) {
       }
 
       if (msg.type === "offer" && msg.sdp) {
+        tm.offers++;
         // Todo offer (o primeiro OU uma renegociação — ver comentário grande acima de
         // `setupPeerConnection`) recria o `RTCPeerConnection` do zero. Fecha o antigo primeiro:
         // sem isso, o `pc` velho ficaria pendurado gerando candidatos ICE e trocando estado sem
@@ -516,8 +685,10 @@ export function useNativeStream(roomId: string, password?: string) {
             await activePc.setLocalDescription(answer);
             if (!activePc.localDescription) throw new Error("Falha ao gerar resposta SDP.");
             sendWhenOpen({ type: "answer", sdp: activePc.localDescription.sdp, decoderOk });
+            tm.answersSent++;
           } catch (err) {
             if (cancelled || activePc !== pc) return; // sessão já foi substituída por outra renegociação — erro é do pc velho, ignora
+            report("negotiation_error", { error: (err instanceof Error ? err.message : String(err)).slice(0, 200) });
             setError(err instanceof Error ? err.message : "Erro ao conectar na transmissão nativa.");
             setPhase("error");
           }
@@ -527,13 +698,28 @@ export function useNativeStream(roomId: string, password?: string) {
         // outros estavam bem — ver `demoteCongestedHighViewers` em desktop/src/main/index.ts).
         setQualityState(msg.tier);
       } else if (msg.type === "ice" && msg.candidate) {
+        tm.remoteCandidates++;
         pc?.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.mid ?? "0" }).catch(() => {});
       }
     }
 
     attachWsHandlers(ws);
 
+    const notConnectedTimer = setTimeout(() => {
+      if (!cancelled && tm.videoChannelOpenAtMs === null) report("not_connected");
+    }, NOT_CONNECTED_REPORT_MS);
+
+    // Fechar a aba não roda o cleanup do React — `pagehide` cobre esse caso (o `keepalive` do
+    // fetch deixa o relatório sair mesmo com a página indo embora).
+    const onPageHide = () => report("end");
+    window.addEventListener("pagehide", onPageHide);
+
     return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      if (recoveryDeadline) clearTimeout(recoveryDeadline);
+      // Montagem descartada na hora (StrictMode em dev) não vira relatório.
+      if (tm.wsOpens > 0 || sinceStart() > 2000) report("end");
+      clearTimeout(notConnectedTimer);
       cancelled = true;
       sendMessageRef.current = null;
       if (wsReconnectTimer) clearTimeout(wsReconnectTimer);

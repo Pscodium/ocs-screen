@@ -32,6 +32,8 @@ export async function createRoom(
       nativeMode,
       isPrivate: access.isPrivate,
       password: access.password || undefined,
+      source: "desktop",
+      appVersion: __APP_VERSION__,
     }),
   });
   if (!res.ok) {
@@ -54,6 +56,15 @@ export interface RoomSummary {
   settings?: Pick<StreamSettings, "resolution" | "fps" | "quality">;
   // null quando o backend não consegue saber (LiveKit fora do ar).
   viewerCount?: number | null;
+  // De onde o host transmite. Ausente em backend antigo (aí a UI não mostra a origem).
+  source?: "desktop" | "web";
+}
+
+// Rótulo curto da origem da transmissão (campo `source` do backend).
+export function roomSourceLabel(source: RoomSummary["source"]): string | null {
+  if (source === "desktop") return "App";
+  if (source === "web") return "Navegador";
+  return null;
 }
 
 export async function fetchActiveRooms(): Promise<RoomSummary[]> {

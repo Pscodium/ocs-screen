@@ -203,6 +203,12 @@ const api = {
       ipcRenderer.on("native-transport:capture-warning", listener);
       return () => ipcRenderer.removeListener("native-transport:capture-warning", listener);
     },
+    // Aviso "espectador conectado sem receber vídeo" (ver `viewer_no_data` no main) — `null` = resolvido.
+    onViewerWarning: (callback: (message: string | null) => void) => {
+      const listener = (_event: IpcRendererEvent, message: string | null) => callback(message);
+      ipcRenderer.on("native-transport:viewer-warning", listener);
+      return () => ipcRenderer.removeListener("native-transport:viewer-warning", listener);
+    },
     onEncoderInfo: (callback: (info: { software: boolean; hardwareMft: boolean; nvencFailure: "none" | "no-driver" | "driver-too-old" | "other" | "disabled"; codec: "h264" | "hevc" | "av1" }) => void) => {
       const listener = (_event: IpcRendererEvent, info: { software: boolean; hardwareMft: boolean; nvencFailure: "none" | "no-driver" | "driver-too-old" | "other" | "disabled"; codec: "h264" | "hevc" | "av1" }) =>
         callback(info);

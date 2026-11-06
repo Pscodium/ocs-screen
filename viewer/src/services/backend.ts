@@ -29,6 +29,8 @@ export async function createRoom(
       isPrivate: access.isPrivate,
       password: access.password || undefined,
       nativeMode,
+      source: "web",
+      // Legado — backend em produção antes do `source` só entende isso. Pode sair depois do deploy.
       isWebLive: true,
     }),
   });
@@ -51,6 +53,15 @@ export interface RoomSummary {
   settings?: Pick<StreamSettings, "resolution" | "fps" | "quality">;
   // null quando o backend não consegue saber (LiveKit fora do ar).
   viewerCount?: number | null;
+  // De onde o host transmite. Ausente em backend antigo (aí a UI não mostra a origem).
+  source?: "desktop" | "web";
+}
+
+// Rótulo curto da origem da transmissão (campo `source` do backend).
+export function roomSourceLabel(source: RoomSummary["source"]): string | null {
+  if (source === "desktop") return "App";
+  if (source === "web") return "Navegador";
+  return null;
 }
 
 export async function fetchActiveRooms(): Promise<RoomSummary[]> {
@@ -88,6 +99,18 @@ export async function fetchRoomInfo(roomId: string): Promise<RoomInfo> {
   const res = await fetch(`${backendUrl}/rooms/${roomId}`);
   if (!res.ok) throw new Error("Sala não encontrada ou encerrada.");
   return res.json();
+}
+
+// true/false = sala existe/não existe (404); null = não deu pra saber (rede) — quem chama trata
+// null como "talvez exista" e não encerra nada por causa disso.
+export async function roomExists(roomId: string): Promise<boolean | null> {
+  try {
+    const res = await fetch(`${backendUrl}/rooms/${roomId}`);
+    if (res.status === 404) return false;
+    return res.ok ? true : null;
+  } catch {
+    return null;
+  }
 }
 
 export interface IceServerDescriptor {

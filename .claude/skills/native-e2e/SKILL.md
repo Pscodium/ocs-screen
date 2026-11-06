@@ -99,6 +99,17 @@ ACK_DELAY_TEST=1 NODE_PATH=... node .../e2e-run.js 15 60    # congestionamento s
 Outras variantes:
 
 ```sh
+VIEWERS=2 NODE_PATH=... node .../e2e-run.js 12 60                   # N espectadores (extras: fps/latência)
+OCS_TEST_NO_VIDEO=1 NODE_PATH=... node .../e2e-run.js 5 60          # host conecta mas não manda vídeo
+OCS_TEST_NO_VIDEO=nvenc NODE_PATH=... node .../e2e-run.js 6 60      # só o NVENC "travado" → escada de recuperação
+```
+
+`OCS_TEST_NO_VIDEO` valida a telemetria (`viewer_no_data` no host, `no_data` no espectador — linhas
+`native telemetry` no log do backend) e a escada do paliativo (`encoder_restart` →
+`encoder_fallback_mf` → `encoder_fallback_cpu`). Com `=1` o E2E termina em timeout esperando vídeo
+(esperado); com `=nvenc` o vídeo volta em ~16s pelo MFT de hardware.
+
+```sh
 NO_DECODE=hevc CODEC=hevc NODE_PATH=... node .../e2e-run.js 8 60   # espectador sem suporte → fallback
 NODE_PATH=... node .../codec-fallback-test.js hevc                  # A assistindo + B sem suporte
 E2E_ALL_LOGS=1 E2E_HOST_LOG=<scratch>/host.log ...                  # log inteiro do host em arquivo

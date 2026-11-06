@@ -25,6 +25,7 @@
 //   SWAP_AT=<s> SWAP_HWND=<h> | SWAP_MONITOR=<i>  troca de fonte ao vivo no segundo <s>
 //   UNMUTE=1              desmuta o espectador (áudio tocando de verdade no Chrome do viewer)
 //   HWND=<handle>         transmite essa JANELA (WGC) em vez do monitor — ex.: a do gamesim
+//   VIEWERS=<n>           nº de espectadores (padrão 1); os extras só medem fps/latência/judder
 const path = require("path");
 const { _electron, chromium } = require("playwright-core");
 
@@ -34,6 +35,27 @@ const SECONDS = Number(process.argv[2] ?? 20);
 const FPS = Number(process.argv[3] ?? 60);
 const BACKEND = process.env.BACKEND ?? "http://127.0.0.1:4100";
 const VIEWER = process.env.VIEWER ?? "http://localhost:5199";
+const VIEWERS = Math.max(1, Number(process.env.VIEWERS ?? 1));
+
+// Medição por frame exibido (requestVideoFrameCallback) — igual pra todo espectador.
+const MEASURE = () => {
+  const v = document.querySelector("video");
+  window.__m = { intervals: [], mediaTimes: [], presentWall: [] };
+  let last = null;
+  const cb = (now, meta) => {
+    if (last !== null) window.__m.intervals.push(now - last);
+    last = now;
+    window.__m.mediaTimes.push(meta.mediaTime);
+    window.__m.presentWall.push(performance.timeOrigin + meta.expectedDisplayTime);
+    v.requestVideoFrameCallback(cb);
+  };
+  v.requestVideoFrameCallback(cb);
+};
+const waitVideo = (p) =>
+  p.waitForFunction(() => {
+    const v = document.querySelector("video");
+    return v && v.videoWidth > 0;
+  }, null, { timeout: 30000 });
 
 // Global pra poder imprimir no erro também (crash do host = o caso mais importante de ver o log).
 const hostLog = [];
@@ -148,6 +170,17 @@ let hostExit = null;
     return v && v.videoWidth > 0;
   }, null, { timeout: 30000 });
   console.log("espectador recebendo vídeo");
+  // Espectadores extras (VIEWERS>1): contexto próprio cada um, mesma janela de Chrome.
+  const extraPages = [];
+  for (let i = 1; i < VIEWERS; i++) {
+    const ctx = await browser.newContext();
+    const p = await ctx.newPage();
+    p.on("console", (msg) => viewerLogs.push(`[v${i}] ${msg.type()}: ${msg.text()}`));
+    await p.goto(`${VIEWER}/s/${room.roomId}`);
+    extraPages.push(p);
+  }
+  for (const p of extraPages) await waitVideo(p);
+  if (extraPages.length) console.log(`${extraPages.length} espectador(es) extra recebendo vídeo`);
   if (process.env.UNMUTE) {
     // Clique real (gesto do usuário) + desmuta — sem isso o AudioContext do viewer fica suspenso e
     // nada toca (o áudio do espectador pode ser gravado por loopback do processo do Chrome).
@@ -208,19 +241,7 @@ let hostExit = null;
     });
   }
 
-  await page.evaluate(() => {
-    const v = document.querySelector("video");
-    window.__m = { intervals: [], mediaTimes: [], presentWall: [] };
-    let last = null;
-    const cb = (now, meta) => {
-      if (last !== null) window.__m.intervals.push(now - last);
-      last = now;
-      window.__m.mediaTimes.push(meta.mediaTime);
-      window.__m.presentWall.push(performance.timeOrigin + meta.expectedDisplayTime);
-      v.requestVideoFrameCallback(cb);
-    };
-    v.requestVideoFrameCallback(cb);
-  });
+  for (const p of [page, ...extraPages]) await p.evaluate(MEASURE);
 
   if (process.env.ACK_DELAY_TEST) {
     const presented = () => page.evaluate(() => window.__m.intervals.length);
@@ -264,6 +285,16 @@ let hostExit = null;
     );
   }
 
+  // Resumo de cada espectador extra (o principal sai no bloco completo abaixo).
+  for (let i = 0; i < extraPages.length; i++) {
+    const mm = await extraPages[i].evaluate(() => window.__m);
+    const ivx = mm.intervals.slice(30);
+    const lx = [];
+    if (wallAnchor !== null) for (let k = 30; k < mm.mediaTimes.length; k++) lx.push(mm.presentWall[k] - (wallAnchor + mm.mediaTimes[k] * 1000));
+    lx.sort((a, b) => a - b);
+    const st = ivx.filter((x) => x > (1000 / FPS) * 2.5).length;
+    console.log(`viewer${i + 1}: fps=${(ivx.length / (ivx.reduce((a, b) => a + b, 0) / 1000)).toFixed(1)} stutters=${st} latencyP50=${lx[Math.floor(lx.length / 2)]?.toFixed(1)}ms p95=${lx[Math.floor(0.95 * (lx.length - 1))]?.toFixed(1)}ms`);
+  }
   const m = await page.evaluate(() => window.__m);
   const expected = 1000 / FPS;
   const iv = m.intervals.slice(30);

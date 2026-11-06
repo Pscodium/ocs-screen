@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { RoomSummary } from "../services/backend";
+import { roomSourceLabel, type RoomSummary } from "../services/backend";
 import { useNow } from "../hooks/useNow";
 import { BroadcastIcon, EyeIcon, LockIcon, SearchIcon } from "./Icons";
 
@@ -82,6 +82,7 @@ export function RoomsBrowser({ rooms, error, onStartSharing }: RoomsBrowserProps
         <div className="room-grid">
           {visible.map((room) => {
             const specs = formatSettings(room.settings);
+            const source = roomSourceLabel(room.source);
             return (
               <button key={room.roomId} className="room-card" onClick={() => window.screenshare.viewer.open(room.viewerUrl)}>
                 <span className="room-card-top">
@@ -105,6 +106,11 @@ export function RoomsBrowser({ rooms, error, onStartSharing }: RoomsBrowserProps
                 </span>
                 <span className="room-card-bottom">
                   {specs && <span className="chip">{specs}</span>}
+                  {source && (
+                    <span className="chip" title={room.source === "web" ? "Transmitindo pelo navegador" : "Transmitindo pelo app desktop"}>
+                      {source}
+                    </span>
+                  )}
                   {room.viewerCount != null && (
                     <span className="room-card-viewers" title="Espectadores">
                       <EyeIcon size={13} />
