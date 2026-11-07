@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.0 — 2026-11-07
+
+### Novidades
+- **Menu da bandeja completo.** Com a transmissão no ar, o ícone da bandeja mostra quantas pessoas
+  estão assistindo e permite copiar o link, voltar ao card ou encerrar a transmissão sem abrir o app.
+- **Minimizar manda pra bandeja.** Minimizar o card da transmissão esconde o app na bandeja e a
+  transmissão continua; um aviso mostra onde ele foi parar.
+- **Seu nome do Windows como nome da sala.** Uma opção ao lado de "Nome da sala" usa o nome do seu
+  perfil do Windows no link. Fica desligada até você ligar, e o app lembra a escolha.
+
+### Melhorias
+- **Logo na bandeja.** O ícone do app voltou a aparecer na bandeja do Windows.
+- **Versão visível.** A versão instalada aparece ao lado do nome do app, no topo da janela.
+
 ## 1.2.0 — 2026-11-07
 
 ### Novidades
