@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.0 — 2026-11-07
+
+### Novidades
+- **Aviso de atualização também na Microsoft Store.** Quem instalou pela Store agora é avisado
+  quando sai versão nova, com a lista de mudanças e um botão que abre a Store pra atualizar.
+- **Atualização obrigatória.** Quando uma versão antiga deixar de ser suportada, o app avisa e
+  pede pra atualizar antes de transmitir, em vez de falhar sem explicação.
+
+### Melhorias
+- **Janela de atualização maior.** A lista de novidades ficou mais fácil de ler e mostra de qual
+  versão pra qual você está atualizando.
+
+### Correções
+- **Sua transmissão ficou mais protegida.** Só quem criou a sala consegue encerrá-la ou transmitir
+  nela; antes, outra pessoa com o link podia derrubar ou assumir a transmissão.
+- **Links abertos pelo app vão sempre pro navegador.** O app não abre mais outros tipos de link
+  que poderiam iniciar programas do computador.
+
 ## 1.1.1 — 2026-11-06
 
 ### Correções
