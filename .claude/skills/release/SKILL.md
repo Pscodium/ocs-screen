@@ -83,8 +83,9 @@ Se o primeiro comando listar algo, ou o segundo mostrar `src/` modificado:
 
 ### 3. Versão
 
-Última: `git describe --tags --abbrev=0`. Sugerir semver pelo que mudou (correção → patch, recurso → minor)
-— o usuário decide se quiser outra. Precisa ser maior que a última (a Store recusa repetida/menor).
+Última: `git describe --tags --abbrev=0`. Decidir o nível com a skill `semver` e mostrar a justificativa
+de cada mudança — o usuário decide se quiser outra. Atualizar a tabela de versões da skill
+`prod-changes` e incluir no relatório qualquer ação de produção que ela pedir. Precisa ser maior que a última (a Store recusa repetida/menor).
 
 ### 4. Changelog
 
