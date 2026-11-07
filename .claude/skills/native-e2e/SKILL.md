@@ -17,7 +17,16 @@ PATH (`winget install Gyan.FFmpeg`). Requisitos de build em `docs/REQUIREMENTS.m
   `undefined` e o main crasha em `crashReporter.start`.
 - **Build do addon: use `scripts/build-addon.sh`.** Rebuild incremental falha com `LNK1103`
   se não apagar `capture_core.iobj/.ipdb/.pdb` antes. `clean` como argumento apaga os `.obj`.
-  `build/Release` é versionado no git (o `.node` vai junto nos commits).
+  Só `build/Release/capture_core.node` + DLLs são versionados (o CI empacota sem recompilar C++);
+  o resto de `build/` (obj, tlog, pdb, vcxproj, `config.gypi`) é ignorado — fica local, não use
+  `git add -f`. Nunca rode `node-gyp`/`electron-rebuild` na raiz de `desktop/`: gera um
+  `desktop/build/config.gypi` com caminhos da máquina dentro da pasta de recursos do electron-builder.
+- **Clone em outra máquina:** o `binding.gyp` aponta pra `C:/vcpkg` fixo e `vendor/nvenc` vem no repo.
+  Sem vcpkg nesse caminho o addon não compila, mas o app roda com o `.node` versionado — só
+  recompile se mexeu no C++. O `.node` precisa casar com o ABI do Electron do `desktop/package.json`:
+  subiu a versão do Electron → recompilar e commitar o `.node` junto.
+- **`transport-core/` não é mais um addon separado:** o fonte é compilado dentro do `capture_core`
+  (ver `binding.gyp`). Não compilar nem versionar `transport-core/build`.
 - **Depois de mexer no main/preload/renderer do desktop**, rode `npx electron-vite build` em
   `desktop/` — o E2E carrega `desktop/out/`, não o dev server.
 - **DXGI só entrega frame quando a tela muda.** Sempre tenha algo animando no monitor capturado:

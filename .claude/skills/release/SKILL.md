@@ -38,6 +38,18 @@ gh secret list --repo Pscodium/ocs-screen
 `MSSTORE_PRODUCT_ID`, `MSSTORE_TENANT_ID`, `MSSTORE_CLIENT_ID`, `MSSTORE_CLIENT_SECRET`, `MSSTORE_SELLER_ID`.
 Faltando algum → parar e passar pro usuário a seção "Credenciais" abaixo. Não tentar contornar.
 
+Higiene do repo — nada gerado/local pode estar rastreado (o `.gitignore` já cobre; isto pega o que
+entrou por `git add -f` ou antes da regra existir):
+
+```powershell
+git ls-files | Select-String -Pattern 'config\.gypi$|/obj/|\.tlog|\.pdb$|\.ipdb$|\.iobj$|\.vcxproj|\.sln$|electron\.vite\.config\.\d+\.mjs$|tsbuildinfo$|(^|/)\.env(\.|$)(?!example)'
+git grep -nIF -e 'C:\Users\' -e 'C:/Users/' -- ':!package-lock.json' ':!.claude/skills/release/SKILL.md'
+```
+
+Os dois têm que voltar vazios. Se aparecer algo: `git rm --cached <arquivo>` num commit separado
+(`chore: untrack generated files`) antes do release — não misturar com o commit de versão. Exceção:
+`C:/vcpkg/...` no `binding.gyp` é esperado (ver `docs/REQUIREMENTS.md`).
+
 Typecheck tem que passar: `cd desktop; npm run typecheck`.
 
 ### 2. Addon nativo (C++) — recompilar e commitar
@@ -61,8 +73,13 @@ Se o primeiro comando listar algo, ou o segundo mostrar `src/` modificado:
    `LastWriteTime` mais recente em `desktop/native/capture-core/src`.
 3. Validar o pipeline com a skill `native-e2e` (E2E curto, `e2e-run.js 15 60`): fps ~60, `stutters` ~0,
    latência p50 na casa dos 30ms. Pior que isso → parar e mostrar ao usuário.
-4. Incluir `desktop/native/capture-core/build/Release` (o `.node`, DLLs e arquivos de build que o git já
-   rastreia) no commit de release do passo 5, junto com o fonte.
+4. Incluir no commit de release do passo 5, junto com o fonte, **só** `capture_core.node` e as 6 DLLs
+   de `desktop/native/capture-core/build/Release` — é o que o `.gitignore` deixa passar e o que o
+   `electron-builder.yml` empacota. `obj/`, `.tlog`, `.pdb/.ipdb/.iobj/.exp/.lib`, `.vcxproj/.sln` e
+   `config.gypi` são intermediários do node-gyp com caminhos absolutos da máquina: nunca `git add -f`.
+   Conferir com `git status --porcelain desktop/native` antes de commitar.
+   Se adicionar DLL nova no `binding.gyp` (`copies`), ela entra também em `files` e `asarUnpack` do
+   `electron-builder.yml` — senão o app instalado não carrega o addon.
 
 ### 3. Versão
 
@@ -88,7 +105,7 @@ O título tem que ser exatamente `## X.Y.Z` (o workflow procura por ele).
 
 ```powershell
 cd desktop; npm version X.Y.Z --no-git-tag-version; cd ..
-git add CHANGELOG.md desktop/package.json desktop/package-lock.json desktop/native/capture-core   # addon só se mudou (passo 2)
+git add CHANGELOG.md desktop/package.json desktop/package-lock.json desktop/native/capture-core/src desktop/native/capture-core/binding.gyp desktop/native/capture-core/build/Release   # addon só se mudou (passo 2); o .gitignore filtra os intermediários
 git commit -m "chore(release): vX.Y.Z"
 ```
 
