@@ -1572,3 +1572,66 @@ body {
     box-shadow: 0 0 0 0 rgba(35, 165, 90, 0);
   }
 }
+
+
+/* Rótulo do campo + switch "Usar sempre este nome" na mesma linha — opção pequena, não merece um
+   bloco próprio com texto explicativo (explicação vai no `title`). */
+.settings-field-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.mini-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.toggle-switch-sm {
+  width: 28px;
+  height: 16px;
+}
+
+.toggle-switch-sm .toggle-slider::before {
+  width: 12px;
+  height: 12px;
+  left: 2px;
+  top: 2px;
+}
+
+.toggle-switch-sm input:checked + .toggle-slider::before {
+  transform: translateX(12px);
+}
+
+/* Versão do viewer ao lado do título — mesmo estilo do desktop (.titlebar-version). */
+.app-version {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--muted);
+  opacity: 0.8;
+  vertical-align: middle;
+}
+
+/* Tela de "transmissão encerrada" — espera o host voltar no mesmo link. */
+.ended-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  text-align: center;
+}
+
+.ended-screen p {
+  margin: 0;
+}
+
+.ended-screen .btn-primary {
+  margin-top: 0.5rem;
+  text-decoration: none;
+}

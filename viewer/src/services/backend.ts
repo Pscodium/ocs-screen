@@ -40,6 +40,7 @@ export async function createRoom(
       password: access.password || undefined,
       nativeMode,
       source: "web",
+      appVersion: __APP_VERSION__,
       hostAuth: true,
       // Legado — backend em produção antes do `source` só entende isso. Pode sair depois do deploy.
       isWebLive: true,

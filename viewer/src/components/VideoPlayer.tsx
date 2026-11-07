@@ -102,6 +102,41 @@ export function VideoPlayer({
     }
   };
 
+  // Ativar som com volume 0 não toca nada — sobe pra 100% nesse caso.
+  const toggleMute = () => {
+    if (muted && volume === 0) setVolume(1);
+    setMuted(!muted);
+  };
+
+  // Atalhos: F tela cheia, M mudo, S estatísticas. Ignora quando o foco está num campo de texto.
+  const shortcutsRef = useRef({ toggleFullscreen, toggleMute, hasAudio });
+  shortcutsRef.current = { toggleFullscreen, toggleMute, hasAudio };
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+      const actions = shortcutsRef.current;
+      switch (e.key.toLowerCase()) {
+        case "f":
+          actions.toggleFullscreen();
+          break;
+        case "m":
+          if (!actions.hasAudio) return;
+          actions.toggleMute();
+          break;
+        case "s":
+          setShowDetails((v) => !v);
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   return (
     <div
       className={`video-container ${controlsVisible ? "" : "video-cursor-hidden"}`}
@@ -161,7 +196,7 @@ export function VideoPlayer({
                 className={`ctrl-btn ${showDetails ? "ctrl-btn-active" : ""}`}
                 onClick={() => setShowDetails((v) => !v)}
                 aria-label="Estatísticas da conexão"
-                title="Estatísticas"
+                title="Estatísticas (S)"
               >
                 <StatsIcon size={18} />
               </button>
@@ -227,9 +262,9 @@ export function VideoPlayer({
             <div className="ctrl-group ctrl-volume">
               <button
                 className={`ctrl-btn ${muted ? "btn-unmute-hint" : ""}`}
-                onClick={() => setMuted((m) => !m)}
+                onClick={toggleMute}
                 aria-label={muted ? "Ativar som" : "Mudo"}
-                title={muted ? "Clique para ativar o som" : "Mudo"}
+                title={muted ? "Clique para ativar o som (M)" : "Mudo (M)"}
               >
                 <VolumeIcon size={18} level={muted || volume === 0 ? "off" : volume < 0.5 ? "low" : "high"} />
               </button>
@@ -257,7 +292,7 @@ export function VideoPlayer({
           <button
             onClick={toggleFullscreen}
             className="ctrl-btn"
-            title={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}
+            title={isFullscreen ? "Sair da tela cheia (F)" : "Tela cheia (F)"}
             aria-label="Tela cheia"
           >
             <FullscreenIcon size={18} exit={isFullscreen} />

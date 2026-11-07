@@ -1,24 +1,87 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { ConnectionState } from "livekit-client";
 import { useRoomStream } from "../hooks/useRoomStream";
 import { useNativeStream } from "../hooks/useNativeStream";
-import { fetchRoomInfo, verifyRoomPassword } from "../services/backend";
+import { fetchRoomInfo, roomExists, verifyRoomPassword } from "../services/backend";
 import { useRoomPresence } from "../hooks/useRoomPresence";
 import { VideoPlayer } from "../components/VideoPlayer";
 
 export function WatchPage() {
   const { roomId } = useParams<{ roomId: string }>();
 
-  if (!roomId) return <StatusMessage text="Link inválido." />;
+  const [attempt, setAttempt] = useState(0);
+  const [ended, setEnded] = useState(false);
 
-  return <WatchRoomGate roomId={roomId} />;
+  useEffect(() => {
+    if (!roomId) return;
+    const previous = document.title;
+    document.title = `${roomId} • Screen Share`;
+    return () => {
+      document.title = previous;
+    };
+  }, [roomId]);
+
+  if (!roomId) return <StatusMessage text="Link inválido." />;
+  if (ended)
+    return (
+      <EndedScreen
+        roomId={roomId}
+        onBack={() => {
+          setEnded(false);
+          setAttempt((n) => n + 1);
+        }}
+      />
+    );
+
+  return <WatchRoomGate key={attempt} roomId={roomId} onEnded={() => setEnded(true)} />;
+}
+
+const REJOIN_POLL_MS = 5000;
+
+// Transmissão encerrada: fica consultando a sala e reconecta sozinho quando o host voltar no mesmo
+// link (comum com o nome de sala lembrado). Só aceita "voltou" depois de ver a sala sumir pelo menos
+// uma vez — logo após encerrar a sala ainda pode existir por um instante e reentraria na sala morta.
+function EndedScreen({ roomId, onBack }: { roomId: string; onBack: () => void }) {
+  useEffect(() => {
+    let cancelled = false;
+    let seenGone = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      const exists = await roomExists(roomId);
+      if (cancelled) return;
+      if (exists === false) seenGone = true;
+      else if (exists === true && seenGone) {
+        onBack();
+        return;
+      }
+      timer = setTimeout(poll, REJOIN_POLL_MS);
+    };
+    timer = setTimeout(poll, REJOIN_POLL_MS);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId]);
+
+  return (
+    <div className="status-page">
+      <div className="ended-screen">
+        <p>A transmissão foi encerrada.</p>
+        <p className="subtitle">Se o host voltar neste link, a transmissão abre sozinha.</p>
+        <Link className="btn-primary" to="/">
+          Ver outras transmissões
+        </Link>
+      </div>
+    </div>
+  );
 }
 
 // Precisa saber `nativeMode` (ver docs/NATIVE_CAPTURE.md Fase 4) ANTES de escolher entre
 // useRoomStream (LiveKit) e useNativeStream (RTCPeerConnection cru) — os dois falam protocolos de
 // sinalização diferentes, não dá pra tentar um e cair pro outro depois de já ter começado.
-function WatchRoomGate({ roomId }: { roomId: string }) {
+function WatchRoomGate({ roomId, onEnded }: { roomId: string; onEnded: () => void }) {
   const [nativeMode, setNativeMode] = useState<boolean | null>(null);
   const [needsPassword, setNeedsPassword] = useState(false);
   const [password, setPassword] = useState<string | undefined>(undefined);
@@ -44,9 +107,9 @@ function WatchRoomGate({ roomId }: { roomId: string }) {
   if (nativeMode === null) return <StatusMessage text="Conectando à transmissão..." overlay />;
   if (needsPassword && password === undefined) return <PasswordGate roomId={roomId} onUnlock={setPassword} />;
   return nativeMode ? (
-    <NativeWatchRoom roomId={roomId} password={password} />
+    <NativeWatchRoom roomId={roomId} password={password} onEnded={onEnded} />
   ) : (
-    <WatchRoom roomId={roomId} password={password} />
+    <WatchRoom roomId={roomId} password={password} onEnded={onEnded} />
   );
 }
 
@@ -99,7 +162,7 @@ function PasswordGate({ roomId, onUnlock }: { roomId: string; onUnlock: (passwor
   );
 }
 
-function NativeWatchRoom({ roomId, password }: { roomId: string; password?: string }) {
+function NativeWatchRoom({ roomId, password, onEnded }: { roomId: string; password?: string; onEnded: () => void }) {
   const { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs, quality, setQuality } =
     useNativeStream(roomId, password);
   return (
@@ -115,11 +178,12 @@ function NativeWatchRoom({ roomId, password }: { roomId: string; password?: stri
       quality={quality}
       setQuality={setQuality}
       roomId={roomId}
+      onEnded={onEnded}
     />
   );
 }
 
-function WatchRoom({ roomId, password }: { roomId: string; password?: string }) {
+function WatchRoom({ roomId, password, onEnded }: { roomId: string; password?: string; onEnded: () => void }) {
   const { videoRef, phase, connectionState, error, stats, hasAudio, playoutDelayMs, setPlayoutDelayMs } =
     useRoomStream(roomId, password);
   return (
@@ -133,6 +197,7 @@ function WatchRoom({ roomId, password }: { roomId: string; password?: string }) 
       playoutDelayMs={playoutDelayMs}
       setPlayoutDelayMs={setPlayoutDelayMs}
       roomId={roomId}
+      onEnded={onEnded}
     />
   );
 }
@@ -149,12 +214,17 @@ function WatchRoomView({
   quality,
   setQuality,
   roomId,
+  onEnded,
 }: ReturnType<typeof useRoomStream> &
-  Partial<Pick<ReturnType<typeof useNativeStream>, "quality" | "setQuality">> & { roomId: string }) {
+  Partial<Pick<ReturnType<typeof useNativeStream>, "quality" | "setQuality">> & { roomId: string; onEnded: () => void }) {
   const presence = useRoomPresence(roomId);
 
+  useEffect(() => {
+    if (phase === "ended") onEnded();
+  }, [phase, onEnded]);
+
   if (phase === "error") return <StatusMessage text={error ?? "Erro ao conectar."} />;
-  if (phase === "ended") return <StatusMessage text="A transmissão foi encerrada." />;
+  if (phase === "ended") return null;
 
   const isReconnecting =
     connectionState === ConnectionState.Reconnecting || connectionState === ConnectionState.SignalReconnecting;

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { SettingsForm } from "../components/SettingsForm";
 import { LiveCard } from "../components/LiveCard";
@@ -47,9 +47,50 @@ function ProfileSummary({ settings }: { settings: StreamSettings }) {
   );
 }
 
+// Navegador não expõe o nome do usuário do SO (o app desktop usa os.userInfo()).
+// Equivalente no web: opção (ligada por padrão) de reusar o último nome de sala digitado neste navegador.
+const LAST_SLUG_KEY = "ocs:lastRoomSlug";
+const REMEMBER_SLUG_PREF_KEY = "ocs:rememberRoomSlug";
+
+function readRememberPref(): boolean {
+  try {
+    return localStorage.getItem(REMEMBER_SLUG_PREF_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function writeRememberPref(on: boolean): void {
+  try {
+    localStorage.setItem(REMEMBER_SLUG_PREF_KEY, on ? "1" : "0");
+    if (!on) localStorage.removeItem(LAST_SLUG_KEY);
+  } catch {
+    // storage bloqueado: preferência não persiste
+  }
+}
+
+function loadLastSlug(): string {
+  if (!readRememberPref()) return "";
+  try {
+    return localStorage.getItem(LAST_SLUG_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveLastSlug(slug: string): void {
+  try {
+    if (slug.trim()) localStorage.setItem(LAST_SLUG_KEY, slug.trim());
+    else localStorage.removeItem(LAST_SLUG_KEY);
+  } catch {
+    // storage bloqueado: só não lembra
+  }
+}
+
 export function HomePage() {
   const [settings, setSettings] = useState(defaultStreamSettings);
-  const [slug, setSlug] = useState("");
+  const [slug, setSlug] = useState(loadLastSlug);
+  const [rememberSlug, setRememberSlug] = useState(readRememberPref);
   const [isPrivate, setIsPrivate] = useState(false);
   const [usePassword, setUsePassword] = useState(false);
   const [password, setPassword] = useState("");
@@ -60,10 +101,29 @@ export function HomePage() {
   const { state, info, error, start, stop, optimizeCodec, optimizingCodec } = useBroadcast();
   const isLive = state === "live" && info !== null;
 
+  // Ao vivo: título da aba mostra o estado e fechar/recarregar a aba pede confirmação — fechar
+  // encerra a transmissão pra todo mundo.
+  useEffect(() => {
+    if (!isLive) return;
+    const previous = document.title;
+    document.title = "🔴 Ao vivo • Screen Share";
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      document.title = previous;
+      window.removeEventListener("beforeunload", onBeforeUnload);
+    };
+  }, [isLive]);
+
   return (
     <div className="home-page">
       <header className="home-header">
-        <h1>Screen Share</h1>
+        <h1>
+          Screen Share <span className="app-version">v{__APP_VERSION__}</span>
+        </h1>
         <p className="subtitle">Compartilhe sua tela direto do navegador — sem instalar nada.</p>
       </header>
 
@@ -114,11 +174,31 @@ export function HomePage() {
 
             <div className="room-form">
               <div className="room-form-col">
-                <label className="settings-field">
-                  <span>Nome da sala</span>
+                <div className="settings-field">
+                  <div className="settings-field-header">
+                    <label htmlFor="room-slug">Nome da sala</label>
+                    <label
+                      className="mini-toggle"
+                      title="Reusa o último nome de sala que você digitou. Lembrado neste navegador."
+                    >
+                      Usar sempre este nome
+                      <span className="toggle-switch toggle-switch-sm">
+                        <input
+                          type="checkbox"
+                          checked={rememberSlug}
+                          onChange={(e) => {
+                            setRememberSlug(e.target.checked);
+                            writeRememberPref(e.target.checked);
+                          }}
+                        />
+                        <span className="toggle-slider" />
+                      </span>
+                    </label>
+                  </div>
                   <span className="slug-input-group">
                     <span className="slug-input-prefix">/s/</span>
                     <input
+                      id="room-slug"
                       className="slug-input"
                       type="text"
                       placeholder="gerado automaticamente"
@@ -127,7 +207,7 @@ export function HomePage() {
                       maxLength={32}
                     />
                   </span>
-                </label>
+                </div>
 
                 <div className="settings-field">
                   <span>Visibilidade</span>
@@ -202,7 +282,10 @@ export function HomePage() {
 
                 <button
                   className="btn-primary btn-share"
-                  onClick={() => start(settings, slug, { isPrivate, password: usePassword ? password : undefined })}
+                  onClick={() => {
+                    if (rememberSlug) saveLastSlug(slug);
+                    void start(settings, slug, { isPrivate, password: usePassword ? password : undefined });
+                  }}
                   disabled={state === "starting" || passwordMissing}
                 >
                   {state === "starting" ? "Iniciando..." : "Compartilhar tela"}

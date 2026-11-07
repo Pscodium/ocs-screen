@@ -1,13 +1,19 @@
 ---
 name: semver
-description: Decidir o número correto da próxima versão do app desktop (major, minor ou patch) a partir do que mudou desde a última tag. Usar SEMPRE que for sugerir, citar ou planejar uma versão ("vai na 1.2.0", "isso é patch?"), antes do bump no passo de versão da skill `release`, e ao planejar uma mudança que quebra compatibilidade com apps já instalados.
+description: Decidir o número correto da próxima versão do app desktop e do viewer web (major, minor ou patch). Usar SEMPRE que for sugerir, citar ou planejar uma versão ("vai na 1.2.0", "isso é patch?"), antes do bump no passo de versão da skill `release`, ao planejar uma mudança que quebra compatibilidade com apps já instalados, e em TODA alteração em viewer/ (o viewer sobe versão no mesmo commit da mudança).
 ---
 
 # Versionamento (semver) do ScreenShare
 
-Formato `MAJOR.MINOR.PATCH`. A versão descreve o **app desktop** (é o que o usuário instala e o que
-a Store e o auto-update comparam). Backend e viewer web são publicados continuamente e não têm
-versão própria, mas uma mudança neles conta aqui quando muda o contrato com o app instalado.
+Formato `MAJOR.MINOR.PATCH`. Duas versões independentes:
+
+- **App desktop** (`desktop/package.json`): o que o usuário instala e o que a Store e o auto-update
+  comparam. Sobe só na skill `release`.
+- **Viewer web** (`viewer/package.json`): aparece ao lado do título da home e vai pro backend como
+  `appVersion` (aparece no aviso do Discord como `web X.Y.Z`). Ver seção "Viewer web" abaixo.
+
+Backend não tem versão própria. Mudança no backend ou no viewer conta pra versão do **desktop** só
+quando muda o contrato com o app instalado.
 
 ## Como decidir
 
@@ -25,7 +31,7 @@ Regras que resolvem os casos de dúvida:
 - **Correção de segurança sozinha é PATCH**, mesmo sendo importante. Vira MINOR só se vier junto
   com recurso novo; vira MAJOR só se cortar apps antigos.
 - **Melhorar a aparência de uma tela existente é PATCH.** Criar uma tela nova é MINOR.
-- **Mudança só de backend/viewer/infra/docs não gera versão** do app. Só entra no cálculo se o
+- **Mudança só de backend/viewer/infra/docs não gera versão do desktop** (viewer sobe a própria, ver abaixo). Só entra no cálculo se o
   app instalado precisar mudar junto.
 - **Subir a versão mínima suportada** (skill `prod-changes`) que bloqueia versões ainda em uso é
   MAJOR. Bloquear só versões que já foram marcadas como depreciadas numa versão anterior, com aviso,
@@ -35,6 +41,25 @@ Regras que resolvem os casos de dúvida:
 - Ao subir MINOR, PATCH volta a 0 (`1.1.1` → `1.2.0`). Ao subir MAJOR, MINOR e PATCH voltam a 0.
 - A versão nova precisa ser maior que a última tag (a Store recusa versão repetida ou menor) e
   nunca reaproveitar uma tag já publicada.
+
+## Viewer web
+
+**Toda alteração em `viewer/`** (código, estilo, texto) sobe a versão do viewer **no mesmo commit**,
+sem esperar release — o viewer é publicado continuamente, e a versão serve pra saber qual build está
+no ar e qual build quem transmite pelo navegador está usando.
+
+```powershell
+cd viewer; npm version X.Y.Z --no-git-tag-version; cd ..
+git add viewer/package.json viewer/package-lock.json
+```
+
+- Mesma tabela de níveis acima, aplicada ao viewer: recurso/tela/opção nova visível → MINOR;
+  correção, estilo, texto, desempenho → PATCH; quebra links/salas existentes ou exige ação → MAJOR.
+- Base é a versão atual em `viewer/package.json` (o viewer não tem tag). Várias mudanças num commit
+  só sobem uma vez, pelo maior nível.
+- Mudança só em testes/scripts de E2E dentro de `viewer/` que não muda o build não sobe versão.
+- Versão do viewer é independente da do desktop — não precisam bater.
+- Avisar o usuário no fim da tarefa: `Viewer: 0.1.0 → 0.2.0 (MINOR) — <motivo>`.
 
 ## Como apresentar
 
