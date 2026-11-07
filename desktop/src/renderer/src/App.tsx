@@ -18,8 +18,11 @@ export function App() {
   const roomCount = rooms.rooms?.length ?? 0;
 
   useEffect(() => {
-    window.screenshare.tray.setStatus(isLive, broadcast.info?.viewerCount ?? 0);
-  }, [isLive, broadcast.info?.viewerCount]);
+    window.screenshare.tray.setStatus(isLive, broadcast.info?.viewerCount ?? 0, broadcast.info?.viewerUrl ?? null);
+  }, [isLive, broadcast.info?.viewerCount, broadcast.info?.viewerUrl]);
+
+  const stopBroadcast = broadcast.stop;
+  useEffect(() => window.screenshare.tray.onStop(() => void stopBroadcast()), [stopBroadcast]);
 
   return (
     <div className={`app-shell ${isLive ? "app-shell-widget" : ""}`}>

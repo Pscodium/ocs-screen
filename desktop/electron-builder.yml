@@ -5,6 +5,8 @@ directories:
 files:
   - out/**/*
   - package.json
+  # Ícone da bandeja e da janela (ICON_PATH em src/main/index.ts).
+  - assets/icon.png
   # Addon nativo (captura DXGI + encoder NVENC + transporte libdatachannel, ver docs/NATIVE_CAPTURE.md)
   # — não fica em node_modules, então precisa ser listado explicitamente (senão o build de produção
   # nunca embarca o .node e a captura nativa fica sempre indisponível, caindo direto pro

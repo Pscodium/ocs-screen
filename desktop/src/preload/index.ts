@@ -86,7 +86,19 @@ const api = {
     open: (url: string) => ipcRenderer.send("viewer:open", url),
   },
   tray: {
-    setStatus: (isLive: boolean, viewerCount: number) => ipcRenderer.send("tray:set-status", isLive, viewerCount),
+    setStatus: (isLive: boolean, viewerCount: number, viewerUrl: string | null) =>
+      ipcRenderer.send("tray:set-status", isLive, viewerCount, viewerUrl),
+    // "Encerrar transmissão" clicado no menu da bandeja.
+    onStop: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on("tray:stop", listener);
+      return () => {
+        ipcRenderer.removeListener("tray:stop", listener);
+      };
+    },
+  },
+  system: {
+    userName: (): Promise<string> => ipcRenderer.invoke("system:user-name"),
   },
   clipboard: {
     writeText: (text: string): Promise<void> => ipcRenderer.invoke("clipboard:write-text", text),

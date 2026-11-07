@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { LiveCard } from "../components/LiveCard";
 import { SourceBrowser } from "../components/SourcePicker";
 import { RoomsBrowser } from "../components/RoomsBrowser";
@@ -59,9 +59,47 @@ function ProfileSummary({ settings }: { settings: StreamSettings }) {
   );
 }
 
+// Preferência "usar meu nome do Windows como nome da sala" — só neste computador (localStorage), opt-in.
+const USER_NAME_PREF_KEY = "ocs.useWindowsName";
+
+function readUserNamePref(): boolean {
+  try {
+    return localStorage.getItem(USER_NAME_PREF_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeUserNamePref(on: boolean): void {
+  try {
+    localStorage.setItem(USER_NAME_PREF_KEY, on ? "1" : "0");
+  } catch {
+    // storage indisponível — a opção só não fica lembrada
+  }
+}
+
+// Mesmas regras do backend (`normalizeSlug`/`isValidSlug`): minúsculas, números e hífen, 3–32.
+function userNameToSlug(name: string): string {
+  return name
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "") // "João" → "joao"
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .slice(0, 32);
+}
+
 export function HomePage({ broadcast, rooms, tab, onTabChange, suspended }: HomePageProps) {
   const [settings, setSettings] = useState(defaultStreamSettings);
   const [slug, setSlug] = useState("");
+  const [useUserName, setUseUserName] = useState(readUserNamePref);
+  const [userSlug, setUserSlug] = useState("");
+  useEffect(() => {
+    void window.screenshare.system.userName().then((name) => setUserSlug(userNameToSlug(name)));
+  }, []);
+  const userNameUsable = userSlug.length >= 3;
+  const effectiveSlug = useUserName && userNameUsable ? userSlug : slug;
   const [access, setAccess] = useState<AccessSettings>(defaultAccessSettings);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [pickedId, setPickedId] = useState<string | null>(null);
@@ -96,7 +134,7 @@ export function HomePage({ broadcast, rooms, tab, onTabChange, suspended }: Home
     }
     setFormError(null);
     setPickedId(source.id);
-    start(settings, source, slug, {
+    start(settings, source, effectiveSlug, {
       isPrivate: access.isPrivate,
       password: access.usePassword ? access.password : undefined,
     });
@@ -117,20 +155,43 @@ export function HomePage({ broadcast, rooms, tab, onTabChange, suspended }: Home
 
             <section className="setup-section">
               <h3 className="setup-section-title">Sala</h3>
-              <label className="settings-field">
-                <span>Nome da sala</span>
+              <div className="settings-field">
+                <div className="settings-field-header">
+                  <label htmlFor="room-slug">Nome da sala</label>
+                  {userNameUsable && (
+                    <label
+                      className="mini-toggle"
+                      title="Usa o nome do seu perfil do Windows no link. Fica visível pra quem vê a sala. Lembrado neste PC."
+                    >
+                      Meu nome do Windows
+                      <span className="toggle-switch toggle-switch-sm">
+                        <input
+                          type="checkbox"
+                          checked={useUserName}
+                          onChange={(e) => {
+                            setUseUserName(e.target.checked);
+                            writeUserNamePref(e.target.checked);
+                          }}
+                        />
+                        <span className="toggle-slider" />
+                      </span>
+                    </label>
+                  )}
+                </div>
                 <span className="slug-input-group">
                   <span className="slug-input-prefix">/s/</span>
                   <input
+                    id="room-slug"
                     className="slug-input"
                     type="text"
                     placeholder="gerado automaticamente"
-                    value={slug}
+                    value={effectiveSlug}
                     onChange={(e) => setSlug(e.target.value)}
+                    readOnly={useUserName && userNameUsable}
                     maxLength={32}
                   />
                 </span>
-              </label>
+              </div>
               <AccessOptions
                 access={access}
                 onChange={(next) => {

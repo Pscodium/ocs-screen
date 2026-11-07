@@ -14,6 +14,7 @@ import {
   type MessagePortMain,
 } from "electron";
 import { join } from "path";
+import { userInfo } from "os";
 import { createWriteStream, readFileSync, writeFileSync, type WriteStream } from "fs";
 import { autoUpdater } from "electron-updater";
 import WebSocket from "ws";
@@ -91,7 +92,9 @@ app.commandLine.appendSwitch("ignore-gpu-blocklist");
 app.commandLine.appendSwitch("enable-gpu-rasterization");
 app.commandLine.appendSwitch("disable-gpu-sandbox");
 
-const ICON_PATH = join(__dirname, "../../build/icon.png");
+// `assets/icon.png` (empacotado via `files` no electron-builder.yml). Antes apontava pra
+// `build/icon.png`, que não existe — bandeja e janela ficavam sem logo.
+const ICON_PATH = join(__dirname, "../../assets/icon.png");
 
 // O app abre direto na tela de transmissão (configurações + grade de telas/janelas, ver HomePage) —
 // sem tela inicial pequena antes. Mínimo garante sidebar (300px) + 2 colunas de miniaturas.
@@ -191,30 +194,54 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-function createTray(): void {
-  const icon = nativeImage.createFromPath(ICON_PATH).resize({ width: 16, height: 16 });
-  tray = new Tray(icon);
-  tray.setToolTip("ScreenShare");
-  tray.on("click", () => {
-    if (!mainWindow) return;
-    mainWindow.show();
-    mainWindow.focus();
-  });
-  const menuTemplate: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: "Abrir",
-      click: () => {
-        mainWindow?.show();
-        mainWindow?.focus();
-      },
-    },
+// Estado que o renderer manda (ver "tray:set-status") — o menu é remontado a cada mudança.
+let trayLive = false;
+let trayViewers = 0;
+let trayViewerUrl: string | null = null;
+// Balão "o app continua na bandeja" aparece uma vez por sessão — toda vez seria irritante.
+let trayHintShown = false;
+
+function showMainWindow(): void {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function viewersLabel(count: number): string {
+  return `${count} espectador${count === 1 ? "" : "es"}`;
+}
+
+function rebuildTrayMenu(): void {
+  if (!tray) return;
+  tray.setToolTip(trayLive ? `OCS Screen — ao vivo (${viewersLabel(trayViewers)})` : "OCS Screen");
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    { label: `OCS Screen v${app.getVersion()}`, enabled: false },
+    { type: "separator" },
   ];
+  if (trayLive) {
+    template.push(
+      { label: `● Ao vivo — ${viewersLabel(trayViewers)}`, enabled: false },
+      {
+        label: "Copiar link da transmissão",
+        enabled: !!trayViewerUrl,
+        click: () => {
+          if (trayViewerUrl) clipboard.writeText(trayViewerUrl);
+        },
+      },
+      { label: "Mostrar card da transmissão", click: showMainWindow },
+      { label: "Encerrar transmissão", click: () => mainWindow?.webContents.send("tray:stop") },
+    );
+  } else {
+    template.push({ label: "Abrir OCS Screen", click: showMainWindow });
+  }
 
   // Dev-only: `chrome://gpu` mostra "Hardware accelerated" vs "Software only" por recurso — o
   // jeito mais direto de confirmar se o Chromium caiu pra composição por software (ver flags
   // ignore-gpu-blocklist acima) sem depender de inferir isso pelo Gerenciador de Tarefas.
   if (!app.isPackaged) {
-    menuTemplate.push({
+    template.push({
       label: "GPU Info (debug)",
       click: () => {
         const gpuWindow = new BrowserWindow({ width: 900, height: 700, title: "chrome://gpu" });
@@ -223,8 +250,30 @@ function createTray(): void {
     });
   }
 
-  menuTemplate.push({ label: "Sair", click: () => app.quit() });
-  tray.setContextMenu(Menu.buildFromTemplate(menuTemplate));
+  template.push({ type: "separator" }, { label: "Sair", click: () => app.quit() });
+  tray.setContextMenu(Menu.buildFromTemplate(template));
+}
+
+function createTray(): void {
+  const icon = nativeImage.createFromPath(ICON_PATH).resize({ width: 16, height: 16 });
+  tray = new Tray(icon);
+  tray.on("click", showMainWindow);
+  rebuildTrayMenu();
+
+  // Minimizar o card de transmissão (widget) manda pra bandeja em vez da barra de tarefas — a
+  // transmissão continua rodando. Fora do modo widget, minimizar continua normal.
+  mainWindow?.on("minimize", () => {
+    if (!isWidgetMode || !mainWindow) return;
+    mainWindow.hide();
+    if (!trayHintShown && tray) {
+      trayHintShown = true;
+      tray.displayBalloon({
+        icon: nativeImage.createFromPath(ICON_PATH).resize({ width: 32, height: 32 }),
+        title: "OCS Screen continua transmitindo",
+        content: "O app está na bandeja. Clique no ícone pra voltar ao card da transmissão.",
+      });
+    }
+  });
 }
 
 // Só http(s) sai pro navegador — `file:`, `ms-*:` e outros esquemas abririam um programa do sistema a
@@ -546,8 +595,23 @@ ipcMain.on("viewer:open", (_event, rawUrl: unknown) => {
   viewer.loadURL(url.href);
 });
 
-ipcMain.on("tray:set-status", (_event, isLive: boolean, viewerCount: number) => {
-  tray?.setToolTip(isLive ? `Screen Share — ao vivo (${viewerCount} espectador${viewerCount === 1 ? "" : "es"})` : "ScreenShare");
+ipcMain.on("tray:set-status", (_event, isLive: unknown, viewerCount: unknown, viewerUrl: unknown) => {
+  trayLive = isLive === true;
+  trayViewers = typeof viewerCount === "number" ? viewerCount : 0;
+  trayViewerUrl = trayLive && typeof viewerUrl === "string" ? viewerUrl : null;
+  // Transmissão acabou com o app escondido na bandeja — volta a janela, senão o app some de vez.
+  if (!trayLive && mainWindow && !mainWindow.isVisible()) showMainWindow();
+  rebuildTrayMenu();
+});
+
+// Nome do perfil do Windows (conta logada) — sugestão opcional de nome de sala. É o nome da pessoa,
+// então só é usado se ela ligar a opção (ver HomePage), e nunca sai do PC por outro caminho.
+ipcMain.handle("system:user-name", () => {
+  try {
+    return userInfo().username;
+  } catch {
+    return "";
+  }
 });
 
 // Clipboard via Electron nativo — mais confiável que navigator.clipboard quando a janela

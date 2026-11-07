@@ -23,7 +23,10 @@ export function TitleBar({ compact, children }: TitleBarProps) {
     <div className={`titlebar ${compact ? "titlebar-compact" : ""}`}>
       <span className="titlebar-title">
         <Logo size={compact ? 15 : 18} />
-        OCS Screen
+        <span className="titlebar-name">
+          OCS Screen
+          {!compact && <span className="titlebar-version">v{__APP_VERSION__}</span>}
+        </span>
       </span>
       {children && <nav className="titlebar-nav">{children}</nav>}
       <div className="titlebar-controls">
