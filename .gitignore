@@ -151,7 +151,19 @@ desktop/encoder/
 # SDK vendorizado (headers/lib do NVIDIA Video Codec SDK, licença própria da NVIDIA) e build
 # artifacts do addon nativo — não versionar binário compilado nem SDK de terceiros.
 desktop/native/*/vendor/
-desktop/native/*/build/
+# Só o addon final (.node + DLLs) do capture-core é versionado — o CI empacota ele sem recompilar
+# o C++ (ver .github/workflows/store.yml). Intermediários (obj/tlog/pdb/vcxproj/config.gypi) não:
+# são regenerados pelo node-gyp e carregam caminhos absolutos da máquina de quem compilou.
+desktop/native/*/build/*
+!desktop/native/capture-core/build/Release/
+desktop/native/capture-core/build/Release/*
+!desktop/native/capture-core/build/Release/*.node
+!desktop/native/capture-core/build/Release/*.dll
+
+# Gerado pelo node-gyp/electron-rebuild quando roda na raiz do desktop (contém caminhos locais)
+config.gypi
+# Arquivo temporário que o electron-vite deixa quando o build é interrompido
+electron.vite.config.*.mjs
 
 # Docs
 docs/
