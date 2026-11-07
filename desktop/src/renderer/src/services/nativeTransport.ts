@@ -1,3 +1,4 @@
+import { getHostSecret } from "./backend";
 import type { NativeTransportStartArgs } from "../../../preload/index";
 import { getMaxBitrate, AUTO_FPS_TARGET, type StreamSettings } from "../types/stream";
 import { listNativeMonitors } from "./nativeCapture";
@@ -81,6 +82,7 @@ export async function startNativeTransport(
   const args: NativeTransportStartArgs = {
     roomId,
     backendUrl,
+    hostSecret: getHostSecret(roomId),
     monitorIndex: source.monitorIndex,
     hwnd: source.hwnd,
     targetFps,

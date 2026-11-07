@@ -7,6 +7,16 @@ export interface CreateRoomResponse {
   hostToken: string;
   livekitUrl: string;
   viewerUrl: string;
+  // Backend antigo não devolve — aí a sala fica no modo sem proteção, como antes.
+  hostSecret?: string;
+}
+
+// Segredo de host por sala, só em memória (nunca persistido): prova pro backend que quem encerra a
+// sala ou conecta como host é quem criou.
+const hostSecrets = new Map<string, string>();
+
+export function getHostSecret(roomId: string): string | undefined {
+  return hostSecrets.get(roomId);
 }
 
 export interface RoomAccess {
@@ -30,6 +40,7 @@ export async function createRoom(
       password: access.password || undefined,
       nativeMode,
       source: "web",
+      hostAuth: true,
       // Legado — backend em produção antes do `source` só entende isso. Pode sair depois do deploy.
       isWebLive: true,
     }),
@@ -39,11 +50,21 @@ export async function createRoom(
     if (res.status === 400) throw new Error("Nome de sala inválido (use letras, números e hífen).");
     throw new Error("Falha ao criar sala de transmissão.");
   }
-  return res.json();
+  const room = (await res.json()) as CreateRoomResponse;
+  if (room.hostSecret) hostSecrets.set(room.roomId, room.hostSecret);
+  return room;
 }
 
 export async function endRoom(roomId: string): Promise<void> {
-  await fetch(`${backendUrl}/rooms/${roomId}`, { method: "DELETE" });
+  const secret = hostSecrets.get(roomId);
+  try {
+    await fetch(`${backendUrl}/rooms/${roomId}`, {
+      method: "DELETE",
+      headers: secret ? { "X-Host-Secret": secret } : {},
+    });
+  } finally {
+    hostSecrets.delete(roomId);
+  }
 }
 
 export interface RoomSummary {

@@ -177,7 +177,7 @@ function createWindow(): BrowserWindow {
   });
 
   window.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url);
+    openExternalSafe(details.url);
     return { action: "deny" };
   });
 
@@ -227,6 +227,56 @@ function createTray(): void {
   tray.setContextMenu(Menu.buildFromTemplate(menuTemplate));
 }
 
+// Só http(s) sai pro navegador — `file:`, `ms-*:` e outros esquemas abririam um programa do sistema a
+// partir de um link vindo de conteúdo remoto (viewer, notas de versão).
+function openExternalSafe(rawUrl: string): void {
+  try {
+    const url = new URL(rawUrl);
+    if (url.protocol === "https:" || url.protocol === "http:") void shell.openExternal(url.href);
+  } catch {
+    // URL inválida — ignora
+  }
+}
+
+// Canal de atualização: instalador do GitHub (electron-updater baixa e instala), Microsoft Store
+// (só avisa; quem instala é a Store) ou dev (nada).
+type UpdateChannel = "github" | "store" | "dev";
+const updateChannel: UpdateChannel = !app.isPackaged ? "dev" : process.windowsStore ? "store" : "github";
+const GITHUB_REPO = "Pscodium/ocs-screen";
+
+function isNewerVersion(candidate: string, current: string): boolean {
+  const parse = (v: string) => v.replace(/^v/, "").split(/[-+]/)[0].split(".").map((p) => Number.parseInt(p, 10) || 0);
+  const a = parse(candidate);
+  const b = parse(current);
+  for (let i = 0; i < 3; i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0);
+  return false;
+}
+
+// Store: electron-updater fica desligado (política da Store proíbe self-update), mas dá pra avisar
+// lendo o último release do GitHub — mesmo changelog do instalador, já em HTML (`body_html`). A
+// versão pode levar alguns dias pra aparecer na Store (certificação); o modal avisa isso.
+async function checkStoreUpdate(): Promise<void> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+      headers: { Accept: "application/vnd.github.html+json", "User-Agent": "ScreenShare-app" },
+    });
+    if (!res.ok) return;
+    const release = (await res.json()) as { tag_name?: string; body_html?: string };
+    if (!release.tag_name || !isNewerVersion(release.tag_name, app.getVersion())) return;
+    mainWindow?.webContents.send("update:available", {
+      version: release.tag_name.replace(/^v/, ""),
+      releaseNotes: typeof release.body_html === "string" ? release.body_html : null,
+    });
+  } catch {
+    // sem internet / GitHub fora — silencioso, igual ao canal GitHub
+  }
+}
+
+ipcMain.handle("update:channel", () => updateChannel);
+ipcMain.on("update:open-store", () => {
+  void shell.openExternal("ms-windows-store://downloadsandupdates");
+});
+
 // Baixa só quando o usuário aprovar no modal (não é auto-download nem auto-instala no quit) —
 // pede pra "avisar e deixar o usuário escolher", não empurrar a atualização sem avisar.
 autoUpdater.autoDownload = false;
@@ -257,7 +307,11 @@ function setupAutoUpdater(): void {
   // política proíbe self-update), então o electron-updater/GitHub fica desligado nesse caso.
   // app.isPackaged: em dev não existe app-update.yml (só gerado no build), checkForUpdates()
   // sempre falha nesse caso — nem tenta.
-  if (app.isPackaged && !process.windowsStore) {
+  if (updateChannel === "store") {
+    // Espera a janela carregar pra o renderer já estar ouvindo `update:available`.
+    mainWindow?.webContents.once("did-finish-load", () => void checkStoreUpdate());
+  }
+  if (updateChannel === "github") {
     autoUpdater.checkForUpdates().catch(() => {
       // Falha silenciosa de propósito (sem internet, GitHub fora do ar, etc.) — não é motivo
       // pra incomodar o usuário toda vez que abre o app.
@@ -266,9 +320,15 @@ function setupAutoUpdater(): void {
 }
 
 ipcMain.on("update:download", () => {
-  autoUpdater.downloadUpdate().catch((err) => {
-    mainWindow?.webContents.send("update:error", err instanceof Error ? err.message : String(err));
-  });
+  if (updateChannel !== "github") return;
+  // Atualização obrigatória pode ser pedida antes da checagem inicial terminar (ou depois dela ter
+  // falhado) — checa de novo antes de baixar.
+  autoUpdater
+    .checkForUpdates()
+    .then(() => autoUpdater.downloadUpdate())
+    .catch((err) => {
+      mainWindow?.webContents.send("update:error", err instanceof Error ? err.message : String(err));
+    });
 });
 
 ipcMain.on("update:install", () => {
@@ -313,7 +373,11 @@ app.on("before-quit", (event) => {
       const abort = new AbortController();
       const timeout = setTimeout(() => abort.abort(), 2000);
       await Promise.all([
-        fetch(`${backendUrl}/rooms/${roomId}`, { method: "DELETE", signal: abort.signal }).catch(() => {}),
+        fetch(`${backendUrl}/rooms/${roomId}`, {
+          method: "DELETE",
+          headers: ntHostSecret ? { "X-Host-Secret": ntHostSecret } : {},
+          signal: abort.signal,
+        }).catch(() => {}),
         sendNativeTelemetry("end"),
       ]);
       clearTimeout(timeout);
@@ -467,7 +531,7 @@ ipcMain.on("viewer:open", (_event, rawUrl: unknown) => {
   viewerWindows.add(viewer);
   viewer.on("closed", () => viewerWindows.delete(viewer));
   viewer.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url);
+    openExternalSafe(details.url);
     return { action: "deny" };
   });
   viewer.webContents.on("will-navigate", (navEvent, target) => {
@@ -931,6 +995,7 @@ ipcMain.on("native-capture:stop", () => stopNativeCapture());
 interface NativeTransportStartArgs {
   roomId: string;
   backendUrl: string;
+  hostSecret?: string;
   // Exatamente UM dos dois — monitor inteiro (DXGI) ou janela específica (WGC). O renderer decide
   // qual mandar (`nativeMonitorIndex` só existe em fontes tipo "screen", `hwnd` só em "window" —
   // ver SourcePicker.tsx/capture.ts).
@@ -956,6 +1021,8 @@ let ntStatsInterval: ReturnType<typeof setInterval> | null = null;
 // sempre (bug real, sala continuava aparecendo em "Assistir" depois do app fechado).
 let ntRoomId: string | null = null;
 let ntBackendUrl: string | null = null;
+// Segredo do host da sala atual (POST /rooms) — exigido no WS `role=host` e no DELETE.
+let ntHostSecret: string | null = null;
 // WS de sinalização ativo (host) — UMA conexão pra transmissão inteira (não por espectador). Cada
 // espectador negocia sua própria sessão TransportCore por cima dessa mesma conexão, roteado por
 // `viewerId` (ver backend/src/services/nativeWsRelay.ts). Substitui o REST+polling antigo.
@@ -1391,9 +1458,10 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   stopNativeTransport();
   stopNativeCapture(); // caminho antigo (raw frame → LiveKit) e o nativo não rodam ao mesmo tempo — os dois disputam o mesmo CaptureCore singleton.
 
-  const { roomId, backendUrl, monitorIndex, hwnd, targetFps, bitrateBps, stunUrls, showCursor, codec } = args;
+  const { roomId, backendUrl, hostSecret, monitorIndex, hwnd, targetFps, bitrateBps, stunUrls, showCursor, codec } = args;
   ntRoomId = roomId;
   ntBackendUrl = backendUrl;
+  ntHostSecret = typeof hostSecret === "string" ? hostSecret : null;
   ntTelemetry = freshNativeTelemetry();
   ntEncoderRecoveryStep = 0;
   nativeCapture.setEncoderFallbackLevel(0);
@@ -1551,7 +1619,8 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // (`ntActive`); o backend já sabia lidar com host reconectando (`registerHostSocket` substitui o
   // socket antigo e reenvia `viewer-joined` de cada espectador ainda conectado, ver
   // nativeWsRelay.ts) — só faltava o lado do host tentar de novo.
-  const wsUrl = `${backendUrl.replace(/^http/, "ws")}/rooms/${roomId}/native/ws?role=host`;
+  const secretParam = ntHostSecret ? `&hostSecret=${encodeURIComponent(ntHostSecret)}` : "";
+  const wsUrl = `${backendUrl.replace(/^http/, "ws")}/rooms/${roomId}/native/ws?role=host${secretParam}`;
   // `win` narrowado (não-nulo) pelo guard no topo do handler não atravessa pra dentro de uma
   // `function` nomeada aninhada (limitação de narrowing do TS, só funciona em closures inline) —
   // `activeWin` capta o valor já narrowado antes de declarar essas funções.
@@ -1581,7 +1650,14 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       wsReconnectAttempt = 0; // conexão de verdade estabeleceu — reseta o backoff pra próxima queda
       ntTelemetry.counters.wsOpens++;
     });
-    ws.on("close", scheduleNativeWsReconnect);
+    ws.on("close", (code) => {
+      // 4403 = backend recusou o segredo do host (ver routes/rooms.ts) — tentar de novo não resolve.
+      if (code === 4403) {
+        console.warn("[native-transport] backend recusou o segredo do host — sem reconexão.");
+        return;
+      }
+      scheduleNativeWsReconnect();
+    });
     attachNativeWsMessageAndErrorHandlers(ws);
   }
 

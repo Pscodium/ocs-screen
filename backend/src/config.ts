@@ -1,6 +1,20 @@
-function required(name: string, fallback?: string): string {
-  const value = process.env[name] ?? fallback;
+const isProduction = process.env.NODE_ENV === "production";
+
+// `devFallback` só vale fora de produção (o Dockerfile seta NODE_ENV=production). Em produção a
+// variável faltando derruba o boot com mensagem clara — subir com a chave de dev (que está pública
+// no repositório) deixaria qualquer um gerar token válido pro LiveKit.
+function required(name: string, devFallback?: string): string {
+  const value = process.env[name] ?? (isProduction ? undefined : devFallback);
   if (!value) throw new Error(`Missing required env var: ${name}`);
+  return value;
+}
+
+// Versão mínima do app desktop aceita (semver X.Y.Z). Vazio/ausente = nenhuma versão bloqueada.
+// Inválido derruba o boot — melhor do que bloquear todo mundo ou ninguém por engano.
+function optionalVersion(name: string): string | null {
+  const value = process.env[name]?.trim();
+  if (!value) return null;
+  if (!/^\d+\.\d+\.\d+$/.test(value)) throw new Error(`Invalid ${name}: "${value}" (expected X.Y.Z)`);
   return value;
 }
 
@@ -29,6 +43,8 @@ export const config = {
     apiKey: required("LIVEKIT_API_KEY", "devkey"),
     apiSecret: required("LIVEKIT_API_SECRET", "devsecret1234567890"),
   },
+  // Ver routes/app.ts — app abaixo disso mostra "atualização obrigatória" e não cria sala.
+  minAppVersion: optionalVersion("MIN_APP_VERSION"),
   room: {
     tokenTtlSeconds: Number(process.env.ROOM_TOKEN_TTL_SECONDS ?? 60 * 60 * 6),
     emptyRoomTtlSeconds: Number(process.env.ROOM_EMPTY_TTL_SECONDS ?? 60 * 5),

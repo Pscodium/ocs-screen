@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { generateRoomId } from "../utils/ids.js";
 import { cleanupNativeSockets } from "./nativeWsRelay.js";
@@ -22,6 +22,7 @@ export function createRoom(
   nativeMode = false,
   access: { isPrivate?: boolean; password?: string } = {},
   origin: { source: RoomSource; appVersion: string | null } = { source: "desktop", appVersion: null },
+  hostSecret: string | null = null,
 ): Room {
   const id = slug ?? generateRoomId();
   if (slug && rooms.has(slug)) throw new SlugTakenError(`Sala "${slug}" já está em uso.`);
@@ -36,6 +37,7 @@ export function createRoom(
     passwordHash: access.password ? hashPassword(access.password) : null,
     source: origin.source,
     appVersion: origin.appVersion,
+    hostSecretHash: hostSecret ? sha256Hex(hostSecret) : null,
   };
   rooms.set(room.id, room);
   // Sala nativa nunca aparece no cruzamento de órfãs de `GET /rooms` (`isOrphan` em
@@ -47,6 +49,22 @@ export function createRoom(
   // (nativeWsRelay.ts) cancelam/reagendam isso conforme o host aparece/some de verdade.
   if (nativeMode) scheduleRoomCleanup(room.id);
   return room;
+}
+
+export function generateHostSecret(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+function sha256Hex(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+// Sala de cliente antigo (sem hash) libera — modo de transição. Segredo tem 256 bits aleatórios,
+// então SHA-256 simples basta (não é senha escolhida por gente, não precisa de scrypt).
+export function checkHostSecret(room: Room, secret: unknown): boolean {
+  if (!room.hostSecretHash) return true;
+  if (typeof secret !== "string" || secret.length === 0 || secret.length > 128) return false;
+  return timingSafeEqual(Buffer.from(room.hostSecretHash, "hex"), Buffer.from(sha256Hex(secret), "hex"));
 }
 
 function hashPassword(password: string): string {

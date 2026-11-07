@@ -1,7 +1,18 @@
 import type { FastifyInstance } from "fastify";
 import { config } from "../config.js";
 import { createHostToken, createViewerToken, getLiveRoomViewerCounts } from "../services/livekit.js";
-import { cancelRoomCleanup, checkRoomPassword, createRoom, deleteRoom, getRoom, listRooms, SlugTakenError } from "../services/rooms.js";
+import {
+  cancelRoomCleanup,
+  checkHostSecret,
+  checkRoomPassword,
+  createRoom,
+  deleteRoom,
+  generateHostSecret,
+  getRoom,
+  listRooms,
+  SlugTakenError,
+} from "../services/rooms.js";
+import { isAppVersionSupported } from "./app.js";
 import { getNativeViewerCount, registerHostSocket, registerViewerSocket } from "../services/nativeWsRelay.js";
 import { getIceServers } from "../services/turn.js";
 import { notifyStreamStarted } from "../services/discordNotify.js";
@@ -15,6 +26,18 @@ import type {
 } from "../types/room.js";
 
 const MAX_PASSWORD_LENGTH = 128;
+
+// Limites por IP por minuto (@fastify/rate-limit, registrado em server.ts com `global: false`).
+// Folgados pro uso normal — várias pessoas atrás do mesmo IP (LAN, CGNAT) não podem ser bloqueadas
+// assistindo; o alvo é script martelando criação de sala, senha ou credencial TURN.
+const perMinute = (max: number) => ({ config: { rateLimit: { max, timeWindow: "1 minute" } } });
+
+// Segredo do host: header no HTTP; no WebSocket vai na query (navegador não deixa setar header no
+// WebSocket) — o logger do server.ts tira a query string dos logs por causa disso.
+function hostSecretFromHeader(headers: Record<string, unknown>): string | undefined {
+  const value = headers["x-host-secret"];
+  return typeof value === "string" ? value : undefined;
+}
 const APP_VERSION_PATTERN = /^[0-9A-Za-z.+-]{1,32}$/;
 
 // `source` novo tem prioridade; sem ele, `isWebLive` (web publicado até a 1.0.15) e, sem nenhum
@@ -27,7 +50,7 @@ function resolveRoomOrigin(body: CreateRoomRequest | undefined): { source: RoomS
 }
 
 export async function roomRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/rooms", async (_request, reply) => {
+  app.get("/rooms", perMinute(300), async (_request, reply) => {
     // O mapa local só sabe de salas criadas (POST /rooms) e destruídas por chamada explícita
     // (DELETE) — se o host caiu sem avisar, a sala fica presa lá pra sempre. O LiveKit é a fonte
     // de verdade de quem tá realmente ao vivo; cruza os dois e já aproveita pra descartar o que
@@ -71,7 +94,12 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(response);
   });
 
-  app.post<{ Body: CreateRoomRequest }>("/rooms", async (request, reply) => {
+  app.post<{ Body: CreateRoomRequest }>("/rooms", perMinute(10), async (request, reply) => {
+    const origin = resolveRoomOrigin(request.body);
+    if (origin.source === "desktop" && !isAppVersionSupported(origin.appVersion)) {
+      return reply.code(426).send({ error: "update_required", minVersion: config.minAppVersion });
+    }
+
     let slug: string | undefined;
     if (request.body?.slug) {
       slug = normalizeSlug(request.body.slug);
@@ -86,18 +114,26 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const hostIdentity = generateIdentity();
+    const hostSecret = request.body?.hostAuth === true ? generateHostSecret() : null;
     let room;
     try {
       room = createRoom(hostIdentity, request.body?.settings, slug, request.body?.nativeMode, {
         isPrivate: request.body?.isPrivate === true,
         password: password || undefined,
-      }, resolveRoomOrigin(request.body));
+      }, origin, hostSecret);
     } catch (err) {
       if (err instanceof SlugTakenError) return reply.code(409).send({ error: "slug_taken" });
       throw err;
     }
     request.log.info(
-      { roomId: room.id, source: room.source, appVersion: room.appVersion, nativeMode: room.nativeMode, clientIp: request.ip },
+      {
+        roomId: room.id,
+        source: room.source,
+        appVersion: room.appVersion,
+        nativeMode: room.nativeMode,
+        hostAuth: hostSecret !== null,
+        clientIp: request.ip,
+      },
       "room created",
     );
     const hostToken = await createHostToken(room.id, hostIdentity);
@@ -111,11 +147,12 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       livekitUrl: config.livekit.url,
       viewerUrl: `${config.viewerUrl}/s/${room.id}`,
       nativeMode: room.nativeMode,
+      ...(hostSecret ? { hostSecret } : {}),
     };
     return reply.code(201).send(response);
   });
 
-  app.get<{ Params: { id: string } }>("/rooms/:id", async (request, reply) => {
+  app.get<{ Params: { id: string } }>("/rooms/:id", perMinute(300), async (request, reply) => {
     const room = getRoom(request.params.id);
     if (!room) return reply.code(404).send({ error: "room_not_found" });
 
@@ -144,14 +181,14 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
 
   // Viewer valida a senha antes de montar o player — o token/WS checam de novo, isso aqui é só
   // pra UI dar feedback imediato de senha errada.
-  app.post<{ Params: { id: string }; Body: { password?: string } }>("/rooms/:id/auth", async (request, reply) => {
+  app.post<{ Params: { id: string }; Body: { password?: string } }>("/rooms/:id/auth", perMinute(20), async (request, reply) => {
     const room = getRoom(request.params.id);
     if (!room) return reply.code(404).send({ error: "room_not_found" });
     if (!checkRoomPassword(room, request.body?.password)) return reply.code(401).send({ error: "invalid_password" });
     return reply.code(204).send();
   });
 
-  app.post<{ Params: { id: string }; Body: { password?: string } }>("/rooms/:id/token", async (request, reply) => {
+  app.post<{ Params: { id: string }; Body: { password?: string } }>("/rooms/:id/token", perMinute(20), async (request, reply) => {
     const room = getRoom(request.params.id);
     if (!room) return reply.code(404).send({ error: "room_not_found" });
     if (!checkRoomPassword(room, request.body?.password)) return reply.code(401).send({ error: "invalid_password" });
@@ -170,13 +207,16 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
   // ICE servers (STUN + TURN, ver services/turn.ts) — não é específico de sala nenhuma
   // (credencial TURN é curta, sem vínculo com o ID da sala), mas host e viewer só pedem isso
   // quando já estão prestes a negociar uma conexão de verdade (native transport), não antes.
-  app.get("/ice-servers", async (_request, reply) => {
+  app.get("/ice-servers", perMinute(30), async (_request, reply) => {
     return reply.send({ iceServers: getIceServers() });
   });
 
-  app.delete<{ Params: { id: string } }>("/rooms/:id", async (request, reply) => {
+  app.delete<{ Params: { id: string } }>("/rooms/:id", perMinute(30), async (request, reply) => {
     const room = getRoom(request.params.id);
     if (!room) return reply.code(404).send({ error: "room_not_found" });
+    if (!checkHostSecret(room, hostSecretFromHeader(request.headers))) {
+      return reply.code(403).send({ error: "invalid_host_secret" });
+    }
     deleteRoom(room.id);
     return reply.code(204).send();
   });
@@ -186,9 +226,9 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
   // a própria vez (`?role=viewer`) e ganha um `viewerId` (gerado em nativeWsRelay.ts). Backend
   // roteia mensagens por `viewerId`, não faz broadcast — cada espectador negocia sua própria
   // sessão `TransportCore` com o host.
-  app.get<{ Params: { id: string }; Querystring: { role?: string; password?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { role?: string; password?: string; hostSecret?: string } }>(
     "/rooms/:id/native/ws",
-    { websocket: true },
+    { websocket: true, ...perMinute(60) },
     (socket, request) => {
       const roomId = request.params.id;
       const role = request.query.role;
@@ -199,6 +239,14 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       }
       if (role === "viewer" && !checkRoomPassword(room, request.query.password)) {
         socket.close();
+        return;
+      }
+      // Sem isso qualquer um conectava como host, derrubava o host real (registerHostSocket troca o
+      // socket) e recebia/transmitia pros espectadores. 4403 = código de aplicação, o cliente para
+      // de reconectar.
+      if (role === "host" && !checkHostSecret(room, request.query.hostSecret)) {
+        request.log.warn({ roomId, clientIp: request.ip }, "native ws host rejected");
+        socket.close(4403, "invalid_host_secret");
         return;
       }
       // Rastro mínimo de quem entrou/saiu (IP real via trustProxy, ver config.ts) — a mídia não

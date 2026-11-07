@@ -26,6 +26,10 @@ export interface Room {
   source: RoomSource;
   // Versão do app desktop que criou a sala (null no web ou em app antigo que não manda).
   appVersion: string | null;
+  // SHA-256 (hex) do segredo do host — exigido no DELETE e no WS `role=host`. null = sala criada
+  // por cliente antigo (desktop ≤ 1.1.1) que não sabe mandar o segredo: modo de transição, sem
+  // proteção (ver skill prod-changes, tabela de versões). Decidido na criação, nunca depois.
+  hostSecretHash: string | null;
 }
 
 export type RoomSource = "desktop" | "web";
@@ -38,6 +42,8 @@ export interface CreateRoomRequest {
   password?: string;
   source?: RoomSource;
   appVersion?: string;
+  // Cliente sabe guardar e mandar `hostSecret` (desktop ≥ 1.2.0 e viewer web atual).
+  hostAuth?: boolean;
   // LEGADO (web 1.0.15 e anteriores) — substituído por `source`. Mantido pra salas criadas por
   // clientes já publicados continuarem com a origem certa.
   isWebLive?: boolean;
@@ -49,6 +55,8 @@ export interface CreateRoomResponse {
   livekitUrl: string;
   viewerUrl: string;
   nativeMode: boolean;
+  // Só quando o cliente pediu `hostAuth`. Mostrado uma vez; o backend guarda só o hash.
+  hostSecret?: string;
 }
 
 export interface ViewerTokenResponse {

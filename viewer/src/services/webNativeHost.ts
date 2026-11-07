@@ -1,4 +1,4 @@
-import { fetchIceServers, type IceServerDescriptor } from "./backend";
+import { fetchIceServers, getHostSecret, type IceServerDescriptor } from "./backend";
 import { newTelemetrySessionId, selectedCandidateInfo, sendTelemetry, type TelemetryData } from "./telemetry";
 
 // Host WEB falando o MESMO protocolo do transporte nativo do app desktop (ver
@@ -491,8 +491,10 @@ export class WebNativeHost {
   // ---------- Sinalização / sessões ----------
 
   private connectWs(): void {
+    const secret = getHostSecret(this.opts.roomId);
+    const secretParam = secret ? `&hostSecret=${encodeURIComponent(secret)}` : "";
     const ws = new WebSocket(
-      `${backendUrl.replace(/^http/, "ws")}/rooms/${this.opts.roomId}/native/ws?role=host`,
+      `${backendUrl.replace(/^http/, "ws")}/rooms/${this.opts.roomId}/native/ws?role=host${secretParam}`,
     );
     this.ws = ws;
     ws.onopen = () => {
@@ -502,7 +504,9 @@ export class WebNativeHost {
     ws.onmessage = (event) => this.handleWsMessage(event);
     // Mesma resiliência do host desktop: backend reenvia `viewer-joined` de quem ainda estiver na
     // sala quando o host reconecta.
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      // 4403 = backend recusou o segredo do host — reconectar não resolve.
+      if (event.code === 4403) return;
       if (this.stopped || this.wsReconnectTimer) return;
       const delayMs = Math.min(WS_RECONNECT_MAX_MS, 1000 * 2 ** this.wsReconnectAttempt);
       this.wsReconnectAttempt++;

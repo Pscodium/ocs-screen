@@ -36,6 +36,8 @@ export interface NativeMonitor {
 export interface NativeTransportStartArgs {
   roomId: string;
   backendUrl: string;
+  // Segredo do host devolvido pelo POST /rooms (ausente em backend antigo).
+  hostSecret?: string;
   // Exatamente um dos dois — monitor inteiro (DXGI) ou janela específica (WGC). Ver
   // docs/NATIVE_CAPTURE.md §Backend Abstrato / WindowCaptureCore.h.
   monitorIndex?: number;
@@ -129,6 +131,9 @@ const api = {
     },
     download: () => ipcRenderer.send("update:download"),
     install: () => ipcRenderer.send("update:install"),
+    // "github" = instalador (baixa e instala aqui), "store" = Microsoft Store (abre a Store), "dev" = nada.
+    channel: (): Promise<"github" | "store" | "dev"> => ipcRenderer.invoke("update:channel"),
+    openStore: () => ipcRenderer.send("update:open-store"),
   },
   // Captura nativa (DXGI Desktop Duplication) — ver docs/NATIVE_CAPTURE.md. Frames não passam
   // pela ponte de IPC normal — só start/stop/listMonitors. O `MessagePort` em si NÃO atravessa o
