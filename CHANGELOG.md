@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.0 — 2026-11-08
+
+### Novidades
+- **Seu nome no aviso do Discord.** Nova seção "Configuração" com um apelido e a opção "Mostrar meu nome no aviso do Discord" (desligada por padrão). Ligada, a mensagem que o bot manda pros inscritos diz quem começou a transmissão. O botão "Usar do Discord" preenche o apelido com o nome da sua conta do Discord aberta no PC.
+
 ## 1.4.1 — 2026-11-08
 
 ### Novidades

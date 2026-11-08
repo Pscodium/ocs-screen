@@ -54,6 +54,7 @@ pra confirmar o nível da versão.
 
 | Versão | Estado | Observação |
 |---|---|---|
+| 1.5.0 | Estável | Manda `hostName` opcional (opt-in) no `POST /rooms` pro aviso do Discord. Backend antigo ignora o campo. |
 | 1.4.1 | Estável | Discord Rich Presence (local, IPC do Discord). Sem mudança de contrato com o backend. |
 | 1.4.0 | Estável | Envia relatório de crash (nativo + JS) ao backend (`/crash`, `/crash/js`), com opção de desligar na bandeja. Requer backend com Postgres pra guardar; sem ele, descartado |
 | 1.2.0 – 1.3.0 | Estável | Manda `hostAuth` (sala protegida por segredo do host). Mostra aviso/bloqueio pela `MIN_APP_VERSION` e avisa atualização também na Store |
