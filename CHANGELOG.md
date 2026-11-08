@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.1 — 2026-11-08
+
+### Novidades
+- **Sua transmissão aparece no Discord.** Enquanto você transmite, seu perfil mostra "Jogando OCS Screen · Transmitindo tela", quantas pessoas estão assistindo e um botão "Assistir transmissão" que abre o link pra quem clicar. Funciona com o Discord desktop aberto no mesmo PC.
+
 ## 1.4.0 — 2026-11-08
 
 ### Novidades
