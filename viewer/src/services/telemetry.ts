@@ -19,7 +19,7 @@ export function sendTelemetry(
     void fetch(`${backendUrl}/rooms/${encodeURIComponent(roomId)}/telemetry`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role, source: "web", reason, sessionId, data }),
+      body: JSON.stringify({ role, source: "web", reason, sessionId, data: { appVersion: __APP_VERSION__, ...data } }),
       keepalive: true,
     }).catch(() => {});
   } catch {

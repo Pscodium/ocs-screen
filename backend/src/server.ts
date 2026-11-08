@@ -9,6 +9,7 @@ import { discordRoutes } from "./routes/discord.js";
 import { telemetryRoutes } from "./routes/telemetry.js";
 import { appRoutes } from "./routes/app.js";
 import { adminRoutes } from "./routes/admin.js";
+import { crashRoutes } from "./routes/crash.js";
 import { initDb } from "./services/db.js";
 
 const app = Fastify({
@@ -53,6 +54,7 @@ await app.register(discordRoutes);
 await app.register(telemetryRoutes);
 await app.register(appRoutes);
 await app.register(adminRoutes);
+await app.register(crashRoutes);
 
 await initDb();
 

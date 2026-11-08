@@ -84,6 +84,8 @@ export const config = {
   // Bearer token das rotas /admin/*. Sem ele as rotas admin respondem 404 (desligadas).
   adminToken: process.env.ADMIN_TOKEN?.trim() || null,
   telemetryRetentionDays: Number(process.env.TELEMETRY_RETENTION_DAYS ?? 90),
+  // Pasta dos minidumps de crash do app desktop (routes/crash.ts). Em produção, montar um volume.
+  crashDir: process.env.CRASH_DIR?.trim() || "./data/crashes",
 } as const;
 
 if (config.adminToken !== null && config.adminToken.length < 24) {

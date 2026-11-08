@@ -86,6 +86,10 @@ services:
       DISCORD_NOTIFY_ENABLED: ${DISCORD_NOTIFY_ENABLED:-false}
       POSTGRES_URL: ${POSTGRES_URL:-}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      CRASH_DIR: /data/crashes
+    # Minidumps de crash do app desktop (routes/crash.ts) — sobrevivem a redeploy.
+    volumes:
+      - crash-dumps:/data/crashes
     # API é só HTTP — proxy do EasyPanel alcança pela rede interna; mapeie o domínio pra porta 4000 na UI.
     expose:
       - "4000"
@@ -105,3 +109,6 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  crash-dumps:

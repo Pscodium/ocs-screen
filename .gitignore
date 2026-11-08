@@ -167,3 +167,5 @@ electron.vite.config.*.mjs
 
 # Docs
 docs/
+
+backend/data/

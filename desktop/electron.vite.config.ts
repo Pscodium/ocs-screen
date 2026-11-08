@@ -8,6 +8,8 @@ const appVersion = JSON.parse(readFileSync(new URL("./package.json", import.meta
 export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
+    // URL do backend também no main (relatório de crash, ver src/main/crashReports.ts).
+    envPrefix: ["MAIN_VITE_", "VITE_BACKEND_URL"],
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

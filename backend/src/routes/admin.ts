@@ -6,12 +6,12 @@ import { db } from "../services/db.js";
 // Estatísticas agregadas da telemetria (Postgres). Protegido por `ADMIN_TOKEN` (Bearer). Sem token
 // ou sem banco configurado, as rotas respondem 404 — como se não existissem.
 
-function authorized(request: FastifyRequest): boolean {
-  if (!config.adminToken) return false;
+export function isAdmin(request: FastifyRequest): "ok" | "disabled" | "unauthorized" {
+  if (!config.adminToken) return "disabled";
   const header = request.headers.authorization ?? "";
   const given = Buffer.from(header.startsWith("Bearer ") ? header.slice(7) : "");
   const expected = Buffer.from(config.adminToken);
-  return given.length === expected.length && timingSafeEqual(given, expected);
+  return given.length === expected.length && timingSafeEqual(given, expected) ? "ok" : "unauthorized";
 }
 
 // "Falha" = qualquer relatório que não seja o de fim normal da sessão.
@@ -28,8 +28,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     },
     async (request, reply) => {
       const sql = db();
-      if (!sql || !config.adminToken) return reply.code(404).send({ error: "not_found" });
-      if (!authorized(request)) return reply.code(401).send({ error: "unauthorized" });
+      if (!sql) return reply.code(404).send({ error: "not_found" });
+      const auth = isAdmin(request);
+      if (auth !== "ok") return reply.code(auth === "disabled" ? 404 : 401).send({ error: auth });
       const days = request.query.days ?? 30;
       const since = sql`now() - make_interval(days => ${days})`;
 
@@ -44,14 +45,14 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           GROUP BY 1 ORDER BY 1
         `,
         sql`
-          SELECT coalesce(app_version, 'desconhecida') AS version,
+          SELECT source, coalesce(app_version, 'desconhecida') AS version,
                  count(DISTINCT session_id)                                  AS sessions,
                  count(DISTINCT session_id) FILTER (WHERE reason <> ${END_REASON}) AS failed_sessions,
                  round(avg((data->>'elapsedMs')::numeric) FILTER (WHERE reason = ${END_REASON}) / 1000) AS avg_duration_s,
                  max(created_at)                                             AS last_seen
           FROM ocs_telemetry_events
-          WHERE created_at >= ${since} AND role = 'host' AND source = 'desktop'
-          GROUP BY 1 ORDER BY max(created_at) DESC
+          WHERE created_at >= ${since}
+          GROUP BY 1, 2 ORDER BY max(created_at) DESC
         `,
         sql`
           SELECT reason, role, source, count(*) AS count

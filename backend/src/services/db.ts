@@ -1,5 +1,6 @@
 import postgres from "postgres";
 import { config } from "../config.js";
+import { deleteDump } from "./crashStore.js";
 
 // Postgres opcional: null quando POSTGRES_URL não está configurado — quem chama trata como
 // "recurso desligado" (mesmo padrão do Redis em services/redis.ts).
@@ -45,6 +46,23 @@ const MIGRATIONS: { id: number; name: string; sql: string }[] = [
       CREATE INDEX ocs_telemetry_events_version_idx ON ocs_telemetry_events (app_version, created_at);
     `,
   },
+  {
+    id: 2,
+    name: "crash_reports",
+    sql: `
+      CREATE TABLE ocs_crash_reports (
+        id           bigserial PRIMARY KEY,
+        created_at   timestamptz NOT NULL DEFAULT now(),
+        app_version  text NOT NULL,
+        process_type text,
+        kind         text NOT NULL,
+        message      text,
+        dump_file    text,
+        dump_size    int
+      );
+      CREATE INDEX ocs_crash_reports_created_at_idx ON ocs_crash_reports (created_at);
+    `,
+  },
 ];
 
 async function runMigrations(sql: Sql): Promise<void> {
@@ -75,6 +93,10 @@ async function purgeOld(sql: Sql): Promise<void> {
     DELETE FROM ocs_telemetry_events WHERE created_at < now() - make_interval(days => ${days})
   `;
   if (result.count > 0) console.log(`[db] retenção: ${result.count} eventos com mais de ${days} dias apagados`);
+  const crashes = await sql<{ dump_file: string | null }[]>`
+    DELETE FROM ocs_crash_reports WHERE created_at < now() - make_interval(days => ${days}) RETURNING dump_file
+  `;
+  for (const row of crashes) if (row.dump_file) await deleteDump(row.dump_file);
 }
 
 const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;

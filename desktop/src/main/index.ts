@@ -10,7 +10,6 @@ import {
   clipboard,
   nativeImage,
   MessageChannelMain,
-  crashReporter,
   type MessagePortMain,
 } from "electron";
 import { join } from "path";
@@ -18,14 +17,11 @@ import { userInfo } from "os";
 import { createWriteStream, readFileSync, writeFileSync, type WriteStream } from "fs";
 import { autoUpdater } from "electron-updater";
 import WebSocket from "ws";
+import { isCrashUploadEnabled, reportJsCrash, setCrashUploadEnabled, startCrashReporter } from "./crashReports";
 
-// Salva dump LOCAL de crash (sem subir pra lugar nenhum, `uploadToServer: false`) — sem isso o
-// crash reporter interno do Chromium tenta conectar num servidor de coleta que não existe nesse
-// build de dev e desiste silenciosamente ("crashpad_client_win.cc: not connected"), sem salvar
-// nada. Crash sob carga pesada de GPU (jogo + captura+NVENC) já aconteceu 2x nessa sessão sem
-// deixar rastro nenhum — isso dá visibilidade real da próxima vez.
-crashReporter.start({ submitURL: "", uploadToServer: false, compress: false });
-console.log("[crash-reporter] dumps salvos em:", app.getPath("crashDumps"));
+// Crash nativo (Crashpad) salvo localmente e, com consentimento, enviado ao backend — ver
+// crashReports.ts. Sem o crashReporter, o Chromium nem salva o dump.
+startCrashReporter();
 
 // Crashpad acima só pega crash NATIVO (SEH/access violation). Exceção JS não tratada no processo
 // main é fatal por padrão no Node (stack impresso no stderr, processo morre) — sem dump, sem
@@ -47,7 +43,7 @@ process.on("uncaughtException", (err) => {
     // se nem isso funcionar, não tem mais nada a fazer — deixa cair mesmo
   }
   console.error("[uncaughtException]", err);
-  app.exit(1);
+  void reportJsCrash(String(err.stack ?? err)).finally(() => app.exit(1));
 });
 
 // Mesmo raciocínio do handler acima, pra rejeição de Promise não tratada (Electron mata o
@@ -62,7 +58,7 @@ process.on("unhandledRejection", (reason) => {
     // idem
   }
   console.error("[unhandledRejection]", reason);
-  app.exit(1);
+  void reportJsCrash(`[unhandledRejection] ${reason instanceof Error ? reason.stack : String(reason)}`).finally(() => app.exit(1));
 });
 
 // `backgroundThrottling: false` (webPreferences) só evita o Chromium throttlar TIMERS/rAF do
@@ -250,7 +246,17 @@ function rebuildTrayMenu(): void {
     });
   }
 
-  template.push({ type: "separator" }, { label: "Sair", click: () => app.quit() });
+  template.push(
+    { type: "separator" },
+    {
+      label: "Enviar relatórios de erro",
+      type: "checkbox",
+      checked: isCrashUploadEnabled(),
+      click: (item) => setCrashUploadEnabled(item.checked),
+    },
+    { type: "separator" },
+    { label: "Sair", click: () => app.quit() },
+  );
   tray.setContextMenu(Menu.buildFromTemplate(template));
 }
 

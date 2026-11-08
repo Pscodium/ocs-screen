@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 
 // Contato exibido na política (exigido pela Microsoft Store) — definido no build via VITE_CONTACT_EMAIL.
 const CONTACT_EMAIL = import.meta.env.VITE_CONTACT_EMAIL ?? "";
-const LAST_UPDATED = "29 de outubro de 2026";
+const LAST_UPDATED = "8 de novembro de 2026";
 
 export function PrivacyPage() {
   return (
@@ -31,6 +31,17 @@ export function PrivacyPage() {
           <strong>Dados técnicos de conexão:</strong> endereço IP e informações de rede necessárias para estabelecer a
           conexão de vídeo (WebRTC/TURN). Os servidores registram acessos (IP, data, rota) em logs técnicos usados
           apenas para segurança e diagnóstico.
+        </li>
+        <li>
+          <strong>Diagnóstico de qualidade:</strong> ao fim de cada transmissão (ou quando uma falha é detectada), o
+          aplicativo e o site enviam contadores técnicos anônimos — versão, duração, codec, quadros enviados, tipo de
+          conexão. Não incluem o conteúdo da tela nem dados pessoais e são apagados após 90 dias.
+        </li>
+        <li>
+          <strong>Relatórios de erro do aplicativo:</strong> se o aplicativo para Windows fechar por erro, ele envia um
+          relatório técnico (versão e o estado do programa no momento do erro) para corrigirmos o problema. O
+          relatório pode conter trechos da memória do aplicativo. Você pode desligar o envio no menu do ícone da
+          bandeja, em "Enviar relatórios de erro". Os relatórios são apagados após 90 dias.
         </li>
       </ul>
 
