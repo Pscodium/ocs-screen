@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0 — 2026-11-08
+
+### Novidades
+- **Relatórios de erro automáticos.** Se o app fechar por um erro, ele envia um relatório técnico
+  pra gente identificar e corrigir o problema mais rápido. Dá pra desligar a qualquer momento no
+  menu do ícone da bandeja, em "Enviar relatórios de erro".
+
 ## 1.3.0 — 2026-11-07
 
 ### Novidades

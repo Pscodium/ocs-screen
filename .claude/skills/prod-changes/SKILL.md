@@ -54,7 +54,8 @@ pra confirmar o nível da versão.
 
 | Versão | Estado | Observação |
 |---|---|---|
-| 1.2.0 (não publicada) | — | Manda `hostAuth` (sala protegida por segredo do host). Mostra aviso/bloqueio pela `MIN_APP_VERSION` e avisa atualização também na Store |
+| 1.4.0 | Estável | Envia relatório de crash (nativo + JS) ao backend (`/crash`, `/crash/js`), com opção de desligar na bandeja. Requer backend com Postgres pra guardar; sem ele, descartado |
+| 1.2.0 – 1.3.0 | Estável | Manda `hostAuth` (sala protegida por segredo do host). Mostra aviso/bloqueio pela `MIN_APP_VERSION` e avisa atualização também na Store |
 | 1.1.0 – 1.1.1 | Estável (modo de transição) | Mandam `appVersion`. Salas sem segredo do host (qualquer um pode encerrar/assumir). Bloqueio aparece só como erro genérico ao criar sala |
 | < 1.1.0 | Estável (legado, modo de transição) | Não mandam `appVersion`: qualquer `MIN_APP_VERSION` bloqueia essas. Mesma falta de proteção acima |
 
