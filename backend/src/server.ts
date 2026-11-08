@@ -11,6 +11,8 @@ import { appRoutes } from "./routes/app.js";
 import { adminRoutes } from "./routes/admin.js";
 import { crashRoutes } from "./routes/crash.js";
 import { initDb } from "./services/db.js";
+import { restoreRooms, startRoomPersistence } from "./services/rooms.js";
+import { getLiveRoomViewerCounts } from "./services/livekit.js";
 
 const app = Fastify({
   logger: {
@@ -57,6 +59,19 @@ await app.register(adminRoutes);
 await app.register(crashRoutes);
 
 await initDb();
+
+// Salas sobrevivem a restart/deploy (ver services/rooms.ts). Antes do listen: nenhuma requisição
+// pode cair na janela em que o Map ainda está vazio. Falha no Redis/LiveKit nunca trava o boot.
+try {
+  const liveKitRoomIds = await getLiveRoomViewerCounts()
+    .then((counts) => new Set(counts.keys()))
+    .catch(() => null);
+  const restored = await restoreRooms(liveKitRoomIds);
+  if (restored > 0) app.log.info({ restored }, "rooms restored from redis");
+} catch (err) {
+  app.log.error({ err }, "room restore failed");
+}
+startRoomPersistence();
 
 try {
   await app.listen({ port: config.port, host: config.host });

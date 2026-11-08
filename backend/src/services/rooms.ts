@@ -2,6 +2,7 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { config } from "../config.js";
 import { generateRoomId } from "../utils/ids.js";
 import { cleanupNativeSockets } from "./nativeWsRelay.js";
+import { getRedis, REDIS_PREFIX } from "./redis.js";
 import type { Room, RoomSettings, RoomSource } from "../types/room.js";
 
 const defaultSettings: RoomSettings = {
@@ -14,6 +15,120 @@ const rooms = new Map<string, Room>();
 const emptyTimers = new Map<string, NodeJS.Timeout>();
 
 export class SlugTakenError extends Error {}
+export class RoomLimitError extends Error {}
+
+// ---------- Persistência no Redis ----------
+// O Map acima continua sendo a fonte de verdade em execução; o Redis só existe pra sala sobreviver a
+// um restart/deploy do backend. Regra pra nunca acumular lixo: TODA chave de sala tem TTL curto e só
+// é renovada pelo loop abaixo, e só pras salas que ainda estão no Map. Backend morto/travado = ninguém
+// renova = tudo expira sozinho em ROOM_TTL_SECONDS. Os inscritos do Discord (sem TTL) ficam no mesmo
+// Redis — com `maxmemory-policy volatile-*` só chaves com TTL (salas) podem ser descartadas.
+const ROOM_KEY_PREFIX = "room:";
+const ROOM_TTL_SECONDS = 180;
+const ROOM_REFRESH_MS = 60_000;
+// Teto absoluto: nenhum token de sala vale mais que isso, então sala mais velha não tem por que viver.
+const MAX_ROOM_AGE_MS = config.room.tokenTtlSeconds * 1000;
+// Teto global de salas simultâneas — protege memória/Redis de criação em massa que escape do rate limit.
+const MAX_ROOMS = 500;
+
+function roomRedis() {
+  return config.roomPersistence ? getRedis() : null;
+}
+
+function roomKey(roomId: string): string {
+  return `${ROOM_KEY_PREFIX}${roomId}`;
+}
+
+function persistRoom(room: Room): void {
+  void roomRedis()
+    ?.set(roomKey(room.id), JSON.stringify(room), "EX", ROOM_TTL_SECONDS)
+    .catch((err: unknown) => console.error("[rooms] persist:", err));
+}
+
+function unpersistRoom(roomId: string): void {
+  void roomRedis()
+    ?.del(roomKey(roomId))
+    .catch((err: unknown) => console.error("[rooms] unpersist:", err));
+}
+
+function isRoomTooOld(room: Room): boolean {
+  return Date.now() - room.createdAt > MAX_ROOM_AGE_MS;
+}
+
+// Validação mínima do que volta do Redis — chave corrompida/de versão antiga é descartada, nunca
+// derruba o boot.
+function parseStoredRoom(raw: string): Room | null {
+  try {
+    const room = JSON.parse(raw) as Partial<Room>;
+    if (typeof room.id !== "string" || typeof room.hostIdentity !== "string" || typeof room.createdAt !== "number") {
+      return null;
+    }
+    if (!room.settings || typeof room.nativeMode !== "boolean") return null;
+    return {
+      id: room.id,
+      hostIdentity: room.hostIdentity,
+      createdAt: room.createdAt,
+      settings: { ...defaultSettings, ...room.settings },
+      nativeMode: room.nativeMode,
+      isPrivate: room.isPrivate === true,
+      passwordHash: typeof room.passwordHash === "string" ? room.passwordHash : null,
+      source: room.source === "web" ? "web" : "desktop",
+      appVersion: typeof room.appVersion === "string" ? room.appVersion : null,
+      hostName: typeof room.hostName === "string" ? room.hostName : null,
+      hostSecretHash: typeof room.hostSecretHash === "string" ? room.hostSecretHash : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Boot: recupera as salas que estavam vivas antes do restart. `liveKitRoomIds` = salas que o
+// LiveKit diz que existem agora (null = LiveKit inacessível, não descarta nada por isso). Sala
+// LiveKit que acabou durante o restart é descartada; sala nativa volta com o timer de limpeza
+// armado — o host reconecta no WS e cancela, ou ela some como qualquer sala nativa abandonada.
+export async function restoreRooms(liveKitRoomIds: Set<string> | null): Promise<number> {
+  const redis = roomRedis();
+  if (!redis) return 0;
+  // SCAN não aplica o `keyPrefix` do ioredis no MATCH nem tira ele do resultado.
+  const fullPrefix = `${REDIS_PREFIX}${ROOM_KEY_PREFIX}`;
+  const keys: string[] = [];
+  let cursor = "0";
+  do {
+    const [next, batch] = await redis.scan(cursor, "MATCH", `${fullPrefix}*`, "COUNT", 200);
+    cursor = next;
+    keys.push(...batch.map((key) => key.slice(REDIS_PREFIX.length)));
+  } while (cursor !== "0");
+  if (keys.length === 0) return 0;
+
+  const values = await redis.mget(...keys);
+  let restored = 0;
+  values.forEach((raw, i) => {
+    const room = raw ? parseStoredRoom(raw) : null;
+    const gone = !room || isRoomTooOld(room) || (!room.nativeMode && liveKitRoomIds !== null && !liveKitRoomIds.has(room.id));
+    if (gone || rooms.has(room.id)) {
+      if (gone) unpersistRoom(keys[i].slice(ROOM_KEY_PREFIX.length));
+      return;
+    }
+    rooms.set(room.id, room);
+    if (room.nativeMode) scheduleRoomCleanup(room.id);
+    restored++;
+  });
+  return restored;
+}
+
+let refreshTimer: NodeJS.Timeout | null = null;
+
+// Renova o TTL das salas vivas e descarta as que passaram do teto de idade.
+export function startRoomPersistence(): void {
+  if (refreshTimer || !roomRedis()) return;
+  refreshTimer = setInterval(() => {
+    for (const room of rooms.values()) {
+      if (isRoomTooOld(room)) deleteRoom(room.id);
+      else persistRoom(room);
+    }
+  }, ROOM_REFRESH_MS);
+  refreshTimer.unref();
+}
 
 export function createRoom(
   hostIdentity: string,
@@ -29,6 +144,7 @@ export function createRoom(
 ): Room {
   const id = slug ?? generateRoomId();
   if (slug && rooms.has(slug)) throw new SlugTakenError(`Sala "${slug}" já está em uso.`);
+  if (rooms.size >= MAX_ROOMS) throw new RoomLimitError("Limite de salas simultâneas atingido.");
 
   const room: Room = {
     id,
@@ -44,6 +160,7 @@ export function createRoom(
     hostSecretHash: hostSecret ? sha256Hex(hostSecret) : null,
   };
   rooms.set(room.id, room);
+  persistRoom(room);
   // Sala nativa nunca aparece no cruzamento de órfãs de `GET /rooms` (`isOrphan` em
   // routes/rooms.ts ignora `nativeMode` de propósito — LiveKit não tem visibilidade nenhuma do
   // transporte nativo, cruzar contra ele apagaria toda sala nativa ativa ~20s depois de criada).
@@ -99,6 +216,7 @@ export function listRooms(): Room[] {
 
 export function deleteRoom(roomId: string): void {
   rooms.delete(roomId);
+  unpersistRoom(roomId);
   cleanupNativeSockets(roomId);
   const timer = emptyTimers.get(roomId);
   if (timer) {

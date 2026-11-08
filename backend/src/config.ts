@@ -67,6 +67,11 @@ export const config = {
   // Redis compartilhado (o mesmo de produção, inclusive em dev local — igual LiveKit/coturn). Sem
   // REDIS_URL, tudo que depende dele (inscritos do bot do Discord) fica desligado, nunca trava o boot.
   redisUrl: process.env.REDIS_URL ?? null,
+  // Salas no Redis pra sobreviver a restart/deploy (services/rooms.ts). Só produção por padrão: dev
+  // local usa o MESMO Redis de produção, e um backend local restauraria (e manteria vivas) as salas
+  // de produção. `ROOM_PERSISTENCE=true|false` força.
+  roomPersistence:
+    process.env.ROOM_PERSISTENCE === "true" || (isProduction && process.env.ROOM_PERSISTENCE !== "false"),
   // Bot do Discord que manda DM avisando que uma transmissão começou (services/discordNotify.ts).
   // `publicKey` valida a assinatura das interações (botões/slash commands) e `botToken` envia as
   // DMs. `notifyEnabled` é separado de propósito: como dev local usa o MESMO Redis de produção (e

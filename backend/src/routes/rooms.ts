@@ -10,6 +10,7 @@ import {
   generateHostSecret,
   getRoom,
   listRooms,
+  RoomLimitError,
   SlugTakenError,
 } from "../services/rooms.js";
 import { isAppVersionSupported } from "./app.js";
@@ -143,6 +144,7 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       }, origin, hostSecret);
     } catch (err) {
       if (err instanceof SlugTakenError) return reply.code(409).send({ error: "slug_taken" });
+      if (err instanceof RoomLimitError) return reply.code(503).send({ error: "room_limit" });
       throw err;
     }
     request.log.info(
