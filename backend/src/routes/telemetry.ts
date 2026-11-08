@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { db } from "../services/db.js";
 
 // Relatório de diagnóstico do pipeline nativo (vídeo vai direto host → espectador por DataChannel,
 // o backend nunca vê os frames — sem isso, falha de transmissão não deixa rastro nenhum no
@@ -79,6 +80,15 @@ export async function telemetryRoutes(app: FastifyInstance): Promise<void> {
         },
         "native telemetry",
       );
+      const sql = db();
+      if (sql) {
+        const appVersion = typeof data.appVersion === "string" && /^\d+\.\d+\.\d+$/.test(data.appVersion) ? data.appVersion : null;
+        // Fire-and-forget: banco lento/fora do ar nunca atrasa nem falha o relatório.
+        sql`
+          INSERT INTO ocs_telemetry_events (room_id, session_id, role, source, reason, app_version, data)
+          VALUES (${request.params.id}, ${sessionId ?? null}, ${role}, ${source}, ${reason}, ${appVersion}, ${sql.json(data)})
+        `.catch((err: Error) => request.log.error({ err: err.message }, "[db] falha ao gravar telemetria"));
+      }
       return reply.code(204).send();
     },
   );

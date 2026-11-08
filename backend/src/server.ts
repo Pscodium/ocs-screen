@@ -8,6 +8,8 @@ import { roomRoutes } from "./routes/rooms.js";
 import { discordRoutes } from "./routes/discord.js";
 import { telemetryRoutes } from "./routes/telemetry.js";
 import { appRoutes } from "./routes/app.js";
+import { adminRoutes } from "./routes/admin.js";
+import { initDb } from "./services/db.js";
 
 const app = Fastify({
   logger: {
@@ -19,6 +21,9 @@ const app = Fastify({
   },
   // Confia só nos N saltos mais próximos (ver `trustProxyHops` em config.ts).
   trustProxy: (_address: string, hop: number) => hop < config.trustProxyHops,
+  // Schema da telemetria usa `type: [string, number, boolean, null]` — sem isso o Ajv avisa
+  // "strict mode: use allowUnionTypes" no boot.
+  ajv: { customOptions: { allowUnionTypes: true } },
 });
 
 // Rede de segurança: um erro não tratado aqui derruba o processo inteiro (Node mata o processo em
@@ -47,6 +52,9 @@ await app.register(roomRoutes);
 await app.register(discordRoutes);
 await app.register(telemetryRoutes);
 await app.register(appRoutes);
+await app.register(adminRoutes);
+
+await initDb();
 
 try {
   await app.listen({ port: config.port, host: config.host });

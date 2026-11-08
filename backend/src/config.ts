@@ -78,4 +78,14 @@ export const config = {
     botToken: process.env.DISCORD_BOT_TOKEN ?? null,
     notifyEnabled: process.env.DISCORD_NOTIFY_ENABLED === "true",
   },
+  // Postgres (services/db.ts) — histórico de telemetria pra estatística por versão (/admin/stats).
+  // Sem POSTGRES_URL, a telemetria continua só no log, como antes; nunca trava o boot.
+  postgresUrl: process.env.POSTGRES_URL?.trim() || null,
+  // Bearer token das rotas /admin/*. Sem ele as rotas admin respondem 404 (desligadas).
+  adminToken: process.env.ADMIN_TOKEN?.trim() || null,
+  telemetryRetentionDays: Number(process.env.TELEMETRY_RETENTION_DAYS ?? 90),
 } as const;
+
+if (config.adminToken !== null && config.adminToken.length < 24) {
+  throw new Error("ADMIN_TOKEN muito curto (mínimo 24 caracteres — gere com `openssl rand -hex 32`)");
+}

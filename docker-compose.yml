@@ -1,4 +1,18 @@
 services:
+  # Postgres só pra dev local (telemetria/admin — backend/src/services/db.ts). Produção usa o
+  # banco próprio via POSTGRES_URL.
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      - POSTGRES_USER=ocs
+      - POSTGRES_PASSWORD=ocs
+      - POSTGRES_DB=ocs
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   livekit:
     image: livekit/livekit-server:latest
     command: --config /etc/livekit.yaml
@@ -41,3 +55,6 @@ services:
       --no-cli
       --no-multicast-peers
       --log-file=stdout
+
+volumes:
+  postgres-data:

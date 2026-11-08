@@ -84,6 +84,8 @@ services:
       DISCORD_PUBLIC_KEY: ${DISCORD_PUBLIC_KEY:-}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
       DISCORD_NOTIFY_ENABLED: ${DISCORD_NOTIFY_ENABLED:-false}
+      POSTGRES_URL: ${POSTGRES_URL:-}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
     # API é só HTTP — proxy do EasyPanel alcança pela rede interna; mapeie o domínio pra porta 4000 na UI.
     expose:
       - "4000"
