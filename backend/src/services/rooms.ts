@@ -21,7 +21,10 @@ export function createRoom(
   slug?: string,
   nativeMode = false,
   access: { isPrivate?: boolean; password?: string } = {},
-  origin: { source: RoomSource; appVersion: string | null } = { source: "desktop", appVersion: null },
+  origin: { source: RoomSource; appVersion: string | null; hostName?: string | null } = {
+    source: "desktop",
+    appVersion: null,
+  },
   hostSecret: string | null = null,
 ): Room {
   const id = slug ?? generateRoomId();
@@ -37,6 +40,7 @@ export function createRoom(
     passwordHash: access.password ? hashPassword(access.password) : null,
     source: origin.source,
     appVersion: origin.appVersion,
+    hostName: origin.hostName ?? null,
     hostSecretHash: hostSecret ? sha256Hex(hostSecret) : null,
   };
   rooms.set(room.id, room);

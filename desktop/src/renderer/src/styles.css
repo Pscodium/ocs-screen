@@ -431,6 +431,16 @@ select {
   border-color: var(--accent);
 }
 
+.nickname-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.nickname-row .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
 .slug-input-prefix {
   padding-left: 0.75rem;
   color: var(--muted);

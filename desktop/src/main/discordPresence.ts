@@ -67,6 +67,22 @@ export function setDiscordStreaming(active: boolean, url: string | null = null, 
   else if (active) void ensureClient();
 }
 
+// Nome do usuário logado no Discord desktop — vem no READY do IPC local (independe da opção
+// "Compartilhar atividade"). Usado SÓ como sugestão pro apelido nas configurações; quem decide se
+// ele vai no aviso é a pessoa (toggle opt-in na HomePage). null = Discord fechado/sem resposta.
+export async function getDiscordUserName(timeoutMs = 3000): Promise<string | null> {
+  if (!client) void ensureClient();
+  const deadline = Date.now() + timeoutMs;
+  while (!(client && ready && client.user) && Date.now() < deadline) {
+    if (!client) return null; // login falhou
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const user = client?.user;
+  if (!user) return null;
+  const globalName = (user as { global_name?: string | null }).global_name;
+  return globalName?.trim() || user.username || null;
+}
+
 export function destroyDiscordPresence(): void {
   const c = client;
   client = null;

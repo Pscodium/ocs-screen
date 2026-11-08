@@ -48,6 +48,8 @@ export async function fetchMinAppVersion(): Promise<string | null> {
 export interface RoomAccess {
   isPrivate: boolean;
   password?: string;
+  // Opt-in (aba "Configuração"): apelido mostrado no aviso do Discord. Ausente = aviso sem nome.
+  hostName?: string;
 }
 
 export async function createRoom(
@@ -65,6 +67,7 @@ export async function createRoom(
       nativeMode,
       isPrivate: access.isPrivate,
       password: access.password || undefined,
+      hostName: access.hostName || undefined,
       source: "desktop",
       hostAuth: true,
       appVersion: __APP_VERSION__,

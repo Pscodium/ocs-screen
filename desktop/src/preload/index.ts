@@ -99,6 +99,8 @@ const api = {
   },
   system: {
     userName: (): Promise<string> => ipcRenderer.invoke("system:user-name"),
+    // Nome do Discord desktop aberto (null se fechado) — sugestão de apelido, ver discordPresence.ts.
+    discordUserName: (): Promise<string | null> => ipcRenderer.invoke("discord:user-name"),
   },
   clipboard: {
     writeText: (text: string): Promise<void> => ipcRenderer.invoke("clipboard:write-text", text),

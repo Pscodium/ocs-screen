@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { LiveCard } from "../components/LiveCard";
 import { SourceBrowser } from "../components/SourcePicker";
 import { RoomsBrowser } from "../components/RoomsBrowser";
@@ -78,6 +78,105 @@ function writeUserNamePref(on: boolean): void {
   }
 }
 
+// Aba "Configuração": apelido + "mostrar meu nome no aviso do Discord" — só neste PC
+// (localStorage). Mostrar o nome é opt-in: o padrão é o aviso sair sem nome.
+const NICKNAME_KEY = "ocs.nickname";
+const ANNOUNCE_NAME_KEY = "ocs.announceName";
+const MAX_NICKNAME_LENGTH = 32;
+
+function readStored(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // storage indisponível — só não fica lembrado
+  }
+}
+
+interface ProfileSettingsProps {
+  nickname: string;
+  onNicknameChange: (value: string) => void;
+  announceName: boolean;
+  onAnnounceNameChange: (on: boolean) => void;
+  open: boolean;
+}
+
+function ProfileSettings({ nickname, onNicknameChange, announceName, onAnnounceNameChange, open }: ProfileSettingsProps) {
+  const [discordStatus, setDiscordStatus] = useState<"idle" | "loading" | "missing">("idle");
+
+  const fillFromDiscord = useCallback(
+    async (silent: boolean) => {
+      setDiscordStatus("loading");
+      const name = await window.screenshare.system.discordUserName().catch(() => null);
+      if (name) {
+        onNicknameChange(name.slice(0, MAX_NICKNAME_LENGTH));
+        setDiscordStatus("idle");
+      } else {
+        setDiscordStatus(silent ? "idle" : "missing");
+      }
+    },
+    [onNicknameChange],
+  );
+
+  // Sem apelido ainda: ao abrir a aba, sugere o nome do Discord (só preenche o campo local — nada
+  // sai do PC enquanto "Mostrar meu nome" estiver desligado).
+  useEffect(() => {
+    if (open && nickname.trim() === "") void fillFromDiscord(true);
+  }, [open]);
+
+  return (
+    <>
+      <div className="settings-field">
+        <label htmlFor="host-nickname">Apelido</label>
+        <div className="nickname-row">
+          <input
+            id="host-nickname"
+            className="text-input"
+            type="text"
+            placeholder="Como você quer aparecer"
+            value={nickname}
+            maxLength={MAX_NICKNAME_LENGTH}
+            onChange={(e) => onNicknameChange(e.target.value)}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={discordStatus === "loading"}
+            onClick={() => void fillFromDiscord(false)}
+            title="Preenche com o nome da sua conta do Discord aberta neste PC"
+          >
+            {discordStatus === "loading" ? "Buscando..." : "Usar do Discord"}
+          </button>
+        </div>
+        {discordStatus === "missing" && (
+          <span className="toggle-row-hint">Discord não encontrado — abra o app do Discord ou digite o apelido.</span>
+        )}
+      </div>
+      <label className="toggle-row">
+        <span className="toggle-row-label">
+          Mostrar meu nome no aviso do Discord
+          <span className="toggle-row-hint">
+            {announceName && nickname.trim() === ""
+              ? "Digite um apelido — sem ele o aviso sai sem nome."
+              : "Seu apelido aparece na DM que o bot manda pros inscritos."}
+          </span>
+        </span>
+        <span className="toggle-switch">
+          <input type="checkbox" checked={announceName} onChange={(e) => onAnnounceNameChange(e.target.checked)} />
+          <span className="toggle-slider" />
+        </span>
+      </label>
+    </>
+  );
+}
+
 // Mesmas regras do backend (`normalizeSlug`/`isValidSlug`): minúsculas, números e hífen, 3–32.
 function userNameToSlug(name: string): string {
   return name
@@ -102,6 +201,13 @@ export function HomePage({ broadcast, rooms, tab, onTabChange, suspended }: Home
   const effectiveSlug = useUserName && userNameUsable ? userSlug : slug;
   const [access, setAccess] = useState<AccessSettings>(defaultAccessSettings);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [nickname, setNickname] = useState(() => readStored(NICKNAME_KEY));
+  const [announceName, setAnnounceName] = useState(() => readStored(ANNOUNCE_NAME_KEY) === "1");
+  const handleNicknameChange = useCallback((value: string) => {
+    setNickname(value);
+    writeStored(NICKNAME_KEY, value);
+  }, []);
   const [pickedId, setPickedId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const { state, info, error, start, stop, swapSource, swapping, optimizeCodec, optimizingCodec, toggleCursor } =
@@ -137,6 +243,7 @@ export function HomePage({ broadcast, rooms, tab, onTabChange, suspended }: Home
     start(settings, source, effectiveSlug, {
       isPrivate: access.isPrivate,
       password: access.usePassword ? access.password : undefined,
+      hostName: announceName ? nickname.trim() || undefined : undefined,
     });
   };
 
@@ -200,6 +307,26 @@ export function HomePage({ broadcast, rooms, tab, onTabChange, suspended }: Home
                 }}
               />
             </section>
+
+            <details
+              className="setup-section setup-advanced"
+              open={configOpen}
+              onToggle={(e) => setConfigOpen((e.target as HTMLDetailsElement).open)}
+            >
+              <summary className="setup-section-title setup-advanced-summary">Configuração</summary>
+              <div className="setup-advanced-body">
+                <ProfileSettings
+                  nickname={nickname}
+                  onNicknameChange={handleNicknameChange}
+                  announceName={announceName}
+                  onAnnounceNameChange={(on) => {
+                    setAnnounceName(on);
+                    writeStored(ANNOUNCE_NAME_KEY, on ? "1" : "0");
+                  }}
+                  open={configOpen}
+                />
+              </div>
+            </details>
 
             <details
               className="setup-section setup-advanced"

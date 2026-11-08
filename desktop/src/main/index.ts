@@ -17,7 +17,7 @@ import { userInfo } from "os";
 import { createWriteStream, readFileSync, writeFileSync, type WriteStream } from "fs";
 import { autoUpdater } from "electron-updater";
 import WebSocket from "ws";
-import { destroyDiscordPresence, setDiscordStreaming } from "./discordPresence";
+import { destroyDiscordPresence, getDiscordUserName, setDiscordStreaming } from "./discordPresence";
 import { isCrashUploadEnabled, reportJsCrash, setCrashUploadEnabled, startCrashReporter } from "./crashReports";
 
 // Crash nativo (Crashpad) salvo localmente e, com consentimento, enviado ao backend — ver
@@ -615,6 +615,8 @@ ipcMain.on("tray:set-status", (_event, isLive: unknown, viewerCount: unknown, vi
 
 // Nome do perfil do Windows (conta logada) — sugestão opcional de nome de sala. É o nome da pessoa,
 // então só é usado se ela ligar a opção (ver HomePage), e nunca sai do PC por outro caminho.
+ipcMain.handle("discord:user-name", () => getDiscordUserName());
+
 ipcMain.handle("system:user-name", () => {
   try {
     return userInfo().username;

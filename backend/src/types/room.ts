@@ -26,6 +26,9 @@ export interface Room {
   source: RoomSource;
   // Versão do app desktop que criou a sala (null no web ou em app antigo que não manda).
   appVersion: string | null;
+  // Nome que o host escolheu mostrar no aviso do Discord (opt-in no app, já sanitizado). Declarado
+  // pelo cliente, não verificado. null = não mostrar (padrão, e app/web antigo que não manda).
+  hostName: string | null;
   // SHA-256 (hex) do segredo do host — exigido no DELETE e no WS `role=host`. null = sala criada
   // por cliente antigo (desktop ≤ 1.1.1) que não sabe mandar o segredo: modo de transição, sem
   // proteção (ver skill prod-changes, tabela de versões). Decidido na criação, nunca depois.
@@ -42,6 +45,8 @@ export interface CreateRoomRequest {
   password?: string;
   source?: RoomSource;
   appVersion?: string;
+  // Opt-in: nome a mostrar no aviso do Discord. Validado/sanitizado em routes/rooms.ts.
+  hostName?: string;
   // Cliente sabe guardar e mandar `hostSecret` (desktop ≥ 1.2.0 e viewer web atual).
   hostAuth?: boolean;
   // LEGADO (web 1.0.15 e anteriores) — substituído por `source`. Mantido pra salas criadas por

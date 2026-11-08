@@ -78,6 +78,27 @@ function loadLastSlug(): string {
   }
 }
 
+// Apelido + "mostrar meu nome no aviso do Discord" — só neste navegador (localStorage), opt-in.
+// Mesmas chaves e regras do app desktop (aba "Configuração").
+const NICKNAME_KEY = "ocs.nickname";
+const ANNOUNCE_NAME_KEY = "ocs.announceName";
+
+function readStored(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeStored(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // storage indisponível — só não fica lembrado
+  }
+}
+
 function saveLastSlug(slug: string): void {
   try {
     if (slug.trim()) localStorage.setItem(LAST_SLUG_KEY, slug.trim());
@@ -94,6 +115,8 @@ export function HomePage() {
   const [isPrivate, setIsPrivate] = useState(false);
   const [usePassword, setUsePassword] = useState(false);
   const [password, setPassword] = useState("");
+  const [nickname, setNickname] = useState(() => readStored(NICKNAME_KEY));
+  const [announceName, setAnnounceName] = useState(() => readStored(ANNOUNCE_NAME_KEY) === "1");
   const [showPassword, setShowPassword] = useState(false);
   const passwordMissing = usePassword && password.trim() === "";
   const [tab, setTab] = useState<Tab>("share");
@@ -278,13 +301,58 @@ export function HomePage() {
                   )}
                 </div>
 
+                <div className={`password-box ${announceName ? "password-box-on" : ""}`}>
+                  <label className="toggle-row">
+                    <span className="toggle-row-label">
+                      Mostrar meu nome no aviso do Discord
+                      <span className="toggle-row-hint">
+                        {announceName && nickname.trim() === ""
+                          ? "Digite um apelido — sem ele o aviso sai sem nome."
+                          : "Seu apelido aparece na DM que o bot manda pros inscritos."}
+                      </span>
+                    </span>
+                    <span className="toggle-switch">
+                      <input
+                        type="checkbox"
+                        checked={announceName}
+                        onChange={(e) => {
+                          setAnnounceName(e.target.checked);
+                          writeStored(ANNOUNCE_NAME_KEY, e.target.checked ? "1" : "0");
+                        }}
+                      />
+                      <span className="toggle-slider" />
+                    </span>
+                  </label>
+
+                  {announceName && (
+                    <div className="password-input-wrap">
+                      <input
+                        className="slug-input password-input"
+                        type="text"
+                        placeholder="Seu apelido"
+                        aria-label="Apelido"
+                        value={nickname}
+                        onChange={(e) => {
+                          setNickname(e.target.value);
+                          writeStored(NICKNAME_KEY, e.target.value);
+                        }}
+                        maxLength={32}
+                      />
+                    </div>
+                  )}
+                </div>
+
                 {error && <p className="error-text">{error}</p>}
 
                 <button
                   className="btn-primary btn-share"
                   onClick={() => {
                     if (rememberSlug) saveLastSlug(slug);
-                    void start(settings, slug, { isPrivate, password: usePassword ? password : undefined });
+                    void start(settings, slug, {
+                      isPrivate,
+                      password: usePassword ? password : undefined,
+                      hostName: announceName ? nickname.trim() || undefined : undefined,
+                    });
                   }}
                   disabled={state === "starting" || passwordMissing}
                 >

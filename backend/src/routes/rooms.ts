@@ -42,11 +42,31 @@ const APP_VERSION_PATTERN = /^[0-9A-Za-z.+-]{1,32}$/;
 
 // `source` novo tem prioridade; sem ele, `isWebLive` (web publicado até a 1.0.15) e, sem nenhum
 // dos dois, desktop — o app desktop já publicado não manda nada.
-function resolveRoomOrigin(body: CreateRoomRequest | undefined): { source: RoomSource; appVersion: string | null } {
+const MAX_HOST_NAME_LENGTH = 32;
+
+// Nome livre vindo do cliente — vai parar numa DM do Discord, então: sem caractere de controle, sem
+// markdown/menção (`@everyone`, `**`, links) e com tamanho curto. Vazio depois de limpar = null.
+export function sanitizeHostName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const clean = value
+    .normalize("NFC")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .replace(/[`*_~|>#@<\[\]()\\]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const name = Array.from(clean).slice(0, MAX_HOST_NAME_LENGTH).join("").trim();
+  return name.length > 0 ? name : null;
+}
+
+function resolveRoomOrigin(body: CreateRoomRequest | undefined): {
+  source: RoomSource;
+  appVersion: string | null;
+  hostName: string | null;
+} {
   const source: RoomSource =
     body?.source === "web" || body?.source === "desktop" ? body.source : body?.isWebLive === true ? "web" : "desktop";
   const appVersion = typeof body?.appVersion === "string" && APP_VERSION_PATTERN.test(body.appVersion) ? body.appVersion : null;
-  return { source, appVersion };
+  return { source, appVersion, hostName: sanitizeHostName(body?.hostName) };
 }
 
 export async function roomRoutes(app: FastifyInstance): Promise<void> {

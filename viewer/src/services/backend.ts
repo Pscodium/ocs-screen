@@ -22,6 +22,8 @@ export function getHostSecret(roomId: string): string | undefined {
 export interface RoomAccess {
   isPrivate: boolean;
   password?: string;
+  // Opt-in: apelido mostrado no aviso do Discord. Ausente = aviso sem nome.
+  hostName?: string;
 }
 
 export async function createRoom(
@@ -38,6 +40,7 @@ export async function createRoom(
       slug: slug || undefined,
       isPrivate: access.isPrivate,
       password: access.password || undefined,
+      hostName: access.hostName || undefined,
       nativeMode,
       source: "web",
       appVersion: __APP_VERSION__,

@@ -96,10 +96,14 @@ function buildMessage(room: Room): unknown {
   const viewerUrl = `${config.viewerUrl}/s/${room.id}`;
   const fps = room.settings.fps === "auto" ? "Automático" : `${room.settings.fps} FPS`;
   return {
+    // Nome vem do cliente — nunca deixar virar menção, mesmo que a sanitização deixe passar algo.
+    allowed_mentions: { parse: [] },
     embeds: [
       {
         title: "🔴 Transmissão ao vivo",
-        description: `Uma transmissão acabou de começar: **${room.id}**`,
+        description: room.hostName
+          ? `**${room.hostName}** começou uma transmissão: **${room.id}**`
+          : `Uma transmissão acabou de começar: **${room.id}**`,
         url: viewerUrl,
         color: 0xe5484d,
         fields: [

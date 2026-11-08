@@ -43,13 +43,34 @@ export function PrivacyPage() {
           relatório pode conter trechos da memória do aplicativo. Você pode desligar o envio no menu do ícone da
           bandeja, em "Enviar relatórios de erro". Os relatórios são apagados após 90 dias.
         </li>
+        <li>
+          <strong>Avisos pelo Discord (opcional):</strong> quem se inscreve no bot do Discord (botão ou{" "}
+          <code>/avisar</code>) recebe uma mensagem direta quando uma transmissão pública começa. Para isso guardamos
+          apenas o ID da sua conta do Discord, até você cancelar com <code>/parar</code> ou o botão "Parar de
+          receber" — o que apaga o ID na hora.
+        </li>
+        <li>
+          <strong>Apelido de quem transmite (opcional):</strong> no aplicativo para Windows (em "Configuração") e ao
+          transmitir pelo site, você pode definir um apelido — no aplicativo, ele pode ser sugerido a partir do nome
+          da sua conta do Discord aberta no computador. Ele fica salvo só no seu dispositivo e só é enviado se você ligar "Mostrar meu nome no aviso do
+          Discord" — nesse caso aparece no aviso enviado aos inscritos e fica na memória do servidor junto com os
+          dados da sala, sendo apagado quando ela termina. O aplicativo não acessa sua conta do Discord além desse
+          nome, não faz login e não guarda senha nem token.
+        </li>
+        <li>
+          <strong>Status no Discord:</strong> enquanto você transmite, o aplicativo para Windows mostra "Transmitindo
+          tela" no seu perfil do Discord pelo próprio Discord instalado no computador. Quem vê esse status é
+          controlado pelas configurações de privacidade do Discord ("Compartilhar sua atividade").
+        </li>
       </ul>
 
       <h2>O que não fazemos</h2>
       <ul>
         <li>Não vendemos nem compartilhamos dados com terceiros para publicidade.</li>
         <li>Não gravamos transmissões nem capturamos a tela sem você iniciar o compartilhamento.</li>
-        <li>Não coletamos nome, e-mail ou contatos.</li>
+        <li>
+          Não coletamos e-mail nem contatos. Nome só é enviado no caso do apelido acima, se você escolher mostrá-lo.
+        </li>
       </ul>
 
       <h2>Quem vê sua transmissão</h2>
@@ -60,7 +81,9 @@ export function PrivacyPage() {
 
       <h2>Seus direitos</h2>
       <p>
-        Você pode encerrar a transmissão a qualquer momento, o que remove os dados da sala. Para dúvidas ou pedidos
+        Você pode encerrar a transmissão a qualquer momento, o que remove os dados da sala, desligar "Mostrar meu nome
+        no aviso do Discord" a qualquer momento e cancelar os avisos do Discord com <code>/parar</code>. O Discord é
+        um serviço de terceiros, com política de privacidade própria. Para dúvidas ou pedidos
         relacionados à LGPD, {CONTACT_EMAIL ? (
           <>
             escreva para <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>.
