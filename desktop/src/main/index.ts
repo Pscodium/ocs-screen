@@ -17,6 +17,7 @@ import { userInfo } from "os";
 import { createWriteStream, readFileSync, writeFileSync, type WriteStream } from "fs";
 import { autoUpdater } from "electron-updater";
 import WebSocket from "ws";
+import { destroyDiscordPresence, setDiscordStreaming } from "./discordPresence";
 import { isCrashUploadEnabled, reportJsCrash, setCrashUploadEnabled, startCrashReporter } from "./crashReports";
 
 // Crash nativo (Crashpad) salvo localmente e, com consentimento, enviado ao backend — ver
@@ -418,6 +419,7 @@ app.on("window-all-closed", () => {
 // deixa o quit seguir de verdade na segunda vez.
 let quitCleanupDone = false;
 app.on("before-quit", (event) => {
+  destroyDiscordPresence();
   if (quitCleanupDone || !ntActive || !ntRoomId || !ntBackendUrl) return;
   quitCleanupDone = true;
   event.preventDefault();
@@ -608,6 +610,7 @@ ipcMain.on("tray:set-status", (_event, isLive: unknown, viewerCount: unknown, vi
   // Transmissão acabou com o app escondido na bandeja — volta a janela, senão o app some de vez.
   if (!trayLive && mainWindow && !mainWindow.isVisible()) showMainWindow();
   rebuildTrayMenu();
+  setDiscordStreaming(trayLive, trayViewerUrl, trayViewers);
 });
 
 // Nome do perfil do Windows (conta logada) — sugestão opcional de nome de sala. É o nome da pessoa,
