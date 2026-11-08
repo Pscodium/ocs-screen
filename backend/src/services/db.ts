@@ -25,13 +25,15 @@ export function getDb(): Sql | null {
 
 // Migrations embutidas no código (não arquivos .sql) — o Dockerfile só copia `dist/`. Cada entrada
 // roda UMA vez, em ordem, dentro de transação; nunca editar uma já publicada, só acrescentar.
+// Mesmo assim, toda DDL usa IF NOT EXISTS: se a tabela já existir sem o registro da migration
+// (criada à mão, ou registro perdido), a migration só é registrada em vez de derrubar o recurso.
 // Tabelas com prefixo `ocs_` — o banco pode ser compartilhado com outros projetos.
 const MIGRATIONS: { id: number; name: string; sql: string }[] = [
   {
     id: 1,
     name: "telemetry_events",
     sql: `
-      CREATE TABLE ocs_telemetry_events (
+      CREATE TABLE IF NOT EXISTS ocs_telemetry_events (
         id          bigserial PRIMARY KEY,
         created_at  timestamptz NOT NULL DEFAULT now(),
         room_id     text NOT NULL,
@@ -42,15 +44,15 @@ const MIGRATIONS: { id: number; name: string; sql: string }[] = [
         app_version text,
         data        jsonb NOT NULL
       );
-      CREATE INDEX ocs_telemetry_events_created_at_idx ON ocs_telemetry_events (created_at);
-      CREATE INDEX ocs_telemetry_events_version_idx ON ocs_telemetry_events (app_version, created_at);
+      CREATE INDEX IF NOT EXISTS ocs_telemetry_events_created_at_idx ON ocs_telemetry_events (created_at);
+      CREATE INDEX IF NOT EXISTS ocs_telemetry_events_version_idx ON ocs_telemetry_events (app_version, created_at);
     `,
   },
   {
     id: 2,
     name: "crash_reports",
     sql: `
-      CREATE TABLE ocs_crash_reports (
+      CREATE TABLE IF NOT EXISTS ocs_crash_reports (
         id           bigserial PRIMARY KEY,
         created_at   timestamptz NOT NULL DEFAULT now(),
         app_version  text NOT NULL,
@@ -60,7 +62,7 @@ const MIGRATIONS: { id: number; name: string; sql: string }[] = [
         dump_file    text,
         dump_size    int
       );
-      CREATE INDEX ocs_crash_reports_created_at_idx ON ocs_crash_reports (created_at);
+      CREATE INDEX IF NOT EXISTS ocs_crash_reports_created_at_idx ON ocs_crash_reports (created_at);
     `,
   },
 ];
