@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 #include <d3d11.h>
 #include <memory>
 #include <vector>
@@ -96,6 +98,7 @@ public:
     bool IsUsingSoftwareFallback() const { return software_ != nullptr; }
     // Fallback via MFT de HARDWARE (Quick Sync/AMF... — ver SoftwareEncoderCore.h), não CPU.
     bool IsUsingHardwareMft() const { return software_ && software_->IsHardware(); }
+    std::string GetMftDiag() const { return software_ ? software_->GetDiag() : std::string(); }
 
     // Por que o NVENC não ficou de pé (só faz sentido com `IsUsingSoftwareFallback()`) — o host
     // mostra um aviso específico (ex.: "atualize o driver NVIDIA") em vez do genérico.

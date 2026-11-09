@@ -217,6 +217,7 @@ bool SoftwareEncoderCore::TryInitialize(ID3D11Device* device, int bitrateBps, Vi
     if (FAILED(transform_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0))) return false;
     if (FAILED(transform_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0))) return false;
     pendingInputRequests_ = 0; // assíncrono: espera o 1º METransformNeedInput (síncrono não usa)
+    diag_ = {};
     return true;
 }
 
@@ -313,18 +314,48 @@ void SoftwareEncoderCore::PumpEvents(std::vector<std::vector<uint8_t>>& outPacke
         MediaEventType type = MEUnknown;
         event->GetType(&type);
         if (type == METransformNeedInput) {
+            diag_.needInput++;
             pendingInputRequests_++;
         } else if (type == METransformHaveOutput) {
-            DrainOutput(outPackets);
+            diag_.haveOutput++;
+            DrainOutput(outPackets, true);
+        } else if (type == MEError) {
+            HRESULT status = S_OK;
+            event->GetStatus(&status);
+            diag_.errorEvents++;
+            diag_.lastErrorHr = status;
+            fprintf(stderr, "[SoftwareEncoderCore] MFT MEError hr=0x%08lx\n", static_cast<unsigned long>(status));
+        } else {
+            diag_.otherEvents++;
+            diag_.lastOtherEvent = type;
         }
-        // Outros tipos (METransformDrainComplete, etc.) ignorados de propósito — não usados aqui.
     }
 }
 
-void SoftwareEncoderCore::DrainOutput(std::vector<std::vector<uint8_t>>& outPackets) {
+bool SoftwareEncoderCore::RenegotiateOutputType() {
+    diag_.streamChange++;
+    ComPtr<IMFMediaType> type;
+    if (FAILED(transform_->GetOutputAvailableType(0, 0, &type)) || !type) return false;
+    const HRESULT hr = transform_->SetOutputType(0, type.Get(), 0);
+    fprintf(stderr, "[SoftwareEncoderCore] MFT pediu stream change — tipo de saída renegociado (hr=0x%08lx).\n", static_cast<unsigned long>(hr));
+    return SUCCEEDED(hr);
+}
+
+std::string SoftwareEncoderCore::GetDiag() const {
+    char buf[320];
+    snprintf(buf, sizeof(buf),
+        "hw=%d async=%d needIn=%u haveOut=%u out=%u outFail=%u lastOutHr=%08lx inFail=%u lastInHr=%08lx streamChange=%u err=%u lastErrHr=%08lx other=%u lastOther=%lu pendingIn=%d",
+        hardware_ ? 1 : 0, eventGen_ ? 1 : 0, diag_.needInput, diag_.haveOutput, diag_.outputs, diag_.outFail,
+        static_cast<unsigned long>(diag_.lastOutHr), diag_.inFail, static_cast<unsigned long>(diag_.lastInHr),
+        diag_.streamChange, diag_.errorEvents, static_cast<unsigned long>(diag_.lastErrorHr), diag_.otherEvents,
+        static_cast<unsigned long>(diag_.lastOtherEvent), pendingInputRequests_);
+    return buf;
+}
+
+void SoftwareEncoderCore::DrainOutput(std::vector<std::vector<uint8_t>>& outPackets, bool single) {
     if (!transform_) return;
 
-    for (;;) {
+    for (int attempt = 0; attempt < 64; attempt++) {
         MFT_OUTPUT_STREAM_INFO streamInfo{};
         transform_->GetOutputStreamInfo(0, &streamInfo);
 
@@ -347,8 +378,18 @@ void SoftwareEncoderCore::DrainOutput(std::vector<std::vector<uint8_t>>& outPack
             outputBuffer.pEvents = nullptr;
         }
 
+        if (hr == MF_E_TRANSFORM_STREAM_CHANGE) {
+            // O pacote deste evento ainda não saiu — renegocia e tenta de novo (mesmo evento).
+            if (!weProvideSample && outputBuffer.pSample) outputBuffer.pSample->Release();
+            if (!RenegotiateOutputType()) return;
+            continue;
+        }
         if (hr == MF_E_TRANSFORM_NEED_MORE_INPUT) return;
-        if (FAILED(hr)) return; // stream-change ou outro erro raro — não é caminho crítico, desiste dessa rodada
+        if (FAILED(hr)) {
+            diag_.outFail++;
+            diag_.lastOutHr = hr;
+            return;
+        }
 
         IMFSample* sample = weProvideSample ? providedSample.Get() : outputBuffer.pSample;
         if (sample) {
@@ -358,6 +399,7 @@ void SoftwareEncoderCore::DrainOutput(std::vector<std::vector<uint8_t>>& outPack
                 DWORD len = 0;
                 if (SUCCEEDED(contig->Lock(&data, nullptr, &len))) {
                     outPackets.emplace_back(data, data + len);
+                    diag_.outputs++;
                     contig->Unlock();
                 }
             }
@@ -365,6 +407,7 @@ void SoftwareEncoderCore::DrainOutput(std::vector<std::vector<uint8_t>>& outPack
         if (!weProvideSample && outputBuffer.pSample) {
             outputBuffer.pSample->Release(); // MFT alocou e devolveu a posse pra gente (fora do ComPtr)
         }
+        if (single) return; // assíncrono: 1 ProcessOutput por METransformHaveOutput
     }
 }
 
@@ -424,6 +467,10 @@ std::vector<std::vector<uint8_t>> SoftwareEncoderCore::EncodeFrame(ID3D11Texture
         }
 
         const HRESULT hr = transform_->ProcessInput(0, sample.Get(), 0);
+        if (FAILED(hr)) {
+            diag_.inFail++;
+            diag_.lastInHr = hr;
+        }
         if (SUCCEEDED(hr)) {
             if (pendingInputRequests_ > 0) pendingInputRequests_--;
             if (!eventGen_) {
@@ -463,7 +510,7 @@ std::vector<std::vector<uint8_t>> SoftwareEncoderCore::Flush() {
     // Best-effort, tempo curto — só roda ao encerrar a transmissão, não é caminho de latência.
     for (int i = 0; i < 50 && packets.empty(); i++) {
         PumpEvents(packets);
-        DrainOutput(packets);
+        if (!eventGen_) DrainOutput(packets);
         if (packets.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     return packets;

@@ -822,6 +822,7 @@ interface NativeCaptureAddon {
   setEncoderFallbackLevel(level: 0 | 1 | 2): boolean;
   // Fallback via MFT de hardware (Quick Sync/AMF...) em vez de CPU — ver SoftwareEncoderCore.h.
   isUsingHardwareMft(): boolean;
+  getMftDiag(): string;
   // Por que o NVENC não ficou de pé (aviso específico pro usuário, ex.: driver desatualizado).
   getNvencFailure(): "none" | "no-driver" | "driver-too-old" | "other" | "disabled";
   getActiveCodec(): "h264" | "hevc" | "av1";
@@ -1381,6 +1382,7 @@ function sendNativeTelemetry(reason: string, extra: Record<string, string | numb
       softwareEncoder: info.software,
       hardwareMft: info.hardwareMft,
       nvencFailure: String(info.nvencFailure).slice(0, 200),
+      mftDiag: (nativeCapture?.getMftDiag?.() ?? "").slice(0, 290),
       targetFps: ntTargetFps,
       bitrateBps: ntBitrateBps,
       captureKind: ntHwnd !== null ? "window" : "monitor",

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "CodecApiHelper.h" // não usa <codecapi.h> direto aqui — ver comentário no próprio header
@@ -56,6 +57,9 @@ public:
     bool IsInitialized() const { return transform_ != nullptr; }
     // true = MFT de hardware (caminho 1 acima); false = encoder de CPU.
     bool IsHardware() const { return hardware_; }
+    // Diagnóstico do protocolo do MFT assíncrono (vai pra telemetria `mftDiag`) — sem isso uma
+    // trava de encoder em GPU que não temos (AMD/Intel) não deixa pista nenhuma.
+    std::string GetDiag() const;
     VideoCodecType GetActiveCodec() const { return activeCodec_; }
 
 private:
@@ -75,6 +79,11 @@ private:
     // início; com bool os pedidos extras se perdiam, o MFT ficava esperando entradas que já tinha
     // pedido e nunca mandava NeedInput de novo (1 pacote e depois silêncio — visto em produção).
     int pendingInputRequests_ = 0;
+    struct Diag {
+        uint32_t needInput = 0, haveOutput = 0, outputs = 0, outFail = 0, inFail = 0, streamChange = 0, errorEvents = 0, otherEvents = 0;
+        HRESULT lastOutHr = S_OK, lastInHr = S_OK, lastErrorHr = S_OK;
+        MediaEventType lastOtherEvent = MEUnknown;
+    } diag_;
     std::atomic<bool> forceKeyframe_{false};
     FramePacer pacer_; // ver FramePacer.h
     LONGLONG frameDuration100ns_ = 0; // duração de 1 frame em unidades de 100ns (MF usa isso pra timestamp/duration)
@@ -108,5 +117,11 @@ private:
     // Drena qualquer evento já disponível (NÃO bloqueia) — chamado antes de ProcessInput (pra
     // saber se o MFT já pediu mais entrada) e depois (pra coletar output pronto).
     void PumpEvents(std::vector<std::vector<uint8_t>>& outPackets);
-    void DrainOutput(std::vector<std::vector<uint8_t>>& outPackets);
+    // Síncrono: drena tudo até NEED_MORE_INPUT. Assíncrono (`single`): exatamente UMA chamada de
+    // `ProcessOutput` por `METransformHaveOutput` — chamar sem evento viola o protocolo do MFT
+    // assíncrono (NVIDIA tolera; AMD trava).
+    void DrainOutput(std::vector<std::vector<uint8_t>>& outPackets, bool single = false);
+    // `MF_E_TRANSFORM_STREAM_CHANGE` no ProcessOutput: o MFT exige renegociar o tipo de saída
+    // antes de entregar o próximo pacote (AMD faz isso depois do 1º pacote).
+    bool RenegotiateOutputType();
 };

@@ -752,6 +752,12 @@ Napi::Value IsUsingSoftwareEncoder(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), g_encoder && g_encoder->IsUsingSoftwareFallback());
 }
 
+// Contadores do protocolo do MFT (eventos/falhas) — vazio quando é NVENC. Vai pra telemetria.
+Napi::Value GetMftDiag(const Napi::CallbackInfo& info) {
+    std::lock_guard<std::mutex> lock(g_encoderMutex);
+    return Napi::String::New(info.Env(), g_encoder ? g_encoder->GetMftDiag() : std::string());
+}
+
 // Fallback via MFT de hardware (Quick Sync/AMF...) em vez de CPU — ver SoftwareEncoderCore.h.
 Napi::Value IsUsingHardwareMft(const Napi::CallbackInfo& info) {
     std::lock_guard<std::mutex> lock(g_encoderMutex);
@@ -1551,6 +1557,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("initEncoder", Napi::Function::New(env, InitEncoder));
     exports.Set("initEncoderLow", Napi::Function::New(env, InitEncoderLow));
     exports.Set("isUsingHardwareMft", Napi::Function::New(env, IsUsingHardwareMft));
+    exports.Set("getMftDiag", Napi::Function::New(env, GetMftDiag));
     exports.Set("getNvencFailure", Napi::Function::New(env, GetNvencFailure));
     exports.Set("isUsingSoftwareEncoder", Napi::Function::New(env, IsUsingSoftwareEncoder));
     exports.Set("setEncoderFallbackLevel", Napi::Function::New(env, SetEncoderFallbackLevelJs));
