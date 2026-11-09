@@ -54,6 +54,7 @@ pra confirmar o nível da versão.
 
 | Versão | Estado | Observação |
 |---|---|---|
+| 1.5.1 | Estável | Corrige travamento do encoder de hardware AMD/Intel. Sem mudança de contrato com o backend. |
 | 1.5.0 | Estável | Manda `hostName` opcional (opt-in) no `POST /rooms` pro aviso do Discord. Backend antigo ignora o campo. |
 | 1.4.1 | Estável | Discord Rich Presence (local, IPC do Discord). Sem mudança de contrato com o backend. |
 | 1.4.0 | Estável | Envia relatório de crash (nativo + JS) ao backend (`/crash`, `/crash/js`), com opção de desligar na bandeja. Requer backend com Postgres pra guardar; sem ele, descartado |

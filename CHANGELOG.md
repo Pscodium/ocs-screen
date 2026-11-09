@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1 — 2026-11-09
+
+### Correções
+- **Transmissão travada em placas AMD (e Intel).** Em alguns PCs com placa de vídeo AMD, o espectador via só o primeiro quadro e depois a imagem congelava, com o aviso "reiniciando o encoder". O encoder de vídeo da placa agora recebe os quadros direito e a transmissão segue normal.
+
 ## 1.5.0 — 2026-11-08
 
 ### Novidades
