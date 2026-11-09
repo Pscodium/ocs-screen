@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.2 — 2026-11-09
+
+### Correções
+- **Transmissão em placas AMD, de novo.** A correção da 1.5.1 não bastou: em algumas placas AMD o espectador ainda via só o primeiro quadro. O app agora conversa com o encoder da placa do jeito que ela espera.
+- **Recuperação automática que funciona de verdade.** Se o encoder da placa de vídeo parar de entregar imagem, o app troca sozinho pro encoder por CPU em poucos segundos, em vez de ficar tentando a placa travada. A transmissão continua, só um pouco mais pesada pro computador.
+
 ## 1.5.1 — 2026-11-09
 
 ### Correções

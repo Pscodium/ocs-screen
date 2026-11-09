@@ -54,6 +54,7 @@ pra confirmar o nível da versão.
 
 | Versão | Estado | Observação |
 |---|---|---|
+| 1.5.2 | Estável | Encoder MFT segue protocolo assíncrono; recuperação cai pra CPU; campo `mftDiag` na telemetria (string ≤290, cabe no limite de 300 do backend). Sem mudança de contrato. |
 | 1.5.1 | Estável | Corrige travamento do encoder de hardware AMD/Intel. Sem mudança de contrato com o backend. |
 | 1.5.0 | Estável | Manda `hostName` opcional (opt-in) no `POST /rooms` pro aviso do Discord. Backend antigo ignora o campo. |
 | 1.4.1 | Estável | Discord Rich Presence (local, IPC do Discord). Sem mudança de contrato com o backend. |
