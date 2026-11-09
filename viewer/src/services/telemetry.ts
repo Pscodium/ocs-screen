@@ -56,3 +56,35 @@ export async function selectedCandidateInfo(pc: RTCPeerConnection): Promise<Tele
     return { iceLocalType: null, iceRemoteType: null };
   }
 }
+
+// GPU + navegador do espectador — sem isso não dá pra separar "falha só em AMD/Intel" de falha
+// geral. GPU via WEBGL_debug_renderer_info (string tipo "ANGLE (AMD, Radeon RX 6600 ...)").
+let cachedEnv: TelemetryData | null = null;
+export function clientEnvInfo(): TelemetryData {
+  if (cachedEnv) return cachedEnv;
+  let gpu: string | null = null;
+  try {
+    const gl = document.createElement("canvas").getContext("webgl");
+    const ext = gl?.getExtension("WEBGL_debug_renderer_info");
+    if (gl && ext) gpu = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)).slice(0, 200);
+    gl?.getExtension("WEBGL_lose_context")?.loseContext();
+  } catch {
+    // ignora
+  }
+  const uaData = (navigator as Navigator & { userAgentData?: { brands?: { brand: string; version: string }[]; platform?: string } }).userAgentData;
+  const brand = uaData?.brands?.find((b) => !/not.?a.?brand|chromium/i.test(b.brand)) ?? uaData?.brands?.[0];
+  const browser = brand ? `${brand.brand} ${brand.version}` : navigator.userAgent.slice(0, 200);
+  cachedEnv = { gpu, browser, platform: uaData?.platform ?? navigator.platform ?? null };
+  return cachedEnv;
+}
+
+// Decoder de hardware disponível pro codec? (`prefer-hardware` suportado = GPU decodifica.)
+export async function decoderHardwareSupport(codec: string): Promise<boolean | null> {
+  try {
+    if (typeof VideoDecoder === "undefined") return null;
+    const r = await VideoDecoder.isConfigSupported({ codec, hardwareAcceleration: "prefer-hardware" });
+    return r.supported === true;
+  } catch {
+    return null;
+  }
+}

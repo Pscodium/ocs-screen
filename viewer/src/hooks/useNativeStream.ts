@@ -6,7 +6,7 @@ import { PLAYOUT_DELAY_MAX_MS } from "./useRoomStream";
 import { PlayoutClock } from "../services/playoutClock";
 import { NativeAudioPlayer } from "../services/nativeAudioPlayer";
 import { VideoPresenter } from "../services/videoPresenter";
-import { newTelemetrySessionId, selectedCandidateInfo, sendTelemetry, type TelemetryData } from "../services/telemetry";
+import { clientEnvInfo, decoderHardwareSupport, newTelemetrySessionId, selectedCandidateInfo, sendTelemetry, type TelemetryData } from "../services/telemetry";
 
 const STATS_POLL_MS = 2000;
 // Piso de "suavização" do caminho nativo — 0 = só o buffer adaptativo (`PlayoutClock` já cobre o
@@ -111,6 +111,11 @@ export function useNativeStream(roomId: string, password?: string) {
       ice: {} as TelemetryData,
     };
     const reportedReasons = new Set<string>();
+    // Decoder de hardware pro H.264 (codec padrão) — checagem assíncrona, preenche antes do 1º relatório na prática.
+    let decoderHw: boolean | null = null;
+    void decoderHardwareSupport("avc1.64002a").then((hw) => {
+      decoderHw = hw;
+    });
     const report = (reason: string, extra: TelemetryData = {}) => {
       if (reportedReasons.has(reason)) return;
       reportedReasons.add(reason);
@@ -123,6 +128,8 @@ export function useNativeStream(roomId: string, password?: string) {
         webCodecs: typeof VideoDecoder !== "undefined",
         trackGenerator: typeof MediaStreamTrackGenerator !== "undefined",
         visibility: document.visibilityState,
+        ...clientEnvInfo(),
+        decoderHw,
         ...extra,
       });
     };

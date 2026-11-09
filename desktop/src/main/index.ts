@@ -1411,6 +1411,8 @@ function sendNativeTelemetry(reason: string, extra: Record<string, string | numb
 //   2. recria pulando o NVENC (MFT de hardware da GPU, ou CPU)
 //   3. recria só com encoder de CPU
 const NT_ENCODER_RECHECK_MS = 5_000;
+// Fração mínima dos frames esperados que o encoder tem que entregar pra contar como recuperado.
+const NT_ENCODER_HEALTHY_RATIO = 0.3;
 const NT_ENCODER_STEPS: { level: 0 | 1 | 2; reason: string; warning: string }[] = [
   { level: 0, reason: "encoder_restart", warning: "Um espectador conectou mas não está recebendo vídeo — reiniciando o encoder..." },
   { level: 1, reason: "encoder_fallback_mf", warning: "O encoder NVENC não respondeu — trocando pro encoder alternativo da placa de vídeo..." },
@@ -1449,6 +1451,8 @@ function restartNativeEncoders(fallbackLevel: 0 | 1 | 2, win: BrowserWindow): bo
 // Sobe um degrau da escada e agenda a checagem do próximo.
 function stepEncoderRecovery(win: BrowserWindow): void {
   if (!ntActive || ntEncoderRecoveryStep >= NT_ENCODER_STEPS.length) return;
+  // Degrau "pula o NVENC" não muda nada se já não é NVENC (AMD/Intel já estão no MFT) — vai direto pra CPU.
+  if (NT_ENCODER_STEPS[ntEncoderRecoveryStep].level === 1 && nativeCapture?.isUsingSoftwareEncoder()) ntEncoderRecoveryStep++;
   const step = NT_ENCODER_STEPS[ntEncoderRecoveryStep++];
   ntViewerWarningShown = true;
   win.webContents.send("native-transport:viewer-warning", step.warning);
@@ -1456,9 +1460,17 @@ function stepEncoderRecovery(win: BrowserWindow): void {
   console.warn(`[native-transport] encoder sem saída — ${step.reason} (ok=${ok}).`);
   void sendNativeTelemetry(step.reason, { ok, codecAfter: ntActiveCodec });
   const encodedAtStep = ntTelemetry.counters.encodedPackets;
+  const acquiredAtStep = ntTelemetry.counters.framesAcquired;
   ntEncoderRecoveryTimer = setTimeout(() => {
     ntEncoderRecoveryTimer = null;
-    if (!ntActive || ntTelemetry.counters.encodedPackets > encodedAtStep) return;
+    if (!ntActive) return;
+    // Saída CONTÍNUA, não "saiu algum pacote": o MFT da AMD travado solta 1 pacote depois de
+    // recriado e para de novo — antes isso contava como recuperado e a escada nunca chegava na CPU.
+    // Referência = frames capturados (tela parada não captura nada, então não dá pra julgar).
+    const encoded = ntTelemetry.counters.encodedPackets - encodedAtStep;
+    const acquired = ntTelemetry.counters.framesAcquired - acquiredAtStep;
+    const expected = Math.min(acquired, ntTargetFps * (NT_ENCODER_RECHECK_MS / 1000));
+    if (expected < 10 || encoded >= expected * NT_ENCODER_HEALTHY_RATIO) return;
     if (ntEncoderRecoveryStep < NT_ENCODER_STEPS.length) {
       stepEncoderRecovery(win);
     } else {
@@ -2077,7 +2089,11 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   // mensagem do espectador sem precisar de uma GPU quebrada. `=nvenc` trava só o NVENC (encoder
   // alternativo funciona) — valida a escada de recuperação (`stepEncoderRecovery`).
   const testNoVideoMode = process.env.OCS_TEST_NO_VIDEO;
-  const isTestNoVideo = () => testNoVideoMode === "1" || (testNoVideoMode === "nvenc" && !nativeCapture?.isUsingSoftwareEncoder());
+  // `=mft` trava só o MFT de hardware (junto com `OCS_FORCE_MF=1`, simula a AMD) — a escada tem que chegar na CPU.
+  const isTestNoVideo = () =>
+    testNoVideoMode === "1" ||
+    (testNoVideoMode === "nvenc" && !nativeCapture?.isUsingSoftwareEncoder()) ||
+    (testNoVideoMode === "mft" && (nativeCapture?.isUsingHardwareMft() ?? false));
   let testDeviceLostAt: number | null = testDeviceLostS > 0 ? Date.now() + testDeviceLostS * 1000 : null;
 
   function recoverFromDeviceLost(attempt: number): void {
