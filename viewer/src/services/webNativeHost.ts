@@ -288,7 +288,11 @@ export class WebNativeHost {
           console.error("[web-native-host] erro no VideoEncoder:", err);
           this.tm.encoderErrors++;
           this.tm.lastEncoderError = errorText(err);
-          this.report("encoder_error");
+          // "Codec reclaimed due to inactivity": o Chrome toma de volta o encoder de hardware ocioso
+          // (aba em segundo plano sem ninguém assistindo — `encodeVideoFrame` não codifica sem
+          // sessão). Esperado e recuperável: recria na próxima frame, sem relatório de falha.
+          const reclaimed = err.name === "QuotaExceededError" && /reclaim/i.test(err.message);
+          if (!reclaimed) this.report("encoder_error");
           // Recria na próxima frame (encoderConfig nulo força `configureVideoEncoder`).
           this.encoderConfig = null;
           this.videoEncoder = null;

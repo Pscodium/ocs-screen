@@ -70,7 +70,11 @@ private:
     int fps_ = 30;
     bool mfStarted_ = false;
     bool comInitializedByUs_ = false;
-    bool needsInput_ = false;
+    // MFT assíncrono: quantos `METransformNeedInput` ainda não foram atendidos com `ProcessInput`.
+    // CONTADOR, não bool — encoders de hardware (AMD/Intel) pedem várias entradas de uma vez no
+    // início; com bool os pedidos extras se perdiam, o MFT ficava esperando entradas que já tinha
+    // pedido e nunca mandava NeedInput de novo (1 pacote e depois silêncio — visto em produção).
+    int pendingInputRequests_ = 0;
     std::atomic<bool> forceKeyframe_{false};
     FramePacer pacer_; // ver FramePacer.h
     LONGLONG frameDuration100ns_ = 0; // duração de 1 frame em unidades de 100ns (MF usa isso pra timestamp/duration)

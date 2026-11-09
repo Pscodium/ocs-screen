@@ -216,7 +216,7 @@ bool SoftwareEncoderCore::TryInitialize(ID3D11Device* device, int bitrateBps, Vi
 
     if (FAILED(transform_->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0))) return false;
     if (FAILED(transform_->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0))) return false;
-    needsInput_ = !eventGen_; // assíncrono: espera o 1º METransformNeedInput
+    pendingInputRequests_ = 0; // assíncrono: espera o 1º METransformNeedInput (síncrono não usa)
     return true;
 }
 
@@ -313,7 +313,7 @@ void SoftwareEncoderCore::PumpEvents(std::vector<std::vector<uint8_t>>& outPacke
         MediaEventType type = MEUnknown;
         event->GetType(&type);
         if (type == METransformNeedInput) {
-            needsInput_ = true;
+            pendingInputRequests_++;
         } else if (type == METransformHaveOutput) {
             DrainOutput(outPackets);
         }
@@ -376,8 +376,8 @@ std::vector<std::vector<uint8_t>> SoftwareEncoderCore::EncodeFrame(ID3D11Texture
     // acumulado por recalcular "agora" a cada frame aceito).
     if (!pacer_.ShouldEncode(std::chrono::steady_clock::now())) return packets;
 
-    PumpEvents(packets); // drena output pronto + atualiza needsInput_ (MFT assíncrono)
-    if (eventGen_ && !needsInput_) return packets; // MFT ainda processando o frame anterior — pula esse, mesmo espírito do skip de pacing do NVENC
+    PumpEvents(packets); // drena output pronto + conta pedidos de entrada (MFT assíncrono)
+    if (eventGen_ && pendingInputRequests_ <= 0) return packets; // MFT ainda processando o frame anterior — pula esse, mesmo espírito do skip de pacing do NVENC
 
     try {
         ComPtr<IMFSample> sample;
@@ -425,7 +425,7 @@ std::vector<std::vector<uint8_t>> SoftwareEncoderCore::EncodeFrame(ID3D11Texture
 
         const HRESULT hr = transform_->ProcessInput(0, sample.Get(), 0);
         if (SUCCEEDED(hr)) {
-            needsInput_ = false;
+            if (pendingInputRequests_ > 0) pendingInputRequests_--;
             if (!eventGen_) {
                 DrainOutput(packets); // MFT síncrono (raro): output pode já estar pronto na hora
             } else if (hardware_) {
