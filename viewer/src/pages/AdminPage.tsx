@@ -316,7 +316,7 @@ export function AdminPage() {
                         {r.health === "suspect" ? (
                           <>
                             <span className="admin-sev admin-sev-warn" />
-                            encoder travou, aguardando confirmação
+                            encoder sem saída (aguardando ~90s)
                           </>
                         ) : (
                           "—"
@@ -333,8 +333,8 @@ export function AdminPage() {
               </table>
             )}
             <p className="admin-note">
-              Sala nativa travada (encoder do host sem saída e espectador ainda sem vídeo 1 min depois) é encerrada sozinha. Sala aberta sem espectador nunca é
-              tocada.
+              Encerramento automático só com app ≥ 1.5.3: o próprio app relata ~90s seguidos de encoder sem saída com espectador conectado. Sala sem
+              espectador ou com tela parada nunca é tocada. App antigo: só pelo botão.
             </p>
           </section>
 

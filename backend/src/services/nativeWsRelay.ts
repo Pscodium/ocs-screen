@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { WebSocket } from "ws";
+import { onHostHealth } from "./roomHealth.js";
 import { cancelRoomCleanup, scheduleRoomCleanup } from "./rooms.js";
 
 // Sinalização do transporte nativo via WebSocket, multi-espectador (ver
@@ -19,9 +20,7 @@ export type NativeWsRole = "host" | "viewer";
 
 interface RoomState {
   host: WebSocket | null;
-  hostIp: string | null;
   viewers: Map<string, WebSocket>;
-  viewerIps: Map<string, string>;
 }
 
 // Código de fechamento "sala encerrada pelo servidor" (sala travada / encerrada pelo painel).
@@ -33,7 +32,7 @@ const rooms = new Map<string, RoomState>();
 function getOrCreate(roomId: string): RoomState {
   let state = rooms.get(roomId);
   if (!state) {
-    state = { host: null, hostIp: null, viewers: new Map(), viewerIps: new Map() };
+    state = { host: null, viewers: new Map() };
     rooms.set(roomId, state);
   }
   return state;
@@ -43,9 +42,8 @@ function sendJson(socket: WebSocket, payload: unknown): void {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(payload));
 }
 
-export function registerHostSocket(roomId: string, socket: WebSocket, ip: string | null = null): void {
+export function registerHostSocket(roomId: string, socket: WebSocket): void {
   const state = getOrCreate(roomId);
-  state.hostIp = ip;
   // Substitui host anterior (app reaberto, reconexão) — fecha o antigo se ainda tiver vivo.
   if (state.host && state.host !== socket && state.host.readyState === state.host.OPEN) {
     state.host.close();
@@ -87,10 +85,17 @@ export function registerHostSocket(roomId: string, socket: WebSocket, ip: string
   // Mensagens do host (offer/ice) já vêm com `viewerId` — repassa cru pro espectador certo, sem
   // reserializar (o host é quem decide o conteúdo, backend só roteia pela chave).
   socket.on("message", (data) => {
-    let msg: { viewerId?: string };
+    let msg: { viewerId?: string; type?: string; acquired?: unknown; encoded?: unknown; sendOk?: unknown; viewers?: unknown };
     try {
       msg = JSON.parse(data.toString());
     } catch {
+      return;
+    }
+    // Heartbeat de saúde do host (app ≥ 1.5.3) — ver roomHealth.ts. Só esse socket (já validado pelo
+    // segredo do host) fala por ele; não é repassado a ninguém.
+    if (msg.type === "host-health") {
+      const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
+      onHostHealth(roomId, { acquired: n(msg.acquired), encoded: n(msg.encoded), sendOk: n(msg.sendOk), viewers: n(msg.viewers) });
       return;
     }
     if (!msg.viewerId) return;
@@ -103,17 +108,15 @@ export function registerHostSocket(roomId: string, socket: WebSocket, ip: string
 
 // Retorna o `viewerId` gerado — a rota chama isso só pra logging/depuração, o espectador em si
 // nunca recebe nem precisa desse valor.
-export function registerViewerSocket(roomId: string, socket: WebSocket, ip: string | null = null): string {
+export function registerViewerSocket(roomId: string, socket: WebSocket): string {
   const state = getOrCreate(roomId);
   const viewerId = randomUUID();
   state.viewers.set(viewerId, socket);
-  if (ip) state.viewerIps.set(viewerId, ip);
 
   if (state.host) sendJson(state.host, { type: "viewer-joined", viewerId });
 
   socket.on("close", () => {
     state.viewers.delete(viewerId);
-    state.viewerIps.delete(viewerId);
     if (state.host) sendJson(state.host, { type: "viewer-left", viewerId });
   });
 
@@ -155,16 +158,6 @@ export function cleanupNativeSockets(roomId: string, closeCode?: number, closeRe
   rooms.delete(roomId);
 }
 
-// Relatório de telemetria só conta pra saúde da sala se vier do mesmo IP de quem está de fato
-// conectado nela no papel declarado — `POST /rooms/:id/telemetry` é público, sem isso qualquer um
-// derrubaria a sala alheia mandando relatórios falsos.
-export function isConnectedIp(roomId: string, role: NativeWsRole, ip: string): boolean {
-  const state = rooms.get(roomId);
-  if (!state) return false;
-  if (role === "host") return state.host !== null && state.hostIp === ip;
-  for (const viewerIp of state.viewerIps.values()) if (viewerIp === ip) return true;
-  return false;
-}
 
 export function isHostConnected(roomId: string): boolean {
   const host = rooms.get(roomId)?.host;

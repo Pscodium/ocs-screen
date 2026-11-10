@@ -283,10 +283,10 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       const openedAt = Date.now();
       let viewerId: string | undefined;
       if (role === "host") {
-        registerHostSocket(roomId, socket, request.ip);
+        registerHostSocket(roomId, socket);
         // Reconexões do host caem no cooldown por sala (discordNotify.ts) — só avisa uma vez.
         void notifyStreamStarted(room);
-      } else viewerId = registerViewerSocket(roomId, socket, request.ip);
+      } else viewerId = registerViewerSocket(roomId, socket);
       request.log.info({ roomId, role, viewerId, clientIp: request.ip }, "native ws open");
       socket.on("close", (code) => {
         request.log.info({ roomId, role, viewerId, clientIp: request.ip, code, durationMs: Date.now() - openedAt }, "native ws close");

@@ -1,71 +1,58 @@
 import { db } from "./db.js";
-import { isConnectedIp, ROOM_CLOSED_CODE } from "./nativeWsRelay.js";
+import { ROOM_CLOSED_CODE } from "./nativeWsRelay.js";
 import { deleteRoom, getRoom } from "./rooms.js";
 
-// Saúde das salas nativas a partir da telemetria. Uma sala só morre sozinha quando o host some
-// (nativeWsRelay.ts agenda a limpeza no "close" do socket). Host com o app aberto e o encoder
-// travado (GPU AMD que solta 1 frame e para — visto em produção) mantém o socket vivo e a sala
-// fica "ao vivo" pra sempre sem vídeo nenhum. Aqui ela é encerrada quando há prova de que está
-// quebrada — e SÓ com prova: sala aberta sem espectador nenhum nunca gera relatório, então nunca
-// é tocada.
+// Saúde das salas nativas. Uma sala só morre sozinha quando o host some (nativeWsRelay.ts agenda a
+// limpeza no "close" do socket). Host com o app aberto e o encoder travado (GPU AMD que solta 1
+// frame e para — visto em produção) mantém o socket vivo e a sala fica "ao vivo" pra sempre sem
+// vídeo nenhum.
 //
-// Prova:
-//   1. host relata `encoder_recovery_failed` (toda a escada de encoders falhou), ou
-//   2. host relata `viewer_no_data` com `encodedSinceConnect: 0` (encoder não produz nada) E,
-//      depois de dar tempo pra recuperação automática (CONFIRM_AFTER_MS), um espectador ainda
-//      relata `no_data`, sem nenhum espectador ter assistido de verdade nesse meio tempo.
-// Relatório só conta se vier do IP de quem está conectado na sala nesse papel (o endpoint de
-// telemetria é público — ver `isConnectedIp`).
+// Fonte da verdade: o PRÓPRIO host (app ≥ 1.5.3), que manda pelo WebSocket de sinalização a cada
+// ~30s quanto capturou, codificou e entregou nesse intervalo (`host-health`). Telemetria de
+// espectador NÃO serve pra isso — é por evento: um espectador que relatou "sem vídeo" e depois
+// recuperou não manda mais nada até sair, e a sala parecia quebrada estando boa (medido).
+//
+// Fecha só quando, por STUCK_INTERVALS heartbeats seguidos (~90s), TUDO isso vale:
+//   - tem espectador conectado (sala sem espectador nunca é tocada);
+//   - a tela mudou (capturou ≥ MIN_ACQUIRED frames — tela parada não produz frame nenhum);
+//   - o encoder não entregou NENHUM pacote e nenhum envio deu certo.
+// Encoder lento (CPU em 4K) entrega pouco, mas não zero — não fecha. App antigo não manda
+// heartbeat — nunca é fechado automaticamente (sobra o botão do painel).
 
-const CONFIRM_AFTER_MS = 60_000;
-// Espectador que decodificou isso aqui assistiu de verdade — a sala funciona (recuperou).
-const WATCHED_FRAMES = 60;
+const STUCK_INTERVALS = 3;
+const MIN_ACQUIRED = 30;
 
-interface Health {
-  hostStuckAt: number | null;
+export interface HostHealthReport {
+  acquired: number;
+  encoded: number;
+  sendOk: number;
+  viewers: number;
 }
-const health = new Map<string, Health>();
+
+const stuckStreak = new Map<string, number>();
 
 export function forgetRoomHealth(roomId: string): void {
-  health.delete(roomId);
+  stuckStreak.delete(roomId);
 }
 
-type Data = Record<string, string | number | boolean | null>;
-
-export function onRoomTelemetry(roomId: string, role: string, reason: string, data: Data, ip: string): void {
+export function onHostHealth(roomId: string, report: HostHealthReport): void {
   const room = getRoom(roomId);
   if (!room || !room.nativeMode) return;
-  if ((role !== "host" && role !== "viewer") || !isConnectedIp(roomId, role, ip)) return;
-  const now = Date.now();
-  const h = health.get(roomId) ?? { hostStuckAt: null };
-  health.set(roomId, h);
-
-  if (role === "host") {
-    if (reason === "encoder_recovery_failed") {
-      closeBrokenRoom(roomId, "encoder_recovery_failed");
-      return;
-    }
-    if (reason === "viewer_no_data" && Number(data.encodedSinceConnect ?? 1) === 0 && h.hostStuckAt === null) {
-      h.hostStuckAt = now;
-    }
+  const stuck = report.viewers > 0 && report.acquired >= MIN_ACQUIRED && report.encoded === 0 && report.sendOk === 0;
+  if (!stuck) {
+    stuckStreak.delete(roomId);
     return;
   }
-
-  if (h.hostStuckAt === null) return;
-  if (Number(data.framesDecoded ?? 0) >= WATCHED_FRAMES) {
-    h.hostStuckAt = null; // alguém assistiu depois do travamento — recuperou
-    return;
-  }
-  if (reason === "no_data" && now - h.hostStuckAt >= CONFIRM_AFTER_MS) {
-    closeBrokenRoom(roomId, "host_encoder_stuck");
-  }
+  const streak = (stuckStreak.get(roomId) ?? 0) + 1;
+  stuckStreak.set(roomId, streak);
+  if (streak >= STUCK_INTERVALS) closeBrokenRoom(roomId, report);
 }
 
-function closeBrokenRoom(roomId: string, cause: string): void {
+function closeBrokenRoom(roomId: string, report: HostHealthReport): void {
   const room = getRoom(roomId);
   if (!room) return;
-  console.warn(`[roomHealth] sala ${roomId} encerrada: transmissão travada (${cause}).`);
-  recordClosure(roomId, room.source, room.appVersion, "room_closed_unhealthy", { cause });
+  console.warn(`[roomHealth] sala ${roomId} encerrada: encoder do host sem saída há ${STUCK_INTERVALS} heartbeats com ${report.viewers} espectador(es).`);
+  recordClosure(roomId, room.source, room.appVersion, "room_closed_unhealthy", { ...report });
   deleteRoom(roomId, ROOM_CLOSED_CODE, "stream_broken");
 }
 
@@ -78,7 +65,7 @@ export function closeRoomByAdmin(roomId: string): boolean {
   return true;
 }
 
-function recordClosure(roomId: string, source: string, appVersion: string | null, reason: string, data: Data): void {
+function recordClosure(roomId: string, source: string, appVersion: string | null, reason: string, data: Record<string, number>): void {
   const sql = db();
   if (!sql) return;
   sql`
@@ -87,7 +74,7 @@ function recordClosure(roomId: string, source: string, appVersion: string | null
   `.catch((err: Error) => console.error("[roomHealth] falha ao gravar encerramento:", err.message));
 }
 
-// Pro painel: sala com travamento detectado e ainda aguardando confirmação.
+// Pro painel: heartbeats seguidos com encoder sem saída (0 = saudável ou sem dado).
 export function roomHealthState(roomId: string): "suspect" | null {
-  return health.get(roomId)?.hostStuckAt != null ? "suspect" : null;
+  return (stuckStreak.get(roomId) ?? 0) > 0 ? "suspect" : null;
 }

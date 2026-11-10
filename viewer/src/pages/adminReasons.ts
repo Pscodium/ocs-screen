@@ -30,7 +30,7 @@ const R: Record<string, ReasonInfo> = {
   viewer_failed: { label: "Conexão com um espectador falhou", stage: "rede", severity: "warn", hint: "Sessão WebRTC do lado do host caiu." },
   session_error: { label: "Erro na sessão WebRTC do host", stage: "rede", severity: "warn", hint: "" },
   negotiation_error: { label: "Falha ao negociar conexão", stage: "sinalização", severity: "error", hint: "" },
-  room_closed_unhealthy: { label: "Sala encerrada pelo servidor (travada)", stage: "sessão", severity: "error", hint: "Host com encoder travado e espectador ainda sem vídeo 1 min depois (cause=host_encoder_stuck), ou escada de encoders esgotada (cause=encoder_recovery_failed)." },
+  room_closed_unhealthy: { label: "Sala encerrada pelo servidor (travada)", stage: "sessão", severity: "error", hint: "O próprio app (≥1.5.3) relatou ~90s seguidos de tela mudando, espectador conectado e encoder sem entregar nada." },
   room_closed_admin: { label: "Sala encerrada pelo painel", stage: "sessão", severity: "info", hint: "Encerramento manual." },
   // ---- Espectador ----
   no_data: { label: "Conectou mas nenhum vídeo chegou", stage: "rede", severity: "error", hint: "Quase sempre o transmissor não está mandando — ver eventos do host na mesma sala." },

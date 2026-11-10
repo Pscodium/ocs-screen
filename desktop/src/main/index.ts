@@ -1419,6 +1419,8 @@ const NT_ENCODER_STEPS: { level: 0 | 1 | 2; reason: string; warning: string }[] 
   { level: 2, reason: "encoder_fallback_cpu", warning: "O encoder da placa de vídeo não respondeu — usando o encoder por CPU (mais pesado)..." },
 ];
 let ntEncoderRecoveryStep = 0;
+let ntHealthInterval: ReturnType<typeof setInterval> | null = null;
+const NT_HEALTH_INTERVAL_MS = 30_000;
 let ntEncoderRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 // Aviso no LiveCard "espectador sem vídeo" ligado — some no 1º frame enviado com sucesso.
 let ntViewerWarningShown = false;
@@ -1499,6 +1501,8 @@ function stopNativeTransport(): void {
   ntDisconnectTimers.clear();
   ntWs?.close();
   ntWs = null;
+  if (ntHealthInterval) clearInterval(ntHealthInterval);
+  ntHealthInterval = null;
   if (ntStatsInterval) clearInterval(ntStatsInterval);
   ntStatsInterval = null;
   nativeCapture?.transportCloseAllSessions();
@@ -1870,6 +1874,22 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   });
   }
 
+  // Heartbeat de saúde pro backend (backend/src/services/roomHealth.ts): quanto foi capturado,
+  // codificado e entregue desde o último. Encoder sem saída nenhuma com a tela mudando e
+  // espectador conectado por ~90s = sala travada, o backend encerra (código 4410 abaixo).
+  let healthLast = { acquired: 0, encoded: 0, sendOk: 0 };
+  ntHealthInterval = setInterval(() => {
+    const c = ntTelemetry.counters;
+    const report = {
+      type: "host-health",
+      acquired: c.framesAcquired - healthLast.acquired,
+      encoded: c.encodedPackets - healthLast.encoded,
+      sendOk: c.sendOk - healthLast.sendOk,
+      viewers: nativeCapture?.transportConnectedCount() ?? 0,
+    };
+    healthLast = { acquired: c.framesAcquired, encoded: c.encodedPackets, sendOk: c.sendOk };
+    if (ntWs?.readyState === WebSocket.OPEN) ntWs.send(JSON.stringify(report));
+  }, NT_HEALTH_INTERVAL_MS);
   connectNativeWs();
   ntActive = true;
 
