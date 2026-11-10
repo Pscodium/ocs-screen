@@ -42,6 +42,17 @@ interface EventRow {
   app_version: string | null;
   data: EventData;
 }
+interface ActiveRoom {
+  roomId: string;
+  createdAt: number;
+  source: string;
+  appVersion: string | null;
+  nativeMode: boolean;
+  isPrivate: boolean;
+  hostConnected: boolean | null;
+  viewers: number | null;
+  health: "suspect" | null;
+}
 // Filtro da lista de eventos: falhas recentes (padrão), um motivo, ou a linha do tempo de uma sala.
 type EventFilter = { kind: "failures" } | { kind: "reason"; reason: string } | { kind: "room"; room: string };
 interface Stats {
@@ -97,6 +108,7 @@ export function AdminPage() {
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState<EventFilter>({ kind: "failures" });
   const [events, setEvents] = useState<EventRow[] | null>(null);
+  const [activeRooms, setActiveRooms] = useState<ActiveRoom[] | null>(null);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -109,6 +121,8 @@ export function AdminPage() {
       ]);
       setStats(s);
       setCrashes(c.crashes);
+      const r = await adminFetch<{ rooms: ActiveRoom[] }>(`/admin/rooms`, token).catch(() => ({ rooms: [] }));
+      setActiveRooms(r.rooms);
     } catch (err) {
       setError((err as Error).message);
       setStats(null);
@@ -146,6 +160,20 @@ export function AdminPage() {
     setFilter(f);
     document.getElementById("admin-events")?.scrollIntoView({ behavior: "smooth" });
   };
+
+  async function closeRoom(roomId: string) {
+    if (!window.confirm(`Encerrar a sala ${roomId}? O host e os espectadores são desconectados.`)) return;
+    try {
+      const res = await fetch(`${backendUrl}/admin/rooms/${encodeURIComponent(roomId)}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok && res.status !== 404) throw new Error(`Erro ${res.status}`);
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
 
   async function downloadDump(id: string) {
     try {
@@ -249,6 +277,64 @@ export function AdminPage() {
             )}
             <p className="admin-legend">
               <span className="admin-dot admin-dot-host" /> host <span className="admin-dot admin-dot-viewer" /> espectador
+            </p>
+          </section>
+
+          <section>
+            <h2>Salas ativas agora</h2>
+            {!activeRooms || activeRooms.length === 0 ? (
+              <p className="admin-empty">Nenhuma sala ativa.</p>
+            ) : (
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Sala</th>
+                    <th>Transmissor</th>
+                    <th>Aberta há</th>
+                    <th>Host conectado</th>
+                    <th>Espectadores</th>
+                    <th>Saúde</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {activeRooms.map((r) => (
+                    <tr key={r.roomId}>
+                      <td>
+                        <button className="admin-link" onClick={() => showEvents({ kind: "room", room: r.roomId })}>
+                          {r.roomId}
+                        </button>
+                        {r.isPrivate && <span className="admin-sub"> privada</span>}
+                      </td>
+                      <td>
+                        {roleLabel("host", r.source)} <span className="admin-sub">{r.appVersion ?? ""}</span>
+                      </td>
+                      <td>{fmtDuration(Date.now() - r.createdAt)}</td>
+                      <td>{r.hostConnected === null ? "— (LiveKit)" : r.hostConnected ? "sim" : "não (aguardando volta)"}</td>
+                      <td>{r.viewers ?? "—"}</td>
+                      <td>
+                        {r.health === "suspect" ? (
+                          <>
+                            <span className="admin-sev admin-sev-warn" />
+                            encoder travou, aguardando confirmação
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td>
+                        <button className="admin-link admin-danger" onClick={() => void closeRoom(r.roomId)}>
+                          Encerrar
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <p className="admin-note">
+              Sala nativa travada (encoder do host sem saída e espectador ainda sem vídeo 1 min depois) é encerrada sozinha. Sala aberta sem espectador nunca é
+              tocada.
             </p>
           </section>
 

@@ -1745,6 +1745,19 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
         console.warn("[native-transport] backend recusou o segredo do host — sem reconexão.");
         return;
       }
+      // 4410 = backend encerrou a sala (transmissão travada sem vídeo pros espectadores, ou
+      // encerrada pelo painel) — reconectar cairia de novo; encerra e avisa.
+      if (code === 4410) {
+        if (!ntActive) return;
+        console.warn("[native-transport] backend encerrou a sala (4410).");
+        activeWin.webContents.send(
+          "native-transport:error",
+          "O servidor encerrou a transmissão porque os espectadores não estavam recebendo vídeo. Inicie de novo; se repetir, atualize o driver da placa de vídeo.",
+        );
+        activeWin.webContents.send("native-transport:ended");
+        stopNativeTransport();
+        return;
+      }
       scheduleNativeWsReconnect();
     });
     attachNativeWsMessageAndErrorHandlers(ws);

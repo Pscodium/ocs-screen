@@ -331,7 +331,12 @@ export function useNativeStream(roomId: string, password?: string) {
         setError("Erro na sinalização com o host.");
         setPhase("error");
       };
-      socket.onclose = () => {
+      socket.onclose = (event) => {
+        // 4410 = backend encerrou a sala (transmissão travada / encerrada pelo painel).
+        if (event.code === 4410) {
+          endStream();
+          return;
+        }
         if (cancelled || (everConnected && !recovering) || wsReconnectTimer) return;
         const delayMs = Math.min(10_000, 1000 * 2 ** wsReconnectAttempt);
         wsReconnectAttempt++;

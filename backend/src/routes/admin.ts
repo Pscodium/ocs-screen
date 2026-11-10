@@ -2,6 +2,9 @@ import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { config } from "../config.js";
 import { db } from "../services/db.js";
+import { getNativeViewerCount, isHostConnected } from "../services/nativeWsRelay.js";
+import { closeRoomByAdmin, roomHealthState } from "../services/roomHealth.js";
+import { listRooms } from "../services/rooms.js";
 
 // Estatísticas agregadas da telemetria (Postgres). Protegido por `ADMIN_TOKEN` (Bearer). Sem token
 // ou sem banco configurado, as rotas respondem 404 — como se não existissem.
@@ -104,6 +107,39 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         LIMIT ${limit}
       `;
       return { events };
+    },
+  );
+
+  // Salas ativas agora (memória do backend) — com estado do host e saúde, pra achar sala presa.
+  app.get("/admin/rooms", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const auth = isAdmin(request);
+    if (auth !== "ok") return reply.code(auth === "disabled" ? 404 : 401).send({ error: auth });
+    const rooms = listRooms().map((room) => ({
+      roomId: room.id,
+      createdAt: room.createdAt,
+      source: room.source,
+      appVersion: room.appVersion,
+      nativeMode: room.nativeMode,
+      isPrivate: room.isPrivate,
+      hostConnected: room.nativeMode ? isHostConnected(room.id) : null,
+      viewers: room.nativeMode ? getNativeViewerCount(room.id) : null,
+      health: roomHealthState(room.id),
+    }));
+    return { rooms };
+  });
+
+  app.delete<{ Params: { id: string } }>(
+    "/admin/rooms/:id",
+    {
+      schema: { params: { type: "object", properties: { id: { type: "string", pattern: "^[A-Za-z0-9-]{3,32}$" } } } },
+      config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+    },
+    async (request, reply) => {
+      const auth = isAdmin(request);
+      if (auth !== "ok") return reply.code(auth === "disabled" ? 404 : 401).send({ error: auth });
+      if (!closeRoomByAdmin(request.params.id)) return reply.code(404).send({ error: "room_not_found" });
+      request.log.warn({ roomId: request.params.id }, "room closed by admin");
+      return reply.code(204).send();
     },
   );
 }

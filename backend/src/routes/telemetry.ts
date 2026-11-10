@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { db } from "../services/db.js";
+import { onRoomTelemetry } from "../services/roomHealth.js";
 
 // Relatório de diagnóstico do pipeline nativo (vídeo vai direto host → espectador por DataChannel,
 // o backend nunca vê os frames — sem isso, falha de transmissão não deixa rastro nenhum no
@@ -89,6 +90,7 @@ export async function telemetryRoutes(app: FastifyInstance): Promise<void> {
           VALUES (${request.params.id}, ${sessionId ?? null}, ${role}, ${source}, ${reason}, ${appVersion}, ${sql.json(data)})
         `.catch((err: Error) => request.log.error({ err: err.message }, "[db] falha ao gravar telemetria"));
       }
+      onRoomTelemetry(request.params.id, role, reason, data, request.ip);
       return reply.code(204).send();
     },
   );

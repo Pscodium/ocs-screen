@@ -1846,3 +1846,6 @@ body {
   min-width: 260px;
   max-width: 360px;
 }
+.admin-page .admin-danger {
+  color: var(--danger);
+}

@@ -19,15 +19,21 @@ export type NativeWsRole = "host" | "viewer";
 
 interface RoomState {
   host: WebSocket | null;
+  hostIp: string | null;
   viewers: Map<string, WebSocket>;
+  viewerIps: Map<string, string>;
 }
+
+// Código de fechamento "sala encerrada pelo servidor" (sala travada / encerrada pelo painel).
+// Cliente novo para de reconectar e mostra o motivo; cliente antigo só vê o socket cair.
+export const ROOM_CLOSED_CODE = 4410;
 
 const rooms = new Map<string, RoomState>();
 
 function getOrCreate(roomId: string): RoomState {
   let state = rooms.get(roomId);
   if (!state) {
-    state = { host: null, viewers: new Map() };
+    state = { host: null, hostIp: null, viewers: new Map(), viewerIps: new Map() };
     rooms.set(roomId, state);
   }
   return state;
@@ -37,8 +43,9 @@ function sendJson(socket: WebSocket, payload: unknown): void {
   if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(payload));
 }
 
-export function registerHostSocket(roomId: string, socket: WebSocket): void {
+export function registerHostSocket(roomId: string, socket: WebSocket, ip: string | null = null): void {
   const state = getOrCreate(roomId);
+  state.hostIp = ip;
   // Substitui host anterior (app reaberto, reconexão) — fecha o antigo se ainda tiver vivo.
   if (state.host && state.host !== socket && state.host.readyState === state.host.OPEN) {
     state.host.close();
@@ -96,15 +103,17 @@ export function registerHostSocket(roomId: string, socket: WebSocket): void {
 
 // Retorna o `viewerId` gerado — a rota chama isso só pra logging/depuração, o espectador em si
 // nunca recebe nem precisa desse valor.
-export function registerViewerSocket(roomId: string, socket: WebSocket): string {
+export function registerViewerSocket(roomId: string, socket: WebSocket, ip: string | null = null): string {
   const state = getOrCreate(roomId);
   const viewerId = randomUUID();
   state.viewers.set(viewerId, socket);
+  if (ip) state.viewerIps.set(viewerId, ip);
 
   if (state.host) sendJson(state.host, { type: "viewer-joined", viewerId });
 
   socket.on("close", () => {
     state.viewers.delete(viewerId);
+    state.viewerIps.delete(viewerId);
     if (state.host) sendJson(state.host, { type: "viewer-left", viewerId });
   });
 
@@ -138,10 +147,26 @@ export function getNativeViewerCount(roomId: string): number {
 }
 
 // Chamado junto com `deleteRoom` (mesmo ciclo de vida da sala) — fecha os sockets que sobrarem.
-export function cleanupNativeSockets(roomId: string): void {
+export function cleanupNativeSockets(roomId: string, closeCode?: number, closeReason?: string): void {
   const state = rooms.get(roomId);
   if (!state) return;
-  state.host?.close();
-  for (const socket of state.viewers.values()) socket.close();
+  state.host?.close(closeCode, closeReason);
+  for (const socket of state.viewers.values()) socket.close(closeCode, closeReason);
   rooms.delete(roomId);
+}
+
+// Relatório de telemetria só conta pra saúde da sala se vier do mesmo IP de quem está de fato
+// conectado nela no papel declarado — `POST /rooms/:id/telemetry` é público, sem isso qualquer um
+// derrubaria a sala alheia mandando relatórios falsos.
+export function isConnectedIp(roomId: string, role: NativeWsRole, ip: string): boolean {
+  const state = rooms.get(roomId);
+  if (!state) return false;
+  if (role === "host") return state.host !== null && state.hostIp === ip;
+  for (const viewerIp of state.viewerIps.values()) if (viewerIp === ip) return true;
+  return false;
+}
+
+export function isHostConnected(roomId: string): boolean {
+  const host = rooms.get(roomId)?.host;
+  return !!host && host.readyState === host.OPEN;
 }

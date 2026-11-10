@@ -61,6 +61,8 @@ export interface WebNativeHostOptions {
   onViewerCount: (count: number) => void;
   // Aviso pro host "espectador conectado sem receber vídeo" — `null` = resolvido.
   onViewerWarning?: (message: string | null) => void;
+  // Backend encerrou a sala (código 4410: transmissão travada ou encerrada pelo painel).
+  onRoomClosed?: () => void;
 }
 
 interface ViewerSession {
@@ -519,6 +521,10 @@ export class WebNativeHost {
     ws.onclose = (event) => {
       // 4403 = backend recusou o segredo do host — reconectar não resolve.
       if (event.code === 4403) return;
+      if (event.code === 4410) {
+        if (!this.stopped) this.opts.onRoomClosed?.();
+        return;
+      }
       if (this.stopped || this.wsReconnectTimer) return;
       const delayMs = Math.min(WS_RECONNECT_MAX_MS, 1000 * 2 ** this.wsReconnectAttempt);
       this.wsReconnectAttempt++;

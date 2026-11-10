@@ -2,6 +2,7 @@ import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypt
 import { config } from "../config.js";
 import { generateRoomId } from "../utils/ids.js";
 import { cleanupNativeSockets } from "./nativeWsRelay.js";
+import { forgetRoomHealth } from "./roomHealth.js";
 import { getRedis, REDIS_PREFIX } from "./redis.js";
 import type { Room, RoomSettings, RoomSource } from "../types/room.js";
 
@@ -214,10 +215,11 @@ export function listRooms(): Room[] {
   return Array.from(rooms.values());
 }
 
-export function deleteRoom(roomId: string): void {
+export function deleteRoom(roomId: string, closeCode?: number, closeReason?: string): void {
   rooms.delete(roomId);
   unpersistRoom(roomId);
-  cleanupNativeSockets(roomId);
+  cleanupNativeSockets(roomId, closeCode, closeReason);
+  forgetRoomHealth(roomId);
   const timer = emptyTimers.get(roomId);
   if (timer) {
     clearTimeout(timer);

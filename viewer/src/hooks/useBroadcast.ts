@@ -34,6 +34,8 @@ export function useBroadcast() {
   const [state, setState] = useState<BroadcastState>("idle");
   const [info, setInfo] = useState<BroadcastInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // `stop` é declarado depois de `start` — callbacks do host criados no `start` chamam por aqui.
+  const stopRef = useRef<(() => Promise<void>) | null>(null);
   const [optimizingCodec, setOptimizingCodec] = useState(false);
 
   const streamRef = useRef<MediaStream | null>(null);
@@ -68,6 +70,12 @@ export function useBroadcast() {
           fps: settings.fps === "auto" ? AUTO_FPS_TARGET : settings.fps,
           onViewerCount: (count) => setInfo((prev) => (prev ? { ...prev, viewerCount: count } : prev)),
           onViewerWarning: (viewerWarning) => setInfo((prev) => (prev ? { ...prev, viewerWarning } : prev)),
+          onRoomClosed: () => {
+            void stopRef.current?.().then(() => {
+              setError("O servidor encerrou a transmissão porque os espectadores não estavam recebendo vídeo.");
+              setState("error");
+            });
+          },
         });
         nativeHostRef.current = host;
         await host.start();
@@ -196,6 +204,8 @@ export function useBroadcast() {
     setInfo(null);
     setState("idle");
   }, []);
+
+  stopRef.current = stop;
 
   useEffect(() => {
     return () => {

@@ -14,7 +14,7 @@ import {
   SlugTakenError,
 } from "../services/rooms.js";
 import { isAppVersionSupported } from "./app.js";
-import { getNativeViewerCount, registerHostSocket, registerViewerSocket } from "../services/nativeWsRelay.js";
+import { getNativeViewerCount, registerHostSocket, registerViewerSocket, ROOM_CLOSED_CODE } from "../services/nativeWsRelay.js";
 import { getIceServers } from "../services/turn.js";
 import { notifyStreamStarted } from "../services/discordNotify.js";
 import { generateIdentity, isValidSlug, normalizeSlug } from "../utils/ids.js";
@@ -255,8 +255,14 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       const roomId = request.params.id;
       const role = request.query.role;
       const room = getRoom(roomId);
-      if (!room || (role !== "host" && role !== "viewer")) {
+      if (role !== "host" && role !== "viewer") {
         socket.close();
+        return;
+      }
+      // Sala não existe mais (encerrada, ou derrubada por estar travada): 4410 faz o app novo parar
+      // de reconectar e avisar o host, em vez de ficar "ao vivo" sozinho pra sempre.
+      if (!room) {
+        socket.close(ROOM_CLOSED_CODE, "room_closed");
         return;
       }
       if (role === "viewer" && !checkRoomPassword(room, request.query.password)) {
@@ -277,10 +283,10 @@ export async function roomRoutes(app: FastifyInstance): Promise<void> {
       const openedAt = Date.now();
       let viewerId: string | undefined;
       if (role === "host") {
-        registerHostSocket(roomId, socket);
+        registerHostSocket(roomId, socket, request.ip);
         // Reconexões do host caem no cooldown por sala (discordNotify.ts) — só avisa uma vez.
         void notifyStreamStarted(room);
-      } else viewerId = registerViewerSocket(roomId, socket);
+      } else viewerId = registerViewerSocket(roomId, socket, request.ip);
       request.log.info({ roomId, role, viewerId, clientIp: request.ip }, "native ws open");
       socket.on("close", (code) => {
         request.log.info({ roomId, role, viewerId, clientIp: request.ip, code, durationMs: Date.now() - openedAt }, "native ws close");
