@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.3 — 2026-11-09
+
+### Melhorias
+- **Transmissão travada não fica mais "ao vivo" pra sempre.** Se a placa de vídeo parar de entregar imagem por cerca de um minuto e meio enquanto alguém tenta assistir, a transmissão é encerrada e o app avisa o motivo, em vez de continuar mostrando "ao vivo" sem ninguém conseguir ver nada. Transmissão aberta sem espectadores, ou com a tela parada, nunca é encerrada por isso.
+
 ## 1.5.2 — 2026-11-09
 
 ### Correções
