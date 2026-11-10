@@ -116,7 +116,11 @@ export function useNativeStream(roomId: string, password?: string) {
     void decoderHardwareSupport("avc1.64002a").then((hw) => {
       decoderHw = hw;
     });
+    // Aba fechando/navegando: a partir daqui a conexão cai POR CAUSA da saída (WS/ICE fecham no
+    // unload) — qualquer "falha" que dispare depois disso é ruído, só o "end" vale.
+    let leaving = false;
     const report = (reason: string, extra: TelemetryData = {}) => {
+      if (leaving && reason !== "end") return;
       if (reportedReasons.has(reason)) return;
       reportedReasons.add(reason);
       const { ice, ...counters } = tm;
@@ -261,12 +265,16 @@ export function useNativeStream(roomId: string, password?: string) {
     let recovering = false;
     let recoveryDeadline: ReturnType<typeof setTimeout> | null = null;
 
-    const endStream = () => {
+    // `cause`: "host" = sala sumiu (quem transmitia encerrou — fim normal), "timeout" = a
+    // recuperação estourou o prazo com a sala ainda de pé (essa sim é falha).
+    const endStream = (cause: "host" | "timeout" = "host") => {
       if (cancelled) return;
+      const wasRecovering = recovering;
       recovering = false;
       if (recoveryDeadline) clearTimeout(recoveryDeadline);
       recoveryDeadline = null;
-      report("end");
+      if (cause === "timeout") report("recovery_failed");
+      report("end", { endedBy: cause === "timeout" ? "recovery_failed" : "host", endedWhileRecovering: wasRecovering });
       setPhase("ended");
     };
 
@@ -291,7 +299,7 @@ export function useNativeStream(roomId: string, password?: string) {
       tm.recoveries++;
       report("connection_lost", { lostReason: reason });
       setConnectionState(ConnectionState.Reconnecting);
-      recoveryDeadline = setTimeout(endStream, RECOVERY_DEADLINE_MS);
+      recoveryDeadline = setTimeout(() => endStream("timeout"), RECOVERY_DEADLINE_MS);
       void roomExists(roomId).then((exists) => {
         if (cancelled || !recovering) return;
         if (exists === false) endStream();
@@ -723,14 +731,23 @@ export function useNativeStream(roomId: string, password?: string) {
 
     // Fechar a aba não roda o cleanup do React — `pagehide` cobre esse caso (o `keepalive` do
     // fetch deixa o relatório sair mesmo com a página indo embora).
-    const onPageHide = () => report("end");
+    const onPageHide = () => {
+      report("end", { endedBy: "viewer_left" });
+      leaving = true;
+    };
+    const onBeforeUnload = () => {
+      leaving = true;
+    };
     window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onBeforeUnload);
 
     return () => {
       window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onBeforeUnload);
       if (recoveryDeadline) clearTimeout(recoveryDeadline);
       // Montagem descartada na hora (StrictMode em dev) não vira relatório.
-      if (tm.wsOpens > 0 || sinceStart() > 2000) report("end");
+      if (tm.wsOpens > 0 || sinceStart() > 2000) report("end", { endedBy: "viewer_left" });
+      leaving = true;
       clearTimeout(notConnectedTimer);
       cancelled = true;
       sendMessageRef.current = null;

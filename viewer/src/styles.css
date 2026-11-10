@@ -1777,6 +1777,78 @@ body {
   font-size: 12px;
   margin-top: 6px;
 }
+
+/* Gráficos de tendência do painel admin (components/TrendChart.tsx) */
+.trend-controls {
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.trend-controls select,
+.trend-title select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font: inherit;
+}
+.trend-title {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 16px 0 6px;
+}
+.trend-plot {
+  position: relative;
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 4px;
+}
+.trend-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.trend-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+.trend-cross {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.trend-axis {
+  fill: var(--muted);
+  font-size: 11px;
+}
+.trend-dot {
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+.trend-tip {
+  position: absolute;
+  top: 8px;
+  transform: translateX(-50%);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 1;
+}
+.trend-legend-item {
+  margin-right: 12px;
+}
+.trend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  vertical-align: middle;
+}
 .admin-clickable {
   cursor: pointer;
 }

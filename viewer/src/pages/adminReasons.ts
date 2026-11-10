@@ -34,7 +34,8 @@ const R: Record<string, ReasonInfo> = {
   room_closed_admin: { label: "Sala encerrada pelo painel", stage: "sessão", severity: "info", hint: "Encerramento manual." },
   // ---- Espectador ----
   no_data: { label: "Conectou mas nenhum vídeo chegou", stage: "rede", severity: "error", hint: "Quase sempre o transmissor não está mandando — ver eventos do host na mesma sala." },
-  connection_lost: { label: "Conexão perdida", stage: "rede", severity: "warn", hint: "lostReason=channel_closed costuma ser o host encerrando." },
+  connection_lost: { label: "Conexão perdida", stage: "rede", severity: "warn", hint: "Não conta como falha: costuma ser o host encerrando. Falha de verdade vira recovery_failed." },
+  recovery_failed: { label: "Não reconectou", stage: "rede", severity: "error", hint: "Conexão caiu com a sala ainda aberta e não voltou dentro do prazo." },
   ice_failed: { label: "ICE falhou (sem caminho de rede)", stage: "rede", severity: "error", hint: "NAT/firewall. Ver iceLocalType/iceRemoteType (relay = passou pelo TURN)." },
   not_connected: { label: "Nunca conectou", stage: "rede", severity: "error", hint: "Canal de vídeo não abriu." },
   signaling_error: { label: "Erro de sinalização", stage: "sinalização", severity: "error", hint: "WebSocket/backend." },
