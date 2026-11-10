@@ -152,6 +152,12 @@ export function useBroadcast() {
       // fonte presa aberta sem transmissão nenhuma usando ela.
       if (streamRef.current) stopCapture(streamRef.current);
       streamRef.current = null;
+      // Sala já criada / host já de pé quando a falha veio depois (ex.: fonte encerrada durante o
+      // start) — encerra pra não deixar sala "ao vivo" sem transmissão.
+      nativeHostRef.current?.stop();
+      nativeHostRef.current = null;
+      if (roomIdRef.current) void endRoom(roomIdRef.current).catch(() => {});
+      roomIdRef.current = null;
       setError(err instanceof Error ? err.message : "Erro ao iniciar transmissão.");
       setState("error");
     }

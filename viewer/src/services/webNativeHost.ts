@@ -166,8 +166,16 @@ export class WebNativeHost {
     this.iceServers = await fetchIceServers();
     const [videoTrack] = this.opts.stream.getVideoTracks();
     const [audioTrack] = this.opts.stream.getAudioTracks();
-    this.runVideo(videoTrack);
-    if (audioTrack) this.runAudio(audioTrack);
+    // A fonte pode acabar durante os `await` (usuário clicou "Parar de compartilhar" do Chrome,
+    // janela capturada fechou) — `MediaStreamTrackProcessor` com track encerrada lança
+    // "Input track cannot be ended" (visto em produção como unhandledRejection).
+    if (!videoTrack || videoTrack.readyState === "ended") {
+      throw new Error("O compartilhamento de tela foi encerrado antes de a transmissão começar. Tente de novo.");
+    }
+    this.runVideo(videoTrack).catch((err) => console.error("[web-native-host] vídeo parou:", err));
+    if (audioTrack && audioTrack.readyState !== "ended") {
+      this.runAudio(audioTrack).catch((err) => console.error("[web-native-host] áudio parou:", err));
+    }
     this.connectWs();
     this.adaptTimer = setInterval(() => this.adaptBitrate(), ADAPT_INTERVAL_MS);
     // Fechar a aba não passa pelo `stop()` — relatório de fim sai mesmo assim (`keepalive`).
