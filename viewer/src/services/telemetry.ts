@@ -72,7 +72,9 @@ export function clientEnvInfo(): TelemetryData {
     // ignora
   }
   const uaData = (navigator as Navigator & { userAgentData?: { brands?: { brand: string; version: string }[]; platform?: string } }).userAgentData;
-  const brand = uaData?.brands?.find((b) => !/not.?a.?brand|chromium/i.test(b.brand)) ?? uaData?.brands?.[0];
+  // Ignora a marca GREASE (nome aleatório com "Brand", ex.: "Not?A_Brand") e o "Chromium" genérico.
+  const brands = uaData?.brands?.filter((b) => !/brand/i.test(b.brand)) ?? [];
+  const brand = brands.find((b) => !/chromium/i.test(b.brand)) ?? brands[0];
   const browser = brand ? `${brand.brand} ${brand.version}` : navigator.userAgent.slice(0, 200);
   cachedEnv = { gpu, browser, platform: uaData?.platform ?? navigator.platform ?? null };
   return cachedEnv;

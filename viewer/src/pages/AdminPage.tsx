@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { detailSummary, envSummary, fmtDuration, reasonInfo, roleLabel, type EventData } from "./adminReasons";
 
 // Painel interno: estatísticas da telemetria e crashes (backend/src/routes/admin.ts). O token fica
 // só no navegador de quem administra; sem ele o backend responde 401/404 e nada é mostrado.
@@ -15,6 +16,7 @@ interface DailyRow {
 }
 interface VersionRow {
   source: string;
+  role: string;
   version: string;
   sessions: string;
   failed_sessions: string;
@@ -26,7 +28,22 @@ interface ReasonRow {
   role: string;
   source: string;
   count: string;
+  rooms: string;
+  last_seen: string;
 }
+interface EventRow {
+  id: string;
+  created_at: string;
+  room_id: string;
+  session_id: string | null;
+  role: string;
+  source: string;
+  reason: string;
+  app_version: string | null;
+  data: EventData;
+}
+// Filtro da lista de eventos: falhas recentes (padrão), um motivo, ou a linha do tempo de uma sala.
+type EventFilter = { kind: "failures" } | { kind: "reason"; reason: string } | { kind: "room"; room: string };
 interface Stats {
   days: number;
   daily: DailyRow[];
@@ -78,6 +95,8 @@ export function AdminPage() {
   const [crashes, setCrashes] = useState<CrashRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [filter, setFilter] = useState<EventFilter>({ kind: "failures" });
+  const [events, setEvents] = useState<EventRow[] | null>(null);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -101,6 +120,32 @@ export function AdminPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const loadEvents = useCallback(async () => {
+    if (!token) return;
+    const q =
+      filter.kind === "room" ? `&room=${encodeURIComponent(filter.room)}&limit=300` : filter.kind === "reason" ? `&reason=${filter.reason}` : "";
+    try {
+      const r = await adminFetch<{ events: EventRow[] }>(`/admin/events?days=${days}${q}`, token);
+      setEvents(filter.kind === "room" ? [...r.events].reverse() : r.events);
+    } catch {
+      setEvents([]);
+    }
+  }, [token, days, filter]);
+
+  useEffect(() => {
+    void loadEvents();
+  }, [loadEvents]);
+
+  // Falha de espectador numa sala onde o transmissor também falhou = causa provável é o transmissor.
+  const hostFailureByRoom = new Map<string, EventRow>();
+  for (const e of events ?? []) {
+    if (e.role === "host" && reasonInfo(e.reason).severity !== "info" && !hostFailureByRoom.has(e.room_id)) hostFailureByRoom.set(e.room_id, e);
+  }
+  const showEvents = (f: EventFilter) => {
+    setFilter(f);
+    document.getElementById("admin-events")?.scrollIntoView({ behavior: "smooth" });
+  };
 
   async function downloadDump(id: string) {
     try {
@@ -154,7 +199,13 @@ export function AdminPage() {
             <option value={30}>30 dias</option>
             <option value={90}>90 dias</option>
           </select>
-          <button onClick={() => void load()} disabled={loading}>
+          <button
+            onClick={() => {
+              void load();
+              void loadEvents();
+            }}
+            disabled={loading}
+          >
             {loading ? "Carregando…" : "Atualizar"}
           </button>
           <button
@@ -206,7 +257,7 @@ export function AdminPage() {
             <table className="admin-table">
               <thead>
                 <tr>
-                  <th>Origem</th>
+                  <th>Quem</th>
                   <th>Versão</th>
                   <th>Sessões</th>
                   <th>Com falha</th>
@@ -216,8 +267,8 @@ export function AdminPage() {
               </thead>
               <tbody>
                 {stats.byVersion.map((v) => (
-                  <tr key={`${v.source}-${v.version}`}>
-                    <td>{v.source}</td>
+                  <tr key={`${v.source}-${v.role}-${v.version}`}>
+                    <td>{roleLabel(v.role, v.source)}</td>
                     <td>{v.version}</td>
                     <td>{v.sessions}</td>
                     <td>
@@ -229,31 +280,116 @@ export function AdminPage() {
                 ))}
               </tbody>
             </table>
+            <p className="admin-note">Falha = qualquer relatório exceto fim normal e recuperações (reconectou / vídeo chegou atrasado).</p>
           </section>
 
           <section>
-            <h2>Motivos de falha</h2>
+            <h2>Motivos</h2>
             {stats.failureReasons.length === 0 ? (
               <p className="admin-empty">Nenhuma falha no período.</p>
             ) : (
               <table className="admin-table">
                 <thead>
                   <tr>
-                    <th>Motivo</th>
+                    <th>O que aconteceu</th>
                     <th>Quem</th>
+                    <th>Etapa</th>
                     <th>Total</th>
+                    <th>Salas</th>
+                    <th>Última vez</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {stats.failureReasons.map((r) => (
-                    <tr key={`${r.reason}-${r.role}-${r.source}`}>
-                      <td>{r.reason}</td>
-                      <td>
-                        {r.role} ({r.source})
-                      </td>
-                      <td>{r.count}</td>
-                    </tr>
-                  ))}
+                  {stats.failureReasons.map((r) => {
+                    const info = reasonInfo(r.reason);
+                    return (
+                      <tr
+                        key={`${r.reason}-${r.role}-${r.source}`}
+                        className="admin-clickable"
+                        title={info.hint}
+                        onClick={() => showEvents({ kind: "reason", reason: r.reason })}
+                      >
+                        <td>
+                          <span className={`admin-sev admin-sev-${info.severity}`} />
+                          {info.label} <code className="admin-code">{r.reason}</code>
+                        </td>
+                        <td>{roleLabel(r.role, r.source)}</td>
+                        <td>{info.stage}</td>
+                        <td>{r.count}</td>
+                        <td>{r.rooms}</td>
+                        <td>{fmtDate(r.last_seen)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+            <p className="admin-note">Clique num motivo pra ver os eventos. Passe o mouse pra ver a dica de diagnóstico.</p>
+          </section>
+
+          <section id="admin-events">
+            <h2>
+              {filter.kind === "failures"
+                ? "Falhas recentes"
+                : filter.kind === "reason"
+                  ? `Eventos: ${reasonInfo(filter.reason).label}`
+                  : `Sala ${filter.room} — linha do tempo`}
+              {filter.kind !== "failures" && (
+                <button className="admin-link admin-clear" onClick={() => setFilter({ kind: "failures" })}>
+                  ver todas as falhas
+                </button>
+              )}
+            </h2>
+            {!events || events.length === 0 ? (
+              <p className="admin-empty">Nenhum evento.</p>
+            ) : (
+              <table className="admin-table admin-events">
+                <thead>
+                  <tr>
+                    <th>Quando</th>
+                    <th>Sala</th>
+                    <th>Quem</th>
+                    <th>O que aconteceu</th>
+                    <th>Ambiente</th>
+                    <th>Detalhe</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {events.map((e) => {
+                    const info = reasonInfo(e.reason);
+                    const hostCause = e.role === "viewer" && info.severity !== "info" ? hostFailureByRoom.get(e.room_id) : undefined;
+                    return (
+                      <tr key={e.id}>
+                        <td>
+                          {fmtDate(e.created_at)}
+                          <div className="admin-sub">após {fmtDuration(e.data.elapsedMs)}</div>
+                        </td>
+                        <td>
+                          <button className="admin-link" onClick={() => showEvents({ kind: "room", room: e.room_id })}>
+                            {e.room_id}
+                          </button>
+                          {e.session_id && <div className="admin-sub">sessão {e.session_id}</div>}
+                        </td>
+                        <td>
+                          {roleLabel(e.role, e.source)}
+                          <div className="admin-sub">{e.app_version ?? "?"}</div>
+                        </td>
+                        <td title={info.hint}>
+                          <span className={`admin-sev admin-sev-${info.severity}`} />
+                          {info.label}
+                          {hostCause && <div className="admin-cause">provável causa: transmissor — {reasonInfo(hostCause.reason).label}</div>}
+                        </td>
+                        <td>{envSummary(e.source, e.data)}</td>
+                        <td className="admin-message">
+                          {detailSummary(e.role, e.data)}
+                          <details>
+                            <summary>dados</summary>
+                            <pre>{JSON.stringify(e.data, null, 2)}</pre>
+                          </details>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             )}

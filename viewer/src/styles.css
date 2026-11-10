@@ -1770,3 +1770,79 @@ body {
   padding: 0;
   color: var(--accent);
 }
+
+/* Painel: eventos de telemetria */
+.admin-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 6px;
+}
+.admin-clickable {
+  cursor: pointer;
+}
+.admin-clickable:hover td {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.admin-code {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 4px;
+}
+.admin-sev {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+.admin-sev-error {
+  background: var(--danger);
+}
+.admin-sev-warn {
+  background: #f0b232;
+}
+.admin-sev-info {
+  background: var(--muted);
+}
+.admin-sub {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.admin-cause {
+  color: #f0b232;
+  font-size: 12px;
+  margin-top: 4px;
+  white-space: normal;
+}
+.admin-events td {
+  vertical-align: top;
+}
+.admin-events pre {
+  max-height: 260px;
+  overflow: auto;
+  font-size: 11px;
+  margin: 6px 0 0;
+}
+.admin-events summary {
+  cursor: pointer;
+  color: var(--accent);
+  margin-top: 4px;
+  font-family: inherit;
+}
+.admin-page .admin-clear {
+  font-size: 13px;
+  font-weight: 400;
+  margin-left: 12px;
+}
+.admin-events td:nth-child(4),
+.admin-events td:nth-child(5) {
+  white-space: normal;
+  min-width: 180px;
+  max-width: 240px;
+}
+.admin-events .admin-message {
+  min-width: 260px;
+  max-width: 360px;
+}
