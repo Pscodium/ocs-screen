@@ -85,7 +85,8 @@ type GroupKey = (typeof GROUPS)[number]["key"];
 const num = (v: string | null | undefined): number | null => (v === null || v === undefined ? null : Number(v));
 
 type MetricKey = "failRate" | "sessions" | "avgDuration" | "totalHours" | "firstFrame" | "recoveries";
-const METRICS: { key: MetricKey; label: string; format: (v: number) => string; get: (m: Metrics) => number | null }[] = [
+// `viewerOnly`: só o espectador relata esse contador (host sempre viria 0 e esconderia tudo).
+const METRICS: { key: MetricKey; label: string; viewerOnly?: boolean; format: (v: number) => string; get: (m: Metrics) => number | null }[] = [
   {
     key: "failRate",
     label: "Taxa de falha",
@@ -95,8 +96,8 @@ const METRICS: { key: MetricKey; label: string; format: (v: number) => string; g
   { key: "sessions", label: "Sessões", format: (v) => v.toFixed(0), get: (m) => Number(m.sessions) },
   { key: "avgDuration", label: "Duração média", format: (v) => `${v.toFixed(0)} min`, get: (m) => (num(m.avg_duration_s) ?? NaN) / 60 || null },
   { key: "totalHours", label: "Horas totais", format: (v) => `${v.toFixed(1)} h`, get: (m) => num(m.total_hours) },
-  { key: "firstFrame", label: "Tempo até 1º quadro (espectador)", format: (v) => `${(v / 1000).toFixed(1)} s`, get: (m) => num(m.avg_first_frame_ms) },
-  { key: "recoveries", label: "Quedas por sessão", format: (v) => v.toFixed(2), get: (m) => num(m.avg_recoveries) },
+  { key: "firstFrame", label: "Tempo até 1º quadro", viewerOnly: true, format: (v) => `${(v / 1000).toFixed(1)} s`, get: (m) => num(m.avg_first_frame_ms) },
+  { key: "recoveries", label: "Quedas por sessão", viewerOnly: true, format: (v) => v.toFixed(2), get: (m) => num(m.avg_recoveries) },
 ];
 
 const groupOf = (m: { source: string; role: string }): GroupKey | null =>
@@ -114,50 +115,29 @@ function compareVersions(a: string, b: string): number {
 
 const fmtDay = (iso: string) => new Date(iso).toLocaleDateString("pt-BR", { timeZone: "UTC", day: "2-digit", month: "2-digit" });
 
+// Small multiples: um gráfico por métrica (cada uma tem unidade própria — num eixo só, "sessões"
+// esmagaria "taxa de falha"). Por dia: uma linha por grupo. Por versão: o grupo escolhido (app e
+// viewer têm numeração própria, não dá pra dividir o eixo X).
 function Trends({ stats }: { stats: Stats }) {
-  const [metricKey, setMetricKey] = useState<MetricKey>("failRate");
   const [versionGroup, setVersionGroup] = useState<GroupKey>("web-viewer");
-  const metric = METRICS.find((m) => m.key === metricKey) ?? METRICS[0];
 
-  // Por versão: só versões com sessão no período, em ordem semântica.
   const versions = stats.byVersion
     .filter((v) => groupOf(v) === versionGroup && v.version !== "desconhecida")
     .sort((a, b) => compareVersions(a.version, b.version));
   const vGroup = GROUPS.find((g) => g.key === versionGroup) ?? GROUPS[0];
-  const versionSeries: TrendSeries[] = [{ label: vGroup.key, color: vGroup.color, values: versions.map(metric.get) }];
+  const versionMetrics = METRICS.filter((m) => !m.viewerOnly || vGroup.role === "viewer");
 
-  // Por dia: uma linha por grupo; dia sem sessão do grupo = sem ponto.
   const trend = stats.trendDaily ?? [];
   const days = [...new Set(trend.map((r) => r.day))].sort();
   const cell = (g: GroupKey, day: string) => trend.find((r) => r.day === day && groupOf(r) === g);
   const dayGroups = GROUPS.filter((g) => trend.some((r) => groupOf(r) === g.key));
-  const daySeries: TrendSeries[] = dayGroups.map((g) => ({
-    label: roleLabel(g.role, g.source),
-    color: g.color,
-    values: days.map((d) => {
-      const row = cell(g.key, d);
-      return row ? metric.get(row) : null;
-    }),
-  }));
 
   return (
     <section>
       <h2>Tendências</h2>
-      <div className="trend-controls">
-        <label>
-          Métrica{" "}
-          <select value={metricKey} onChange={(e) => setMetricKey(e.target.value as MetricKey)}>
-            {METRICS.map((m) => (
-              <option key={m.key} value={m.key}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
 
       <h3 className="trend-title">
-        {metric.label} por versão —{" "}
+        Por versão —{" "}
         <select value={versionGroup} onChange={(e) => setVersionGroup(e.target.value as GroupKey)}>
           {GROUPS.map((g) => (
             <option key={g.key} value={g.key}>
@@ -166,23 +146,59 @@ function Trends({ stats }: { stats: Stats }) {
           ))}
         </select>
       </h3>
-      <TrendChart
-        xLabels={versions.map((v) => v.version)}
-        series={versionSeries}
-        format={metric.format}
-        detail={(_, i) => `${versions[i].sessions} sessões, ${versions[i].failed_sessions} com falha`}
-      />
+      <div className="trend-grid-wrap">
+        {versionMetrics.map((m) => (
+          <div key={m.key}>
+            <h4 className="trend-subtitle">{m.label}</h4>
+            <TrendChart
+              xLabels={versions.map((v) => v.version)}
+              series={[{ label: vGroup.key, color: vGroup.color, values: versions.map(m.get) }]}
+              format={m.format}
+              detail={(_, i) => `${versions[i].sessions} sessões, ${versions[i].failed_sessions} com falha`}
+            />
+          </div>
+        ))}
+      </div>
 
-      <h3 className="trend-title">{metric.label} por dia</h3>
-      <TrendChart
-        xLabels={days.map(fmtDay)}
-        series={daySeries}
-        format={metric.format}
-        detail={(si, i) => {
-          const row = cell(dayGroups[si].key, days[i]);
-          return row ? `${row.sessions} sessões, ${row.failed_sessions} com falha` : null;
-        }}
-      />
+      <h3 className="trend-title">Por dia</h3>
+      <p className="admin-legend">
+        {dayGroups.map((g) => (
+          <span key={g.key} className="trend-legend-item">
+            <span className="trend-swatch" style={{ background: g.color }} /> {roleLabel(g.role, g.source)}
+          </span>
+        ))}
+      </p>
+      <div className="trend-grid-wrap">
+        {METRICS.map((m) => {
+          const groups = dayGroups.filter((g) => !m.viewerOnly || g.role === "viewer");
+          const series: TrendSeries[] = groups.map((g) => ({
+            label: roleLabel(g.role, g.source),
+            color: g.color,
+            values: days.map((d) => {
+              const row = cell(g.key, d);
+              return row ? m.get(row) : null;
+            }),
+          }));
+          return (
+            <div key={m.key}>
+              <h4 className="trend-subtitle">
+                {m.label}
+                {m.viewerOnly && <span className="admin-sub"> (só espectador)</span>}
+              </h4>
+              <TrendChart
+                xLabels={days.map(fmtDay)}
+                series={series}
+                hideLegend
+                format={m.format}
+                detail={(si, i) => {
+                  const row = cell(groups[si].key, days[i]);
+                  return row ? `${row.sessions} sessões` : null;
+                }}
+              />
+            </div>
+          );
+        })}
+      </div>
       <p className="admin-note">
         Cada ponto agrega sessões (não relatórios). Versão/dia com poucas sessões oscila muito — veja a contagem no tooltip.
       </p>

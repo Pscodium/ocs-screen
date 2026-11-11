@@ -13,12 +13,14 @@ interface Props {
   xLabels: string[];
   series: TrendSeries[];
   format: (v: number) => string;
+  // Legenda fica fora quando vários gráficos dividem os mesmos grupos (small multiples).
+  hideLegend?: boolean;
   // Contexto extra no tooltip (ex.: "41 sessões") por série/ponto.
   detail?: (seriesIndex: number, pointIndex: number) => string | null;
 }
 
-const W = 720;
-const H = 220;
+const W = 480;
+const H = 200;
 const PAD = { top: 12, right: 16, bottom: 28, left: 52 };
 
 function niceMax(v: number): number {
@@ -28,7 +30,7 @@ function niceMax(v: number): number {
   return step * exp;
 }
 
-export function TrendChart({ xLabels, series, format, detail }: Props) {
+export function TrendChart({ xLabels, series, format, hideLegend, detail }: Props) {
   const [hover, setHover] = useState<number | null>(null);
   const all = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
   if (xLabels.length === 0 || all.length === 0) return <p className="admin-empty">Sem dados no período.</p>;
@@ -68,7 +70,7 @@ export function TrendChart({ xLabels, series, format, detail }: Props) {
 
   return (
     <div className="trend">
-      {series.length > 1 && (
+      {series.length > 1 && !hideLegend && (
         <p className="admin-legend">
           {series.map((s) => (
             <span key={s.label} className="trend-legend-item">
