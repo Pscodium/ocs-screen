@@ -1838,17 +1838,6 @@ body {
   font-weight: 500;
   margin: 16px 0 6px;
 }
-.trend-grid-wrap {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr));
-  gap: 12px 16px;
-}
-.trend-subtitle {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--muted);
-  margin: 4px 0 4px;
-}
 .trend-plot {
   position: relative;
   background: var(--surface);
@@ -1873,9 +1862,24 @@ body {
   fill: var(--muted);
   font-size: 11px;
 }
+.trend-line {
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.85;
+}
 .trend-dot {
   stroke: var(--surface);
-  stroke-width: 2;
+  stroke-width: 1.5;
+}
+.trend-tip.trend-tip-left {
+  transform: translateX(calc(-100% - 8px));
+}
+.trend-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-bottom: 6px;
 }
 .trend-tip {
   position: absolute;
@@ -1891,7 +1895,21 @@ body {
   z-index: 1;
 }
 .trend-legend-item {
-  margin-right: 12px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 6px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.trend-legend-item:hover {
+  border-color: var(--border);
+}
+.trend-legend-off {
+  opacity: 0.4;
+  text-decoration: line-through;
 }
 .trend-swatch {
   display: inline-block;

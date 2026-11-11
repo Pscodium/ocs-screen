@@ -115,92 +115,66 @@ function compareVersions(a: string, b: string): number {
 
 const fmtDay = (iso: string) => new Date(iso).toLocaleDateString("pt-BR", { timeZone: "UTC", day: "2-digit", month: "2-digit" });
 
-// Small multiples: um gráfico por métrica (cada uma tem unidade própria — num eixo só, "sessões"
-// esmagaria "taxa de falha"). Por dia: uma linha por grupo. Por versão: o grupo escolhido (app e
-// viewer têm numeração própria, não dá pra dividir o eixo X).
+// Cor fixa por métrica (segue a métrica, nunca a posição) — paleta validada pra superfície escura.
+const METRIC_COLORS: Record<MetricKey, string> = {
+  failRate: "#d95926",
+  sessions: "#3987e5",
+  avgDuration: "#199e70",
+  totalHours: "#c98500",
+  firstFrame: "#d55181",
+  recoveries: "#9085e9",
+};
+
+// Um gráfico com uma linha por métrica, cada uma relativa ao próprio máximo (unidades diferentes
+// não cabem num eixo só) — mostra a tendência; o valor real fica no tooltip. App e viewer têm
+// numeração de versão própria, então o grupo é escolhido (vale pros dois gráficos).
 function Trends({ stats }: { stats: Stats }) {
-  const [versionGroup, setVersionGroup] = useState<GroupKey>("web-viewer");
+  const [groupKey, setGroupKey] = useState<GroupKey>("web-viewer");
+  const group = GROUPS.find((g) => g.key === groupKey) ?? GROUPS[0];
+  const metrics = METRICS.filter((m) => !m.viewerOnly || group.role === "viewer");
+
+  const seriesFor = (rows: Metrics[]): TrendSeries[] =>
+    metrics.map((m) => ({ label: m.label, color: METRIC_COLORS[m.key], format: m.format, values: rows.map(m.get) }));
 
   const versions = stats.byVersion
-    .filter((v) => groupOf(v) === versionGroup && v.version !== "desconhecida")
+    .filter((v) => groupOf(v) === groupKey && v.version !== "desconhecida")
     .sort((a, b) => compareVersions(a.version, b.version));
-  const vGroup = GROUPS.find((g) => g.key === versionGroup) ?? GROUPS[0];
-  const versionMetrics = METRICS.filter((m) => !m.viewerOnly || vGroup.role === "viewer");
-
-  const trend = stats.trendDaily ?? [];
-  const days = [...new Set(trend.map((r) => r.day))].sort();
-  const cell = (g: GroupKey, day: string) => trend.find((r) => r.day === day && groupOf(r) === g);
-  const dayGroups = GROUPS.filter((g) => trend.some((r) => groupOf(r) === g.key));
+  const daily = (stats.trendDaily ?? []).filter((r) => groupOf(r) === groupKey).sort((a, b) => a.day.localeCompare(b.day));
 
   return (
     <section>
       <h2>Tendências</h2>
-
-      <h3 className="trend-title">
-        Por versão —{" "}
-        <select value={versionGroup} onChange={(e) => setVersionGroup(e.target.value as GroupKey)}>
-          {GROUPS.map((g) => (
-            <option key={g.key} value={g.key}>
-              {roleLabel(g.role, g.source)}
-            </option>
-          ))}
-        </select>
-      </h3>
-      <div className="trend-grid-wrap">
-        {versionMetrics.map((m) => (
-          <div key={m.key}>
-            <h4 className="trend-subtitle">{m.label}</h4>
-            <TrendChart
-              xLabels={versions.map((v) => v.version)}
-              series={[{ label: vGroup.key, color: vGroup.color, values: versions.map(m.get) }]}
-              format={m.format}
-              detail={(_, i) => `${versions[i].sessions} sessões, ${versions[i].failed_sessions} com falha`}
-            />
-          </div>
-        ))}
+      <div className="trend-controls">
+        <label>
+          Quem{" "}
+          <select value={groupKey} onChange={(e) => setGroupKey(e.target.value as GroupKey)}>
+            {GROUPS.map((g) => (
+              <option key={g.key} value={g.key}>
+                {roleLabel(g.role, g.source)}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
+
+      <h3 className="trend-title">Por versão</h3>
+      <TrendChart
+        normalized
+        xLabels={versions.map((v) => v.version)}
+        series={seriesFor(versions)}
+        detail={(i) => `${versions[i].sessions} sessões, ${versions[i].failed_sessions} com falha`}
+      />
 
       <h3 className="trend-title">Por dia</h3>
-      <p className="admin-legend">
-        {dayGroups.map((g) => (
-          <span key={g.key} className="trend-legend-item">
-            <span className="trend-swatch" style={{ background: g.color }} /> {roleLabel(g.role, g.source)}
-          </span>
-        ))}
-      </p>
-      <div className="trend-grid-wrap">
-        {METRICS.map((m) => {
-          const groups = dayGroups.filter((g) => !m.viewerOnly || g.role === "viewer");
-          const series: TrendSeries[] = groups.map((g) => ({
-            label: roleLabel(g.role, g.source),
-            color: g.color,
-            values: days.map((d) => {
-              const row = cell(g.key, d);
-              return row ? m.get(row) : null;
-            }),
-          }));
-          return (
-            <div key={m.key}>
-              <h4 className="trend-subtitle">
-                {m.label}
-                {m.viewerOnly && <span className="admin-sub"> (só espectador)</span>}
-              </h4>
-              <TrendChart
-                xLabels={days.map(fmtDay)}
-                series={series}
-                hideLegend
-                format={m.format}
-                detail={(si, i) => {
-                  const row = cell(groups[si].key, days[i]);
-                  return row ? `${row.sessions} sessões` : null;
-                }}
-              />
-            </div>
-          );
-        })}
-      </div>
+      <TrendChart
+        normalized
+        xLabels={daily.map((r) => fmtDay(r.day))}
+        series={seriesFor(daily)}
+        detail={(i) => `${daily[i].sessions} sessões, ${daily[i].failed_sessions} com falha`}
+      />
       <p className="admin-note">
-        Cada ponto agrega sessões (não relatórios). Versão/dia com poucas sessões oscila muito — veja a contagem no tooltip.
+        Cada linha é relativa ao próprio máximo no período (100% = maior valor daquela métrica) — compare a tendência, o valor real está no
+        tooltip. Clique na legenda pra ocultar uma linha. Pontos com poucas sessões oscilam muito.
       </p>
     </section>
   );
