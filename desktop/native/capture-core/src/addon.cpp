@@ -1533,6 +1533,10 @@ Napi::Value CapturePreview(const Napi::CallbackInfo& info) {
     return obj;
 }
 
+// StoreUpdate.cpp (Microsoft Store in-app update)
+Napi::Value StoreCheckUpdates(const Napi::CallbackInfo& info);
+Napi::Value StoreInstallUpdates(const Napi::CallbackInfo& info);
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("initialize", Napi::Function::New(env, Initialize));
     exports.Set("nowUs", Napi::Function::New(env, NowUs));
@@ -1601,6 +1605,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("transportOnLocalDescription", Napi::Function::New(env, TransportOnLocalDescription));
     exports.Set("transportOnLocalCandidate", Napi::Function::New(env, TransportOnLocalCandidate));
     exports.Set("transportOnStateChange", Napi::Function::New(env, TransportOnStateChange));
+    exports.Set("storeCheckUpdates", Napi::Function::New(env, StoreCheckUpdates));
+    exports.Set("storeInstallUpdates", Napi::Function::New(env, StoreInstallUpdates));
 
     return exports;
 }

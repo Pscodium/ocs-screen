@@ -17,8 +17,11 @@ export interface CaptureSource {
 }
 
 export interface UpdateAvailableInfo {
-  version: string;
+  // null: a Store tem pacote novo mas o release do GitHub ainda não diz qual.
+  version: string | null;
   releaseNotes: string | null;
+  // Store: atualiza de dentro do app (StoreContext) em vez de só abrir a Store.
+  inApp?: boolean;
 }
 
 export interface UpdateDownloadProgress {

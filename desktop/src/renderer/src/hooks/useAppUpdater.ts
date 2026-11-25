@@ -23,6 +23,7 @@ export interface UpdateState {
   releaseNotes: string | null;
   percent: number;
   error: string | null;
+  inApp: boolean;
 }
 
 const initialState: UpdateState = {
@@ -31,6 +32,7 @@ const initialState: UpdateState = {
   releaseNotes: null,
   percent: 0,
   error: null,
+  inApp: false,
 };
 
 // HTML de verdade, não markdown — o feed do GitHub que o electron-updater lê já vem renderizado
@@ -57,7 +59,7 @@ export function useAppUpdater() {
     const offAvailable = window.screenshare.updater.onAvailable((info) => {
       isMockRef.current = false;
       setDismissed(false);
-      setState({ phase: "available", version: info.version, releaseNotes: info.releaseNotes, percent: 0, error: null });
+      setState({ phase: "available", version: info.version, releaseNotes: info.releaseNotes, percent: 0, error: null, inApp: info.inApp ?? false });
     });
     const offProgress = window.screenshare.updater.onDownloadProgress((progress) => {
       setState((prev) => ({ ...prev, phase: "downloading", percent: progress.percent }));
@@ -104,11 +106,12 @@ export function useAppUpdater() {
       releaseNotes: MOCK_RELEASE_NOTES,
       percent: 0,
       error: null,
+      inApp: false,
     });
   };
 
   const download = () => {
-    if (!isMockRef.current && channel === "store") {
+    if (!isMockRef.current && channel === "store" && !state.inApp) {
       window.screenshare.updater.openStore();
       return;
     }

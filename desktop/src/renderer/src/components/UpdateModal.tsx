@@ -13,12 +13,13 @@ function ReleaseNotes({ html }: { html: string }) {
 }
 
 export function UpdateModal({ updater }: UpdateModalProps) {
-  const { visible, phase, version, releaseNotes, percent, error, download, install, dismiss, channel, required, requiredMin } =
+  const { visible, phase, version, releaseNotes, percent, error, download, install, dismiss, channel, required, requiredMin, inApp } =
     updater;
 
   if (!visible) return null;
 
-  const isStore = channel === "store";
+  // Store sem atualização pelo app (addon ausente / Store recusou): só abre a Store.
+  const isStore = channel === "store" && !inApp;
   const title = required ? "Atualização obrigatória" : "Nova versão disponível";
   const targetVersion = version ?? (requiredMin && requiredMin !== "?" ? requiredMin : null);
 
@@ -60,6 +61,9 @@ export function UpdateModal({ updater }: UpdateModalProps) {
               <div className="update-progress-fill" style={{ width: `${percent}%` }} />
             </div>
             <span className="update-progress-label">Baixando... {percent}%</span>
+            {channel === "store" && (
+              <p className="update-modal-hint">Pela Microsoft Store — o app fecha e abre sozinho no fim.</p>
+            )}
           </div>
         )}
 

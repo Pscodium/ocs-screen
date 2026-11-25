@@ -312,27 +312,76 @@ function isNewerVersion(candidate: string, current: string): boolean {
 // Store: electron-updater fica desligado (política da Store proíbe self-update), mas dá pra avisar
 // lendo o último release do GitHub — mesmo changelog do instalador, já em HTML (`body_html`). A
 // versão pode levar alguns dias pra aparecer na Store (certificação); o modal avisa isso.
-async function checkStoreUpdate(): Promise<void> {
+async function latestGithubRelease(): Promise<{ version: string; notes: string | null } | null> {
   try {
     const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: { Accept: "application/vnd.github.html+json", "User-Agent": "ScreenShare-app" },
     });
-    if (!res.ok) return;
+    if (!res.ok) return null;
     const release = (await res.json()) as { tag_name?: string; body_html?: string };
-    if (!release.tag_name || !isNewerVersion(release.tag_name, app.getVersion())) return;
-    mainWindow?.webContents.send("update:available", {
-      version: release.tag_name.replace(/^v/, ""),
-      releaseNotes: typeof release.body_html === "string" ? release.body_html : null,
-    });
+    if (!release.tag_name) return null;
+    return { version: release.tag_name.replace(/^v/, ""), notes: typeof release.body_html === "string" ? release.body_html : null };
   } catch {
-    // sem internet / GitHub fora — silencioso, igual ao canal GitHub
+    return null; // sem internet / GitHub fora — silencioso, igual ao canal GitHub
+  }
+}
+
+function mainHwnd(): number {
+  const buf = mainWindow?.getNativeWindowHandle();
+  return buf && buf.length >= 8 ? Number(buf.readBigUInt64LE(0)) : 0;
+}
+
+// Store: pergunta à própria Store (StoreContext, ver native/capture-core/src/StoreUpdate.cpp) se
+// tem pacote novo — é o que ela vai instalar de fato. Changelog vem do GitHub (mesmo release).
+// Sem addon (ou Store recusou): cai pro aviso antigo, baseado só no GitHub.
+let storeInApp = false;
+async function checkStoreUpdate(): Promise<void> {
+  const gh = await latestGithubRelease();
+  const ghNewer = gh !== null && isNewerVersion(gh.version, app.getVersion());
+  let storeCount: number | null = null;
+  try {
+    storeCount = nativeCapture ? (await nativeCapture.storeCheckUpdates(mainHwnd())).count : null;
+    storeInApp = storeCount !== null;
+  } catch (err) {
+    console.warn("[update] StoreContext falhou:", err);
+    storeInApp = false;
+  }
+  if (storeInApp ? storeCount === 0 : !ghNewer) return;
+  mainWindow?.webContents.send("update:available", {
+    version: ghNewer ? gh.version : null,
+    releaseNotes: ghNewer ? gh.notes : null,
+    inApp: storeInApp,
+  });
+}
+
+function openStoreUpdates(): void {
+  void shell.openExternal("ms-windows-store://downloadsandupdates");
+}
+
+async function installStoreUpdate(): Promise<void> {
+  if (!nativeCapture || !storeInApp) {
+    openStoreUpdates();
+    return;
+  }
+  try {
+    mainWindow?.webContents.send("update:download-progress", { percent: 0 });
+    const state = await nativeCapture.storeInstallUpdates(mainHwnd(), (p) => {
+      mainWindow?.webContents.send("update:download-progress", { percent: Math.round(Math.min(1, p) * 100) });
+    });
+    // Normalmente o Windows fecha o app antes de chegar aqui (e reabre — RegisterApplicationRestart).
+    if (state === "completed") mainWindow?.webContents.send("update:downloaded");
+    else if (state === "canceled") mainWindow?.webContents.send("update:error", "Atualização cancelada.");
+    else if (state === "no_updates") openStoreUpdates();
+    else mainWindow?.webContents.send("update:error", `A Microsoft Store não conseguiu atualizar (${state}).`);
+  } catch (err) {
+    console.warn("[update] instalação pela Store falhou:", err);
+    mainWindow?.webContents.send("update:error", "Não deu pra atualizar por aqui — abrindo a Microsoft Store.");
+    openStoreUpdates();
   }
 }
 
 ipcMain.handle("update:channel", () => updateChannel);
-ipcMain.on("update:open-store", () => {
-  void shell.openExternal("ms-windows-store://downloadsandupdates");
-});
+ipcMain.on("update:open-store", openStoreUpdates);
 
 // Baixa só quando o usuário aprovar no modal (não é auto-download nem auto-instala no quit) —
 // pede pra "avisar e deixar o usuário escolher", não empurrar a atualização sem avisar.
@@ -368,15 +417,29 @@ function setupAutoUpdater(): void {
     // Espera a janela carregar pra o renderer já estar ouvindo `update:available`.
     mainWindow?.webContents.once("did-finish-load", () => void checkStoreUpdate());
   }
-  if (updateChannel === "github") {
+  const checkGithub = () =>
     autoUpdater.checkForUpdates().catch(() => {
       // Falha silenciosa de propósito (sem internet, GitHub fora do ar, etc.) — não é motivo
       // pra incomodar o usuário toda vez que abre o app.
     });
+  if (updateChannel === "github") void checkGithub();
+  // App fica dias aberto na bandeja — sem isso só via versão nova ao reabrir (o Monkado faz o
+  // mesmo: checa de hora em hora). Não checa no meio de transmissão pra não interromper.
+  if (updateChannel !== "dev") {
+    setInterval(() => {
+      if (ntActive) return;
+      if (updateChannel === "store") void checkStoreUpdate();
+      else void checkGithub();
+    }, UPDATE_CHECK_INTERVAL_MS);
   }
 }
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60_000;
 
 ipcMain.on("update:download", () => {
+  if (updateChannel === "store") {
+    void installStoreUpdate();
+    return;
+  }
   if (updateChannel !== "github") return;
   // Atualização obrigatória pode ser pedida antes da checagem inicial terminar (ou depois dela ter
   // falhado) — checa de novo antes de baixar.
@@ -389,6 +452,12 @@ ipcMain.on("update:download", () => {
 });
 
 ipcMain.on("update:install", () => {
+  if (updateChannel === "store") {
+    // Pacote novo já instalado e o Windows não fechou o app: reabrir aplica.
+    app.relaunch();
+    app.quit();
+    return;
+  }
   autoUpdater.quitAndInstall();
 });
 
@@ -922,6 +991,10 @@ interface NativeCaptureAddon {
   // último poll. Só pra validar ao vivo se um filtro de processo (exclude/include) tá cortando de
   // verdade, não é usado pra nada além de log.
   getAudioRms(): number;
+  // Microsoft Store in-app update (StoreUpdate.cpp). Só funciona no pacote da Store — fora dela
+  // rejeita (0x803F6101).
+  storeCheckUpdates(hwnd: number): Promise<{ count: number; mandatory: boolean }>;
+  storeInstallUpdates(hwnd: number, onProgress: (fraction: number) => void): Promise<string>;
 }
 
 let nativeCapture: NativeCaptureAddon | null = null;

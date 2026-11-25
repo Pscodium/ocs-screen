@@ -12,6 +12,7 @@
             "src/SoftwareEncoderCore.cpp",
             "src/CodecApiHelper.cpp",
             "src/AudioCaptureCore.cpp",
+            "src/StoreUpdate.cpp",
             "vendor/nvenc/NvEncoder.cpp",
             "vendor/nvenc/NvEncoderD3D11.cpp",
             "../transport-core/src/TransportCore.cpp"
