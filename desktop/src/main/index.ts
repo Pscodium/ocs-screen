@@ -17,6 +17,7 @@ import { userInfo } from "os";
 import { createWriteStream, readFileSync, writeFileSync, type WriteStream } from "fs";
 import { autoUpdater } from "electron-updater";
 import WebSocket from "ws";
+import { IceTelemetry, iceServerKinds } from "./iceTelemetry";
 import { destroyDiscordPresence, getDiscordUserName, setDiscordStreaming } from "./discordPresence";
 import { isCrashUploadEnabled, reportJsCrash, setCrashUploadEnabled, startCrashReporter } from "./crashReports";
 
@@ -1326,6 +1327,7 @@ function forgetViewer(viewerId: string): void {
   ntViewerTiers.delete(viewerId);
   ntAutoDemoted.delete(viewerId);
   ntViewerCompat.delete(viewerId);
+  ntIce.forget(viewerId);
   releaseCompatEncodersIfUnused();
 }
 
@@ -1361,6 +1363,8 @@ function freshNativeTelemetry() {
   };
 }
 let ntTelemetry = freshNativeTelemetry();
+// Candidatos ICE por espectador (tipo/protocolo, sem IP) — ver iceTelemetry.ts.
+let ntIce = new IceTelemetry();
 // Por espectador: timer "canal conectado mas nenhum frame saiu" (ver transportOnStateChange).
 const ntNoDataTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const NT_NO_DATA_REPORT_MS = 10_000;
@@ -1388,6 +1392,8 @@ function sendNativeTelemetry(reason: string, extra: Record<string, string | numb
       captureKind: ntHwnd !== null ? "window" : "monitor",
       audio: ntAudioActive,
       viewersConnected: nativeCapture?.transportConnectedCount() ?? 0,
+      iceServers: iceServerKinds(ntStunUrls),
+      ...ntIce.totals(),
       ...extra,
     },
   };
@@ -1556,6 +1562,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
   ntBackendUrl = backendUrl;
   ntHostSecret = typeof hostSecret === "string" ? hostSecret : null;
   ntTelemetry = freshNativeTelemetry();
+  ntIce = new IceTelemetry();
   ntEncoderRecoveryStep = 0;
   nativeCapture.setEncoderFallbackLevel(0);
   ntViewerWarningShown = false;
@@ -1646,7 +1653,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
     }
     if (state === "failed") {
       ntTelemetry.counters.sessionsFailed++;
-      void sendNativeTelemetry("viewer_failed");
+      void sendNativeTelemetry("viewer_failed", ntIce.viewerSummary(viewerId));
     }
     if (state === "failed" || state === "closed") {
       const noDataTimer = ntNoDataTimers.get(viewerId);
@@ -1696,6 +1703,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
     if (ntWs) sendWhenOpen(ntWs, { type, viewerId, sdp, codec: ntViewerCompat.has(viewerId) ? "h264" : ntActiveCodec });
   });
   nativeCapture.transportOnLocalCandidate((viewerId, candidate, mid) => {
+    ntIce.addLocal(viewerId, candidate);
     if (ntWs) sendWhenOpen(ntWs, { type: "ice", viewerId, candidate, mid });
   });
 
@@ -1865,6 +1873,7 @@ ipcMain.handle("native-transport:start", async (event, args: NativeTransportStar
       }
       nativeCapture?.transportSetRemoteDescription(msg.viewerId, msg.sdp, "answer");
     } else if (msg.type === "ice" && msg.candidate) {
+      ntIce.addRemote(msg.viewerId, msg.candidate);
       nativeCapture?.transportAddRemoteCandidate(msg.viewerId, msg.candidate, msg.mid ?? "0");
     }
   });

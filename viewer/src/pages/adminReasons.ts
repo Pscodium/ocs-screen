@@ -27,7 +27,7 @@ const R: Record<string, ReasonInfo> = {
   encoder_software_fallback: { label: "Encoder do navegador caiu pra software", stage: "encoder", severity: "warn", hint: "Hardware do navegador falhou." },
   capture_start_failed: { label: "Captura de tela não iniciou", stage: "captura", severity: "error", hint: "" },
   device_lost_fatal: { label: "GPU resetou e não voltou", stage: "captura", severity: "error", hint: "TDR/driver — recriação do dispositivo falhou." },
-  viewer_failed: { label: "Conexão com um espectador falhou", stage: "rede", severity: "warn", hint: "Sessão WebRTC do lado do host caiu." },
+  viewer_failed: { label: "Conexão com um espectador falhou", stage: "rede", severity: "warn", hint: "Sessão WebRTC do lado do host caiu. hostHasRelay=false = host sem candidato TURN (UDP bloqueado na rede dele ou TURN fora); os dois sem relay = só caminho direto." },
   session_error: { label: "Erro na sessão WebRTC do host", stage: "rede", severity: "warn", hint: "" },
   negotiation_error: { label: "Falha ao negociar conexão", stage: "sinalização", severity: "error", hint: "" },
   room_closed_unhealthy: { label: "Sala encerrada pelo servidor (travada)", stage: "sessão", severity: "error", hint: "O próprio app (≥1.5.3) relatou ~90s seguidos de tela mudando, espectador conectado e encoder sem entregar nada." },
@@ -103,6 +103,9 @@ export function detailSummary(role: string, d: EventData): string {
     if (d.lastEncoderError) parts.push(String(d.lastEncoderError));
     if (d.lastEncodeException) parts.push(String(d.lastEncodeException));
     if (d.mftDiag) parts.push(`mft: ${d.mftDiag}`);
+    if (d.hostCandidates) parts.push(`ICE host ${d.hostCandidates} ↔ espectador ${d.viewerCandidates ?? "?"}`);
+    if (d.iceServers) parts.push(`servidores ${d.iceServers}`);
+    if (d.iceViewersSeen) parts.push(`relay no host ${num(d.iceViewersHostRelay)}/${num(d.iceViewersSeen)}`);
   } else {
     parts.push(`${num(d.framesDecoded)} frames decodificados`);
     if (d.decoderErrors) parts.push(`${num(d.decoderErrors)} erros de decoder`);
