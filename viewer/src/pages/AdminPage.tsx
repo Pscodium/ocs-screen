@@ -72,6 +72,16 @@ interface Stats {
   byVersion: VersionRow[];
   trendDaily?: TrendDailyRow[];
   failureReasons: ReasonRow[];
+  byClient?: ClientRow[];
+}
+interface ClientRow {
+  client: string;
+  sessions: string;
+  failed_sessions: string;
+  decoder_error_sessions: string;
+  avg_duration_s: string | null;
+  avg_first_frame_ms: string | null;
+  last_seen: string;
 }
 
 // Grupos fixos (cor segue o grupo, nunca a posição) — app e viewer têm numeração de versão própria.
@@ -492,6 +502,43 @@ export function AdminPage() {
             </table>
             <p className="admin-note">Falha = sessão com algum relatório de erro. Não contam: fim normal, espectador fechando a aba, host encerrando, queda que reconectou, vídeo que chegou atrasado.</p>
           </section>
+
+          {stats.byClient && stats.byClient.length > 0 && (
+            <section>
+              <h2>Espectadores por dispositivo</h2>
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Cliente</th>
+                    <th>Sessões</th>
+                    <th>Com falha</th>
+                    <th>Erro de decoder</th>
+                    <th>Duração média</th>
+                    <th>1º quadro</th>
+                    <th>Última vez</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.byClient.map((c) => (
+                    <tr key={c.client}>
+                      <td>{c.client}</td>
+                      <td>{c.sessions}</td>
+                      <td>
+                        {c.failed_sessions} ({pct(Number(c.failed_sessions), Number(c.sessions))})
+                      </td>
+                      <td>
+                        {c.decoder_error_sessions} ({pct(Number(c.decoder_error_sessions), Number(c.sessions))})
+                      </td>
+                      <td>{c.avg_duration_s !== null ? `${Math.round(Number(c.avg_duration_s) / 60)} min` : "—"}</td>
+                      <td>{num(c.avg_first_frame_ms) !== null ? `${((num(c.avg_first_frame_ms) ?? 0) / 1000).toFixed(1)} s` : "—"}</td>
+                      <td>{fmtDate(c.last_seen)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p className="admin-note">iOS e Safari usam o caminho canvas + AVCC (viewer 0.6.0+). "Erro de decoder" conta sessões que recriaram o decoder pelo menos uma vez.</p>
+            </section>
+          )}
 
           <section>
             <h2>Motivos</h2>

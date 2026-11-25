@@ -111,7 +111,10 @@ export function useNativeStream(roomId: string, password?: string) {
       decoderErrors: 0,
       lastDecoderError: null as string | null,
       recoveries: 0,
+      autoLowQuality: false,
       ice: {} as TelemetryData,
+      // Saúde do áudio (worklet, cumulativo) — fila vazia, buraco de silêncio, pulo. Estalo/chiado.
+      audio: { underruns: 0, gaps: 0, skips: 0, lagMaxMs: 0, format: null as string | null },
     };
     const reportedReasons = new Set<string>();
     // Decoder de hardware pro H.264 (codec padrão) — checagem assíncrona, preenche antes do 1º relatório na prática.
@@ -126,10 +129,15 @@ export function useNativeStream(roomId: string, password?: string) {
       if (leaving && reason !== "end") return;
       if (reportedReasons.has(reason)) return;
       reportedReasons.add(reason);
-      const { ice, ...counters } = tm;
+      const { ice, audio, ...counters } = tm;
       sendTelemetry(roomId, "viewer", reason, telemetrySessionId, {
         ...counters,
         ...ice,
+        audioUnderruns: audio.underruns,
+        audioGaps: audio.gaps,
+        audioSkips: audio.skips,
+        audioLagMaxMs: audio.lagMaxMs,
+        audioFormat: audio.format,
         codec: negotiatedCodec,
         elapsedMs: sinceStart(),
         webCodecs: typeof VideoDecoder !== "undefined",
@@ -380,6 +388,13 @@ export function useNativeStream(roomId: string, password?: string) {
           // Teste E2E (sincronia A/V): se a página definiu `window.__ocsAvSync = []`, registra o
           // atraso do áudio vs. o relógio do vídeo ao longo do tempo.
           audioPlayer.onSyncStats = (stats) => {
+            tm.audio = {
+              underruns: stats.underruns,
+              gaps: stats.gaps,
+              skips: stats.skips,
+              lagMaxMs: Math.round(Math.max(tm.audio.lagMaxMs, stats.lagMaxMs)),
+              format: audioPlayer?.decodedFormat ?? null,
+            };
             const log = (window as unknown as { __ocsAvSync?: unknown[] }).__ocsAvSync;
             log?.push({ atMs: performance.now(), ...stats, bufferMs: playout.bufferMs });
           };
@@ -570,6 +585,16 @@ export function useNativeStream(roomId: string, password?: string) {
             decoderErrorTimes.push(now);
             while (decoderErrorTimes.length && now - decoderErrorTimes[0] > DECODER_ERROR_WINDOW_MS) decoderErrorTimes.shift();
             if (cancelled) return;
+            // Safari/iPhone (caminho AVCC + canvas): "Decoder failure" é o aparelho não dando conta
+            // do tier "high" (caso real: host a 120fps/37 Mbps — 2 falhas e 11 keyframes em 50s, um
+            // por recriação). Cai uma vez sozinho pro "low" (mesma resolução, fps/bitrate menores)
+            // em vez de ficar recriando o decoder; o espectador pode voltar no seletor de qualidade.
+            if (h264Format === "avcc" && !tm.autoLowQuality) {
+              tm.autoLowQuality = true;
+              setQualityState("low");
+              sendMessageRef.current?.({ type: "set-quality", tier: "low" });
+              report("auto_low_quality");
+            }
             if (decoderErrorTimes.length >= DECODER_ERROR_LIMIT) {
               report("decode_error");
               setError(
@@ -646,7 +671,22 @@ export function useNativeStream(roomId: string, password?: string) {
               requestKeyframe();
               return;
             }
-            if (prepared.config && decoder.state !== "closed") decoder.configure(prepared.config);
+            if (prepared.config && decoder.state !== "closed") {
+              const config = prepared.config;
+              decoder.configure(config);
+              // Profile/level real (do SPS) que o aparelho não decodifica → erro claro na hora, em
+              // vez de esperar o watchdog de 12s. Sem bloquear: `configure` é síncrono, a checagem não.
+              void VideoDecoder.isConfigSupported?.(config)
+                .then((result) => {
+                  if (cancelled || result.supported) return;
+                  report("config_unsupported", { configCodec: config.codec });
+                  setError(
+                    `Este dispositivo não decodifica o vídeo desta transmissão (${config.codec}). Peça para quem transmite usar uma resolução ou FPS menor.`,
+                  );
+                  setPhase("error");
+                })
+                .catch(() => {});
+            }
             data = prepared.data;
           }
           if (decoder.state !== "configured") return;

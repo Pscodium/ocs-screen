@@ -21,7 +21,7 @@ export function isAdmin(request: FastifyRequest): "ok" | "disabled" | "unauthori
 // próprio — contar de novo inflava a taxa de falha). `connection_lost` do espectador também não:
 // dispara quando o host encerra (ou a aba fecha) — a queda que não volta vira `recovery_failed`
 // (viewer ≥ 0.5.6).
-const NON_FAILURE = ["end", "reconnected", "recovered_after_error", "connection_lost"];
+const NON_FAILURE = ["end", "reconnected", "recovered_after_error", "connection_lost", "auto_low_quality"];
 const END_REASON = "end";
 
 export async function adminRoutes(app: FastifyInstance): Promise<void> {
@@ -43,6 +43,18 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
       // Uma linha por sessão (session_id; relatório antigo sem sessão vira a própria linha) — base
       // das tabelas e dos gráficos de tendência. `duration_ms` = maior elapsedMs relatado.
+      // Família do cliente a partir de `browser`/`platform` (ver clientEnvInfo no viewer). No iPhone
+      // todo navegador é WebKit, então "iOS" vem antes de Safari/Chrome.
+      const CLIENT_FAMILY = sql`
+        CASE
+          WHEN role <> 'viewer' THEN NULL
+          WHEN data->>'platform' ILIKE 'ip%' OR data->>'browser' ~* '(iphone|ipad|ipod)' THEN 'iOS'
+          WHEN data->>'platform' ILIKE 'android%' OR data->>'browser' ILIKE '%android%' THEN 'Android'
+          WHEN data->>'browser' ILIKE '%firefox%' THEN 'Firefox'
+          WHEN data->>'browser' ILIKE '%safari%' AND data->>'browser' !~* '(chrome|chromium|edg)' THEN 'Safari (Mac)'
+          WHEN data->>'browser' IS NOT NULL THEN 'Chrome/Edge (desktop)'
+        END
+      `;
       const sessions = sql`
         SELECT coalesce(session_id, id::text) AS sid, role, source,
                coalesce(min(app_version), 'desconhecida') AS version,
@@ -50,7 +62,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
                bool_or(reason <> ALL(${NON_FAILURE})) AS failed,
                max((data->>'elapsedMs')::numeric) AS duration_ms,
                max((data->>'firstFrameAtMs')::numeric) AS first_frame_ms,
-               max((data->>'recoveries')::numeric) AS recoveries
+               max((data->>'recoveries')::numeric) AS recoveries,
+               max((data->>'decoderErrors')::numeric) AS decoder_errors,
+               max(${CLIENT_FAMILY}) AS client
         FROM ocs_telemetry_events
         WHERE created_at >= ${since}
         GROUP BY 1, 2, 3
@@ -64,7 +78,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         round(avg(coalesce(recoveries, 0)), 2)                AS avg_recoveries
       `;
 
-      const [daily, byVersion, trendDaily, reasons] = await Promise.all([
+      const [daily, byVersion, trendDaily, reasons, byClient] = await Promise.all([
         sql`
           SELECT date_trunc('day', started_at)::date AS day,
                  count(*) FILTER (WHERE role = 'host')   AS host_sessions,
@@ -91,9 +105,19 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           WHERE created_at >= ${since} AND reason <> ${END_REASON}
           GROUP BY 1, 2, 3 ORDER BY count DESC LIMIT 30
         `,
+        // Espectadores por família de cliente — iPhone/Safari usam outro caminho de vídeo
+        // (canvas + AVCC, ver viewer/src/services/videoSink.ts e h264.ts) e falham de jeitos próprios.
+        sql`
+          SELECT coalesce(client, 'desconhecido') AS client, ${metrics},
+                 count(*) FILTER (WHERE decoder_errors > 0) AS decoder_error_sessions,
+                 max(last_at) AS last_seen
+          FROM (${sessions}) s
+          WHERE role = 'viewer'
+          GROUP BY 1 ORDER BY count(*) DESC
+        `,
       ]);
 
-      return { days, daily, byVersion, trendDaily, failureReasons: reasons, nonFailureReasons: NON_FAILURE };
+      return { days, daily, byVersion, trendDaily, failureReasons: reasons, byClient, nonFailureReasons: NON_FAILURE };
     },
   );
 

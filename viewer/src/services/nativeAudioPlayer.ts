@@ -46,6 +46,10 @@ class NativeAudioPlayout extends AudioWorkletProcessor {
     this.lagSum = 0;
     this.lagMax = -Infinity;
     this.lagCount = 0;
+    // Diagnóstico de estalo/chiado (cumulativo): fila esvaziou tocando, buraco de silêncio, pulo.
+    this.underruns = 0;
+    this.gaps = 0;
+    this.skips = 0;
     this.port.onmessage = (e) => this.push(e.data);
   }
   queued() { return this.length - this.head; }
@@ -85,7 +89,7 @@ class NativeAudioPlayout extends AudioWorkletProcessor {
     const lag = currentTime + startQueued / sampleRate - chunk.target;
     this.lagSum += lag; this.lagCount++; if (lag > this.lagMax) this.lagMax = lag;
     if (this.lagCount >= 50) {
-      this.port.postMessage({ lagMs: (this.lagSum / this.lagCount) * 1000, lagMaxMs: this.lagMax * 1000 });
+      this.port.postMessage({ lagMs: (this.lagSum / this.lagCount) * 1000, lagMaxMs: this.lagMax * 1000, underruns: this.underruns, gaps: this.gaps, skips: this.skips });
       this.lagSum = 0; this.lagCount = 0; this.lagMax = -Infinity;
     }
   }
@@ -109,6 +113,7 @@ class NativeAudioPlayout extends AudioWorkletProcessor {
     const err = target - (now + this.queued() / sampleRate);
     if (err > HARD_S) {
       // Relógio de apresentação subiu de uma vez (buffer maior): abre o espaço com silêncio.
+      this.gaps++;
       this.fadeTail();
       this.writeSilence(Math.round(err * sampleRate));
       this.write(left, right);
@@ -123,6 +128,7 @@ class NativeAudioPlayout extends AudioWorkletProcessor {
       this.write(left, right);
       const drop = Math.min(Math.round(-err * sampleRate), Math.floor(this.queued()) - FADE - 2);
       if (drop > 0) {
+        this.skips++;
         const h = Math.ceil(this.head);
         for (let i = 0; i < FADE; i++) {
           const g = i / FADE;
@@ -179,7 +185,7 @@ class NativeAudioPlayout extends AudioWorkletProcessor {
         // Fila vazia: decai a partir da última amostra (sem degrau pra zero).
         this.lastL *= 0.97; this.lastR *= 0.97;
         oL[i] = this.lastL; oR[i] = this.lastR;
-        if (this.started) { this.started = this.head + 1 < this.length; }
+        if (this.started) { this.started = this.head + 1 < this.length; if (!this.started) this.underruns++; }
       }
     }
     this.compact();
@@ -188,6 +194,14 @@ class NativeAudioPlayout extends AudioWorkletProcessor {
 }
 registerProcessor("${PROCESSOR_NAME}", NativeAudioPlayout);
 `;
+
+export interface AudioPlayoutStats {
+  lagMs: number;
+  lagMaxMs: number;
+  underruns: number;
+  gaps: number;
+  skips: number;
+}
 
 interface PendingChunk {
   left: Float32Array;
@@ -205,9 +219,20 @@ export class NativeAudioPlayer {
   // vídeo, ou seja, quanto o som está atrás da imagem (do ponto de vista do agendamento; a latência
   // de saída do dispositivo já está descontada pelo `getOutputTimestamp`).
   syncLagMs = 0;
-  onSyncStats: ((stats: { lagMs: number; lagMaxMs: number }) => void) | null = null;
+  onSyncStats: ((stats: AudioPlayoutStats) => void) | null = null;
+  // Formato que o AudioDecoder entregou (Safari pode diferir do Chrome) — só diagnóstico.
+  decodedFormat: string | null = null;
 
   constructor() {
+    // iPhone: sem isso o Web Audio é categoria "ambiente" e a chave do modo silencioso corta o
+    // som (o `<video>` toca, mas o áudio vem daqui). "playback" = mesma categoria de um player de
+    // vídeo. Audio Session API, Safari 16.4+; ignorado onde não existe.
+    try {
+      const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+      if (session) session.type = "playback";
+    } catch {
+      // ignora
+    }
     this.context = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
     this.gain = this.context.createGain();
     this.gain.gain.value = 0;
@@ -218,7 +243,7 @@ export class NativeAudioPlayer {
       .then(() => {
         const node = new AudioWorkletNode(this.context, PROCESSOR_NAME, { numberOfInputs: 0, outputChannelCount: [2] });
         node.connect(this.gain);
-        node.port.onmessage = (e: MessageEvent<{ lagMs: number; lagMaxMs: number }>) => {
+        node.port.onmessage = (e: MessageEvent<AudioPlayoutStats>) => {
           this.syncLagMs = e.data.lagMs;
           this.onSyncStats?.(e.data);
         };
@@ -249,6 +274,7 @@ export class NativeAudioPlayer {
   play(audioData: AudioData, presentAtPerfMs: number): void {
     try {
       if (this.context.state !== "running") return; // mudo/sem interação ainda — nada a tocar
+      if (this.decodedFormat === null) this.decodedFormat = audioData.format ?? "null";
       const frames = audioData.numberOfFrames;
       const channels = Math.min(2, audioData.numberOfChannels);
       const left = new Float32Array(frames);
