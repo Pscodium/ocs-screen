@@ -797,9 +797,48 @@ export function useNativeStream(roomId: string, password?: string) {
     window.addEventListener("pagehide", onPageHide);
     window.addEventListener("beforeunload", onBeforeUnload);
 
+    // Aba congelada/em 2º plano (celular trocando de app, Page Lifecycle `freeze`, bfcache do
+    // Safari): ao voltar, a conexão pode estar morta sem nenhum evento ter disparado. O LiveKit
+    // derruba a conexão no `freeze` (recomendação do Chrome, ver livekit/client-sdk-js#1968); aqui
+    // só checamos ao voltar e, se o canal/ICE não estiver vivo, entramos na recuperação normal
+    // (WS novo → oferta nova). iOS quase nunca dispara `freeze`, por isso `visibilitychange` também.
+    let frozenAt: number | null = null;
+    const onFreeze = () => {
+      frozenAt = sinceStart();
+    };
+    const checkAliveAfterResume = (cause: string) => {
+      if (cancelled || leaving || !everConnected) return;
+      const pcState = pc?.connectionState;
+      const wsDead = ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING;
+      if (pcState === "connected" && !wsDead) return;
+      startRecovery(cause);
+    };
+    const onResume = () => {
+      const wasFrozen = frozenAt !== null;
+      frozenAt = null;
+      checkAliveAfterResume(wasFrozen ? "page_frozen" : "page_resumed");
+    };
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (!e.persisted) return;
+      leaving = false;
+      reportedReasons.delete("end");
+      checkAliveAfterResume("bfcache_restored");
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") checkAliveAfterResume("page_resumed");
+    };
+    document.addEventListener("freeze", onFreeze);
+    document.addEventListener("resume", onResume);
+    window.addEventListener("pageshow", onPageShow);
+    document.addEventListener("visibilitychange", onVisibility);
+
     return () => {
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("freeze", onFreeze);
+      document.removeEventListener("resume", onResume);
+      window.removeEventListener("pageshow", onPageShow);
+      document.removeEventListener("visibilitychange", onVisibility);
       if (recoveryDeadline) clearTimeout(recoveryDeadline);
       // Montagem descartada na hora (StrictMode em dev) não vira relatório.
       if (tm.wsOpens > 0 || sinceStart() > 2000) report("end", { endedBy: "viewer_left" });
