@@ -40,7 +40,7 @@ const R: Record<string, ReasonInfo> = {
   not_connected: { label: "Nunca conectou", stage: "rede", severity: "error", hint: "Canal de vídeo não abriu." },
   signaling_error: { label: "Erro de sinalização", stage: "sinalização", severity: "error", hint: "WebSocket/backend." },
   decode_error: { label: "Erro no decoder de vídeo", stage: "decoder", severity: "error", hint: "Ver lastDecoderError, gpu e decoderHw." },
-  unsupported: { label: "Navegador sem suporte", stage: "navegador", severity: "error", hint: "Sem WebCodecs/MediaStreamTrackGenerator (Firefox/Safari)." },
+  unsupported: { label: "Navegador sem suporte", stage: "navegador", severity: "error", hint: "Sem WebCodecs (VideoDecoder) — Safari < 16.4 ou navegador antigo. Sem MediaStreamTrackGenerator usa canvas desde a 0.6.0." },
   reconnected: { label: "Reconectou", stage: "rede", severity: "info", hint: "Recuperação — não é falha." },
   recovered_after_error: { label: "Vídeo chegou depois de atraso", stage: "rede", severity: "info", hint: "1º frame depois de 12s. Recuperação — não é falha." },
   end: { label: "Fim da sessão", stage: "sessão", severity: "info", hint: "" },

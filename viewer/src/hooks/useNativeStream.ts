@@ -6,6 +6,8 @@ import { PLAYOUT_DELAY_MAX_MS } from "./useRoomStream";
 import { PlayoutClock } from "../services/playoutClock";
 import { NativeAudioPlayer } from "../services/nativeAudioPlayer";
 import { VideoPresenter } from "../services/videoPresenter";
+import { canUseCanvasSink, createVideoSink } from "../services/videoSink";
+import { H264Adapter, preferredH264Format } from "../services/h264";
 import { clientEnvInfo, decoderHardwareSupport, newTelemetrySessionId, selectedCandidateInfo, sendTelemetry, type TelemetryData } from "../services/telemetry";
 
 const STATS_POLL_MS = 2000;
@@ -84,6 +86,7 @@ export function useNativeStream(roomId: string, password?: string) {
     // Setado ANTES do canal de vídeo abrir de verdade (só abre depois do SDP fechar) — o handler
     // de `ondatachannel` mais abaixo lê essa variável já com o valor certo.
     let negotiatedCodec: NativeVideoCodec = "h264";
+    const h264Format = preferredH264Format();
 
     // Diagnóstico (ver services/telemetry.ts) — contadores acumulados da sessão inteira, mandados
     // pro backend só quando algo dá errado ou a sessão termina. Nada aqui gera tráfego por frame.
@@ -131,6 +134,8 @@ export function useNativeStream(roomId: string, password?: string) {
         elapsedMs: sinceStart(),
         webCodecs: typeof VideoDecoder !== "undefined",
         trackGenerator: typeof MediaStreamTrackGenerator !== "undefined",
+        audioDecoder: typeof AudioDecoder !== "undefined",
+        h264Format,
         visibility: document.visibilityState,
         ...clientEnvInfo(),
         decoderHw,
@@ -138,7 +143,9 @@ export function useNativeStream(roomId: string, password?: string) {
       });
     };
 
-    if (typeof MediaStreamTrackGenerator === "undefined" || typeof VideoDecoder === "undefined") {
+    // Sem `MediaStreamTrackGenerator` (Safari/iPhone/Firefox) o vídeo sai por canvas
+    // (services/videoSink.ts) — só `VideoDecoder` é obrigatório. Safari tem desde a 16.4.
+    if (typeof VideoDecoder === "undefined" || (typeof MediaStreamTrackGenerator === "undefined" && !canUseCanvasSink())) {
       report("unsupported");
       setError("Este navegador não suporta os recursos necessários (WebCodecs) para assistir a essa transmissão. Tente um Chrome/Edge recente.");
       setPhase("error");
@@ -384,6 +391,9 @@ export function useNativeStream(roomId: string, password?: string) {
 
         // Opus não tem conceito de keyframe/GOP como vídeo — todo pacote decodifica sozinho, por
         // isso `type: "key"` sempre. Apresentação pelo MESMO relógio do vídeo (`playout`).
+        // Safari antigo tem `VideoDecoder` mas não `AudioDecoder` — assiste sem som em vez de
+        // derrubar o handler inteiro com ReferenceError.
+        if (typeof AudioDecoder === "undefined") return;
         const decoder = new AudioDecoder({
           output: (audioData) => {
             // `videoRef` pode ter montado depois do canal abrir — liga o volume/mudo assim que der.
@@ -433,12 +443,12 @@ export function useNativeStream(roomId: string, password?: string) {
       channel.addEventListener("close", () => {
         if (!cancelled && pc === channelPc) startRecovery("channel_closed");
       });
-      const generator = new MediaStreamTrackGenerator<VideoFrame>({ kind: "video" });
-      const writer = generator.writable.getWriter();
+      const sink = createVideoSink();
+      const writer = sink.writer;
       currentVideoTrack?.stop();
-      currentVideoTrack = generator;
+      currentVideoTrack = sink.track;
       if (videoRef.current) {
-        videoRef.current.srcObject = new MediaStream([generator]);
+        videoRef.current.srcObject = new MediaStream([sink.track]);
         videoRef.current.play().catch(() => {});
       }
 
@@ -513,17 +523,11 @@ export function useNativeStream(roomId: string, password?: string) {
           // conhece o formato "low overhead" (OBUs crus concatenados), que é exatamente o que
           // `outputAnnexBFormat=0` no EncoderCore já produz.
           target.configure({ codec: "av01.0.04M.08", optimizeForLatency: true });
-        } else {
-          // `avc: { format: "annexb" }` — o encoder manda SPS/PPS embutido em CADA keyframe
-          // (repeatSPSPPS=1 no EncoderCore), não precisa de `description` separada em AVCC.
-          //
-          // "avc1.64002a" = profile High (0x64) + level 4.2 (0x2a) — NÃO Baseline. O NVENC
-          // (CreateDefaultEncoderParams com preset P4+LOW_LATENCY) escolhe High profile sozinho por
-          // padrão; "avc1.42e01f" (Baseline) era resquício do SDP do caminho RTP antigo, nunca batia
-          // com o bitstream real (confirmado via `ffprobe` no dump: `profile=High level=42`).
-          target.configure({ codec: "avc1.64002a", optimizeForLatency: true, avc: { format: "annexb" } });
         }
+        // H.264: configurado só no 1º keyframe, com profile/level do SPS real e formato
+        // Annex-B (Chromium) ou AVCC (Safari) — ver services/h264.ts / `h264Adapter` abaixo.
       };
+      const h264Adapter = new H264Adapter(h264Format);
 
       const createDecoder = (): VideoDecoder => {
         const created = new VideoDecoder({
@@ -575,6 +579,7 @@ export function useNativeStream(roomId: string, password?: string) {
               return;
             }
             decoder = createDecoder();
+            h264Adapter.reset();
             waitingKeyframe = true;
             lastKeyframeRequestAt = -Infinity;
             requestKeyframe();
@@ -631,10 +636,21 @@ export function useNativeStream(roomId: string, password?: string) {
           }
           waitingKeyframe = false;
         }
-        if (decoder.state !== "configured") return;
-
         try {
-          decoder.decode(new EncodedVideoChunk({ type: isKeyframe ? "key" : "delta", timestamp: timestampUs, data: payload }));
+          let data: Uint8Array = payload;
+          if (negotiatedCodec === "h264") {
+            const prepared = h264Adapter.prepare(payload, isKeyframe);
+            if (!prepared) {
+              // Keyframe sem SPS/PPS — não dá pra configurar; espera o próximo.
+              waitingKeyframe = true;
+              requestKeyframe();
+              return;
+            }
+            if (prepared.config && decoder.state !== "closed") decoder.configure(prepared.config);
+            data = prepared.data;
+          }
+          if (decoder.state !== "configured") return;
+          decoder.decode(new EncodedVideoChunk({ type: isKeyframe ? "key" : "delta", timestamp: timestampUs, data }));
         } catch {
           // Chunk rejeitado — recupera no próximo keyframe.
           waitingKeyframe = true;
