@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.0 — 2026-11-25
+
+### Novidades
+- **Atualizar pela Microsoft Store ficou a um clique.** Quando sair versão nova, o próprio app avisa e o botão "Atualizar" baixa e instala pela Store, com barra de progresso, sem você precisar abrir a Store e procurar o app. No fim o app fecha e abre sozinho já atualizado.
+
+### Melhorias
+- **O app avisa de versão nova mesmo aberto há dias.** A checagem agora roda de hora em hora (nunca no meio de uma transmissão), não só ao abrir o app.
+- **Diagnóstico melhor de conexão com espectadores de longe.** Quando um espectador não consegue conectar, o app registra se havia caminho pelo servidor de retransmissão, pra gente achar e corrigir problemas de rede mais rápido.
+
 ## 1.5.3 — 2026-11-09
 
 ### Melhorias

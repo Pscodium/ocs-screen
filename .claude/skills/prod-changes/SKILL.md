@@ -54,6 +54,7 @@ pra confirmar o nível da versão.
 
 | Versão | Estado | Observação |
 |---|---|---|
+| 1.6.0 | Estável | Atualização pela Microsoft Store de dentro do app (StoreContext); checa update de hora em hora; telemetria com campos ICE novos (strings curtas/números/booleanos, sem IP). Sem mudança de contrato. |
 | 1.5.3 | Estável | Manda heartbeat `host-health` pelo WS nativo (backend encerra sala travada com 4410) e trata o código 4410. Backend sem a rota ignora a mensagem. |
 | 1.5.2 | Estável | Encoder MFT segue protocolo assíncrono; recuperação cai pra CPU; campo `mftDiag` na telemetria (string ≤290, cabe no limite de 300 do backend). Sem mudança de contrato. |
 | 1.5.1 | Estável | Corrige travamento do encoder de hardware AMD/Intel. Sem mudança de contrato com o backend. |
